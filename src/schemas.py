@@ -1,0 +1,97 @@
+"""Pydantic schemas for every model/agent response that feeds downstream logic.
+
+These are passed to Gemini as `response_schema` so the model returns typed JSON —
+no free-text parsing anywhere in the system (CLAUDE.md convention).
+"""
+
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+# --- Intent routing (Module 4: Disambiguation) ---
+
+class Intent(str, Enum):
+    FAQ = "faq"
+    COMPLAINT = "complaint"
+    AMBIGUOUS = "ambiguous"
+    OUT_OF_SCOPE = "out_of_scope"
+
+
+class IntentClassification(BaseModel):
+    """Router output: what the employee wants, and how sure we are."""
+
+    intent: Intent
+    confidence: float = Field(ge=0.0, le=1.0)
+    category: str | None = Field(
+        default=None,
+        description="Policy category if inferable: leave|benefits|payroll|conduct|complaints|onboarding",
+    )
+    clarifying_question: str | None = Field(
+        default=None,
+        description="One question to ask when intent is ambiguous or confidence is low",
+    )
+
+
+# --- Grounded RAG answers (Module 1: RAG, Module 3: Structured Outputs) ---
+
+class Citation(BaseModel):
+    chunk_id: str = Field(description="ID of the retrieved chunk this claim is grounded in")
+    title: str = Field(description="Document title, e.g. 'Leave Policy'")
+    section_path: str = Field(description="Section path, e.g. 'Sick Leave > Documentation'")
+
+
+class GroundedAnswer(BaseModel):
+    """Answer grounded in retrieved policy chunks, with verifiable citations."""
+
+    answer: str = Field(description="The answer, based only on the provided policy excerpts")
+    citations: list[Citation] = Field(
+        default_factory=list,
+        description="Every excerpt actually used; cite only provided chunk_ids",
+    )
+    insufficient_context: bool = Field(
+        default=False,
+        description="True when the excerpts do not contain the answer",
+    )
+
+
+# --- Complaint intake (Module 3: Structured Outputs, Module 8: Tool Use) ---
+
+class ComplaintCategory(str, Enum):
+    HARASSMENT = "harassment"
+    DISCRIMINATION = "discrimination"
+    SAFETY = "safety"
+    LEGAL = "legal"
+    PAYROLL = "payroll"
+    BENEFITS = "benefits"
+    WORKPLACE_CONFLICT = "workplace_conflict"
+    POLICY_VIOLATION = "policy_violation"
+    OTHER = "other"
+
+
+class Severity(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ComplaintTicket(BaseModel):
+    """Structured complaint extracted through conversation, validated before filing.
+
+    Escalation for harassment/safety/legal is decided by deterministic rules in
+    src/guardrails/ based on `category` — never by the LLM.
+    """
+
+    category: ComplaintCategory
+    severity: Severity
+    description: str = Field(min_length=10, description="What happened, in the employee's words")
+    parties_involved: list[str] = Field(
+        default_factory=list, description="People or teams involved, as stated by the employee"
+    )
+    incident_date: str | None = Field(
+        default=None, description="When it happened (ISO date or employee's phrasing)"
+    )
+    desired_outcome: str | None = Field(
+        default=None, description="What resolution the employee is seeking"
+    )
