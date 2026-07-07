@@ -1,34 +1,36 @@
 """ReAct agent loop (Module 7: ReAct Agent).
 
-run_turn() is the single entry point Member 4's FastAPI layer should call:
+run_turn() is the single entry point the API layer calls:
     run_turn(session_id, message, history) -> AgentResponse
 
-Flow per turn:
-    classify_intent()
-      -> AMBIGUOUS / low confidence  : ask the clarifying question, no tool call
-      -> OUT_OF_SCOPE                : decline, no tool call
-      -> FAQ                         : search_kb() -> insufficient? -> search_web()
-      -> COMPLAINT                   : slot-fill ComplaintDraft -> file_complaint()
-                                        -> should_escalate() -> escalate_to_hr()
+Per turn: classify_intent() (Module 4: Disambiguation) gates the conversation —
+ambiguous or low-confidence input gets a clarifying question, out-of-scope input
+gets declined, neither reaches a tool. Everything else enters the ReAct loop:
+Gemini picks a tool, tools.py executes it, the result is fed back as an
+observation, and the model repeats until it answers in plain text or
+MAX_REACT_ITERATIONS is hit.
 
-Input/output guardrail hooks are stubbed pass-through until Member 3 ships
-src/guardrails/ — swap _check_input_stub for the real check_input import then.
-Session/long-term memory is likewise stubbed: history is passed in by the
-caller each turn rather than persisted here, until Member 3 ships src/memory/.
+Guardrail and memory hooks are stubbed pass-through: input/output checks belong
+in src/guardrails/, session/long-term memory in src/memory/. history is passed
+in by the caller each turn rather than persisted here.
 """
 
+import json
+import logging
 from dataclasses import dataclass, field
+
+from pydantic import ValidationError
 
 from src import config
 from src.agent import prompts, tools
-from src.agent.router import classify_intent, format_history, needs_clarification
+from src.agent.router import classify_intent, needs_clarification
 from src.schemas import (
     Citation,
-    ComplaintDraft,
+    ComplaintCategory,
     ComplaintTicket,
     Intent,
     IntentClassification,
-    REQUIRED_COMPLAINT_FIELDS,
+    Severity,
     WebCitation,
 )
 
@@ -36,12 +38,15 @@ OUT_OF_SCOPE_REPLY = (
     "I can only help with company policy, DOLE labor law questions, and complaint "
     "filing. For anything else, please reach out to the right team directly."
 )
+FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
+MAX_ITERATIONS_REPLY = (
+    "I wasn't able to finish handling this in the usual number of steps. "
+    "I've flagged it for HR to follow up on directly."
+)
 
-FIELD_PROMPTS = {
-    "category": "What kind of issue is this — harassment, safety, payroll, etc.?",
-    "severity": "How serious would you say this is (low, medium, high, or critical)?",
-    "description": "Can you describe what happened, in your own words?",
-}
+NON_LABOR_LAW_CATEGORIES = tuple(c for c in config.CATEGORIES if c != "labor_law")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,9 +73,19 @@ class GuardrailResult:
     reason: str = ""
 
 
+@dataclass
+class _RunState:
+    """Side effects collected across ReAct iterations for the final AgentResponse."""
+
+    citations: list[Citation] = field(default_factory=list)
+    web_citations: list[WebCitation] = field(default_factory=list)
+    ticket_id: str | None = None
+    escalated: bool = False
+
+
 def _check_input_stub(message: str) -> GuardrailResult:
-    """TEMPORARY pass-through until src/guardrails/input_checks.py ships
-    (Member 3): topic filter, prompt-injection heuristics, PII detection."""
+    """Pass-through until src/guardrails/input_checks.py ships: topic filter,
+    prompt-injection heuristics, PII detection."""
     return GuardrailResult(allowed=True)
 
 
@@ -84,6 +99,7 @@ def run_turn(
     history = history or []
     steps: list[AgentStep] = []
 
+    logger.info("session=%s turn_start", session_id)
     guardrail_result = _check_input_stub(message)
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
@@ -108,140 +124,192 @@ def run_turn(
     if classification.intent == Intent.OUT_OF_SCOPE:
         return AgentResponse(reply=OUT_OF_SCOPE_REPLY, steps=steps)
 
-    if classification.intent == Intent.FAQ:
-        return _handle_faq(message, classification, steps, client)
+    reply, run_state = _run_tool_loop(message, history, classification, steps, client)
 
-    if classification.intent == Intent.COMPLAINT:
-        return _handle_complaint(message, history, steps, client)
+    return AgentResponse(
+        reply=reply,
+        citations=run_state.citations,
+        web_citations=run_state.web_citations,
+        ticket_id=run_state.ticket_id,
+        escalated=run_state.escalated,
+        steps=steps,
+    )
 
-    # Unreachable given the Intent enum, but fail closed rather than crash mid-conversation.
-    return AgentResponse(reply=OUT_OF_SCOPE_REPLY, steps=steps)
 
-
-FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
-
-
-def _handle_faq(
+def _run_tool_loop(
     message: str,
+    history: list[dict[str, str]],
     classification: IntentClassification,
     steps: list[AgentStep],
     client,
-) -> AgentResponse:
-    answer, chunks = tools.search_kb(message, category=classification.category)
-    steps.append(
-        AgentStep(
-            thought="tried internal KB",
-            tool="search_kb",
-            tool_args={"query": message, "category": classification.category},
-            observation=f"insufficient_context={answer.insufficient_context}, chunks={len(chunks)}",
-        )
-    )
-
-    if answer.insufficient_context:
-        answer = tools.search_web(message, client=client)
-        steps.append(
-            AgentStep(
-                thought="internal KB insufficient, tried web fallback",
-                tool="search_web",
-                tool_args={"query": message},
-                observation=f"insufficient_context={answer.insufficient_context}",
-            )
-        )
-
-    return AgentResponse(
-        reply=answer.answer,
-        citations=answer.citations,
-        web_citations=answer.web_citations,
-        steps=steps,
-    )
-
-
-def _handle_complaint(
-    message: str,
-    history: list[dict[str, str]],
-    steps: list[AgentStep],
-    client,
-) -> AgentResponse:
-    draft = _extract_complaint_draft(message, history, client)
-    steps.append(
-        AgentStep(
-            thought="extracted complaint draft",
-            tool=None,
-            tool_args={},
-            observation=draft.model_dump_json(),
-        )
-    )
-
-    missing = _missing_required_fields(draft)
-    if missing:
-        return AgentResponse(reply=FIELD_PROMPTS[missing[0]], steps=steps)
-
-    ticket = ComplaintTicket(
-        category=draft.category,
-        severity=draft.severity,
-        description=draft.description,
-        parties_involved=draft.parties_involved,
-        incident_date=draft.incident_date,
-        desired_outcome=draft.desired_outcome,
-    )
-    ticket_id = tools.file_complaint(ticket)
-    steps.append(
-        AgentStep(
-            thought="filed complaint",
-            tool="file_complaint",
-            tool_args={"category": ticket.category.value},
-            observation=ticket_id,
-        )
-    )
-
-    escalated = tools.should_escalate(ticket.category)
-    if escalated:
-        tools.escalate_to_hr(ticket_id, reason=f"category={ticket.category.value}")
-        steps.append(
-            AgentStep(
-                thought="escalated per deterministic rule",
-                tool="escalate_to_hr",
-                tool_args={"ticket_id": ticket_id},
-                observation="escalated=True",
-            )
-        )
-
-    return AgentResponse(
-        reply=_complaint_confirmation(ticket_id, escalated),
-        ticket_id=ticket_id,
-        escalated=escalated,
-        steps=steps,
-    )
-
-
-def _extract_complaint_draft(
-    message: str, history: list[dict[str, str]], client
-) -> ComplaintDraft:
-    """Re-extracts the draft from full history each turn (stateless). Once
-    Member 3's session memory (src/memory/) ships, this should read/write an
-    incrementally-updated draft instead of re-deriving it every call."""
+) -> tuple[str, _RunState]:
     from google.genai import types
 
-    response = client.models.generate_content(
-        model=config.CHAT_MODEL,
-        contents=prompts.COMPLAINT_EXTRACTION_PROMPT.format(
-            history=format_history(history), message=message
+    run_state = _RunState()
+    contents = _build_initial_contents(history, message, classification)
+    agent_tools = types.Tool(function_declarations=_function_declarations())
+
+    for iteration in range(config.MAX_REACT_ITERATIONS):
+        response = client.models.generate_content(
+            model=config.CHAT_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=prompts.REACT_SYSTEM_PROMPT,
+                tools=[agent_tools],
+                temperature=0.2,
+            ),
+        )
+        candidate_content = response.candidates[0].content
+        function_calls = [
+            part.function_call for part in candidate_content.parts if part.function_call
+        ]
+
+        if not function_calls:
+            return response.text or FALLBACK_CLARIFYING_TEXT, run_state
+
+        contents.append(candidate_content)
+        response_parts = []
+        for call in function_calls:
+            args = dict(call.args or {})
+            observation = _execute_tool(call.name, args, client, run_state)
+            steps.append(
+                AgentStep(
+                    thought=f"iteration {iteration + 1}: calling {call.name}",
+                    tool=call.name,
+                    tool_args=args,
+                    observation=json.dumps(observation),
+                )
+            )
+            response_parts.append(
+                types.Part.from_function_response(name=call.name, response=observation)
+            )
+        contents.append(types.Content(role="user", parts=response_parts))
+
+    return MAX_ITERATIONS_REPLY, run_state
+
+
+def _build_initial_contents(
+    history: list[dict[str, str]], message: str, classification: IntentClassification
+):
+    from google.genai import types
+
+    contents = []
+    for turn in history:
+        role = "model" if turn["role"] == "assistant" else "user"
+        contents.append(types.Content(role=role, parts=[types.Part(text=turn["content"])]))
+    hint = f"[router: intent={classification.intent.value}, category={classification.category}]\n{message}"
+    contents.append(types.Content(role="user", parts=[types.Part(text=hint)]))
+    return contents
+
+
+def _function_declarations() -> list:
+    from google.genai import types
+
+    return [
+        types.FunctionDeclaration(
+            name="search_kb",
+            description="Search the internal company policy knowledge base "
+            "(Code of Conduct, leave, benefits, payroll, onboarding, etc.).",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "question": types.Schema(
+                        type="STRING", description="The employee's question"
+                    ),
+                    "category": types.Schema(
+                        type="STRING",
+                        enum=list(NON_LABOR_LAW_CATEGORIES),
+                        description="Policy category to filter by, if known",
+                    ),
+                },
+                required=["question"],
+            ),
         ),
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=ComplaintDraft,
-            temperature=0.0,
+        types.FunctionDeclaration(
+            name="search_web",
+            description="Search official Philippine government sources for DOLE/labor "
+            "law questions not covered by company policy.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "question": types.Schema(type="STRING", description="The labor-law question")
+                },
+                required=["question"],
+            ),
         ),
-    )
-    return response.parsed or ComplaintDraft()
+        types.FunctionDeclaration(
+            name="file_complaint",
+            description="File a formal HR complaint. Only call once category, severity, "
+            "and a description are known.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "category": types.Schema(type="STRING", enum=[c.value for c in ComplaintCategory]),
+                    "severity": types.Schema(type="STRING", enum=[s.value for s in Severity]),
+                    "description": types.Schema(
+                        type="STRING", description="What happened, in the employee's words"
+                    ),
+                    "parties_involved": types.Schema(
+                        type="ARRAY", items=types.Schema(type="STRING")
+                    ),
+                    "incident_date": types.Schema(type="STRING"),
+                    "desired_outcome": types.Schema(type="STRING"),
+                },
+                required=["category", "severity", "description"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="get_ticket_status",
+            description="Look up the status of a previously filed complaint.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={"ticket_id": types.Schema(type="STRING")},
+                required=["ticket_id"],
+            ),
+        ),
+    ]
 
 
-def _missing_required_fields(draft: ComplaintDraft) -> list[str]:
-    return [f for f in REQUIRED_COMPLAINT_FIELDS if getattr(draft, f) is None]
+def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
+    if name == "search_kb":
+        answer, chunks = tools.search_kb(args["question"], category=args.get("category"))
+        run_state.citations = answer.citations
+        run_state.web_citations = answer.web_citations
+        return {
+            "answer": answer.answer,
+            "insufficient_context": answer.insufficient_context,
+            "chunks_found": len(chunks),
+        }
 
+    if name == "search_web":
+        answer = tools.search_web(args["question"], client=client)
+        run_state.citations = answer.citations
+        run_state.web_citations = answer.web_citations
+        return {"answer": answer.answer, "insufficient_context": answer.insufficient_context}
 
-def _complaint_confirmation(ticket_id: str, escalated: bool) -> str:
-    base = f"I've filed your complaint (ticket {ticket_id})."
-    if escalated:
-        return base + " Given what you've described, I've also escalated this to HR directly."
-    return base + " HR will follow up on it."
+    if name == "file_complaint":
+        try:
+            ticket = ComplaintTicket(
+                category=args["category"],
+                severity=args["severity"],
+                description=args["description"],
+                parties_involved=args.get("parties_involved", []),
+                incident_date=args.get("incident_date"),
+                desired_outcome=args.get("desired_outcome"),
+            )
+        except (ValidationError, KeyError) as exc:
+            return {"error": f"could not file complaint, invalid fields: {exc}"}
+
+        ticket_id = tools.file_complaint(ticket)
+        escalated = tools.should_escalate(ticket.category)
+        if escalated:
+            tools.escalate_to_hr(ticket_id, reason=f"category={ticket.category.value}")
+        run_state.ticket_id = ticket_id
+        run_state.escalated = escalated
+        return {"ticket_id": ticket_id, "escalated": escalated}
+
+    if name == "get_ticket_status":
+        status = tools.get_ticket_status(args["ticket_id"])
+        return status or {"error": "no ticket found with that id"}
+
+    return {"error": f"unknown tool: {name}"}

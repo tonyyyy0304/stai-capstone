@@ -120,19 +120,3 @@ class ComplaintTicket(BaseModel):
     desired_outcome: str | None = Field(
         default=None, description="What resolution the employee is seeking"
     )
-
-
-class ComplaintDraft(BaseModel):
-    """Partial ComplaintTicket accumulated across turns during slot-filling
-    (Module 4: Disambiguation / Module 7: ReAct Agent). All fields optional —
-    the extractor must leave a field null rather than guess."""
-
-    category: ComplaintCategory | None = None
-    severity: Severity | None = None
-    description: str | None = None
-    parties_involved: list[str] = Field(default_factory=list)
-    incident_date: str | None = None
-    desired_outcome: str | None = None
-
-
-REQUIRED_COMPLAINT_FIELDS = ("category", "severity", "description")

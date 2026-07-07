@@ -1,13 +1,11 @@
 """Tools the ReAct agent can call (Module 8: Tool Use).
 
-- search_kb    -> internal RAG, delegates to Member 1's answer_question()
+- search_kb    -> internal RAG, delegates to answer_question() in src/rag/answerer.py
 - search_web   -> fallback for DOLE/labor-law questions the internal KB doesn't
                   cover; Gemini native google_search grounding, domain-restricted
-- file_complaint / get_ticket_status / escalate_to_hr -> SQLite-backed ticket tools
-
-should_escalate() is a TEMPORARY deterministic stub. Real escalation rules belong
-in src/guardrails/ (Member 3) and must stay deterministic, never LLM-decided, per
-PLAN.md §4. Swap the import once that module ships.
+- file_complaint / get_ticket_status -> SQLite-backed ticket tools, exposed to the model
+- escalate_to_hr / should_escalate -> deterministic, code-only; never exposed as a
+  callable tool, so escalation for harassment/safety/legal is never an LLM decision
 """
 
 import json
@@ -96,9 +94,7 @@ def search_web(question: str, client=None) -> GroundedAnswer:
 
 
 def _extract_web_citations(response) -> list[WebCitation]:
-    """Pull grounding URLs off a google_search response, restricted to the
-    DOLE allowlist. NOTE: verify attribute names against the installed
-    google-genai==1.21.1 SDK if grounding_metadata's shape changes upstream."""
+    """Pull grounding URLs off a google_search response, restricted to the DOLE allowlist."""
     citations: list[WebCitation] = []
     for candidate in getattr(response, "candidates", None) or []:
         metadata = getattr(candidate, "grounding_metadata", None)
@@ -127,36 +123,27 @@ def no_web_answer() -> GroundedAnswer:
 def _get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(config.SQLITE_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db() -> None:
-    conn = _get_connection()
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tickets (
-                ticket_id TEXT PRIMARY KEY,
-                category TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                description TEXT NOT NULL,
-                parties_involved TEXT NOT NULL,
-                incident_date TEXT,
-                desired_outcome TEXT,
-                status TEXT NOT NULL,
-                escalated INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
-            )
-            """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tickets (
+            ticket_id TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            description TEXT NOT NULL,
+            parties_involved TEXT NOT NULL,
+            incident_date TEXT,
+            desired_outcome TEXT,
+            status TEXT NOT NULL,
+            escalated INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
         )
-        conn.commit()
-    finally:
-        conn.close()
+        """
+    )
+    return conn
 
 
 def file_complaint(ticket: ComplaintTicket) -> str:
     """Writes a validated ComplaintTicket to SQLite, returns the new ticket_id."""
-    init_db()
     ticket_id = str(uuid.uuid4())
     conn = _get_connection()
     try:
@@ -206,8 +193,7 @@ ESCALATION_CATEGORIES = frozenset(
 
 
 def should_escalate(category: ComplaintCategory) -> bool:
-    """TEMPORARY deterministic stub — see module docstring. Real rules live in
-    src/guardrails/ once Member 3 ships it."""
+    """Deterministic escalation rule — never delegated to the model."""
     return category in ESCALATION_CATEGORIES
 
 
