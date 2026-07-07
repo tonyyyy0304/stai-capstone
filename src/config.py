@@ -39,7 +39,18 @@ TOP_K = 8
 SIMILARITY_FLOOR = 0.5  # below this the agent must say "I don't know" (tuned in evals)
 
 # Valid document categories; used for metadata-filtered retrieval after intent routing.
-CATEGORIES = ("leave", "benefits", "payroll", "conduct", "complaints", "onboarding")
+# "labor_law" has no internal chunks (no DOLE docs in data/raw/) — it's the signal
+# the router uses to route straight to the search_web fallback instead of search_kb.
+CATEGORIES = ("leave", "benefits", "payroll", "conduct", "complaints", "onboarding", "labor_law")
+
+# --- Agent (Module 7: ReAct Agent) ---
+MAX_REACT_ITERATIONS = 5
+ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarifying question
+
+# --- Web search fallback (Module 8: Tool Use) ---
+# search_web is restricted to these domains so it can't become a general-purpose
+# search engine (would defeat the HR-only topic-filter guardrail).
+DOLE_ALLOWED_DOMAINS = ("dole.gov.ph", "officialgazette.gov.ph", "lawphil.net")
 
 
 def get_gemini_api_key() -> str:

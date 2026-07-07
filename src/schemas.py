@@ -41,17 +41,42 @@ class Citation(BaseModel):
     section_path: str = Field(description="Section path, e.g. 'Sick Leave > Documentation'")
 
 
-class GroundedAnswer(BaseModel):
-    """Answer grounded in retrieved policy chunks, with verifiable citations."""
+class AnswerSource(str, Enum):
+    """Where a GroundedAnswer's grounding came from (Module 8: Tool Use — web fallback)."""
 
-    answer: str = Field(description="The answer, based only on the provided policy excerpts")
+    INTERNAL_KB = "internal_kb"
+    WEB = "web"
+    NONE = "none"
+
+
+class WebCitation(BaseModel):
+    """Citation shape for search_web answers — DOLE/labor-law sources have no chunk_id."""
+
+    url: str = Field(description="Source URL, restricted to the DOLE/official gov allowlist")
+    title: str = Field(description="Page title")
+    snippet: str = Field(default="", description="Relevant excerpt supporting the answer")
+
+
+class GroundedAnswer(BaseModel):
+    """Answer grounded in retrieved policy chunks or a web search fallback, with
+    verifiable citations."""
+
+    answer: str = Field(description="The answer, based only on the provided excerpts/research")
     citations: list[Citation] = Field(
         default_factory=list,
         description="Every excerpt actually used; cite only provided chunk_ids",
     )
+    source: AnswerSource = Field(
+        default=AnswerSource.INTERNAL_KB,
+        description="Whether this answer came from the internal KB, a web fallback, or neither",
+    )
+    web_citations: list[WebCitation] = Field(
+        default_factory=list,
+        description="Web sources used when source=web; empty otherwise",
+    )
     insufficient_context: bool = Field(
         default=False,
-        description="True when the excerpts do not contain the answer",
+        description="True when the excerpts/research do not contain the answer",
     )
 
 
@@ -95,3 +120,19 @@ class ComplaintTicket(BaseModel):
     desired_outcome: str | None = Field(
         default=None, description="What resolution the employee is seeking"
     )
+
+
+class ComplaintDraft(BaseModel):
+    """Partial ComplaintTicket accumulated across turns during slot-filling
+    (Module 4: Disambiguation / Module 7: ReAct Agent). All fields optional —
+    the extractor must leave a field null rather than guess."""
+
+    category: ComplaintCategory | None = None
+    severity: Severity | None = None
+    description: str | None = None
+    parties_involved: list[str] = Field(default_factory=list)
+    incident_date: str | None = None
+    desired_outcome: str | None = None
+
+
+REQUIRED_COMPLAINT_FIELDS = ("category", "severity", "description")
