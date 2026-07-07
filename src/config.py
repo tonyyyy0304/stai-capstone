@@ -20,6 +20,11 @@ CHROMA_DIR = DATA_DIR / "chroma"
 MANIFEST_PATH = DATA_DIR / "index_manifest.json"
 SQLITE_PATH = DATA_DIR / "hr_agent.db"
 
+# --- API / UI ---
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+API_PORT = int(os.environ.get("API_PORT", "8000"))
+API_URL = os.environ.get("API_URL", f"http://localhost:{API_PORT}")
+
 # --- Models ---
 CHAT_MODEL = "gemini-2.5-flash"
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -40,6 +45,10 @@ SIMILARITY_FLOOR = 0.5  # below this the agent must say "I don't know" (tuned in
 
 # Valid document categories; used for metadata-filtered retrieval after intent routing.
 CATEGORIES = ("leave", "benefits", "payroll", "conduct", "complaints", "onboarding")
+
+# --- Monitoring ---
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", (DATA_DIR / "mlruns").as_uri())
+MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "hr-agent")
 
 
 def get_gemini_api_key() -> str:
