@@ -112,35 +112,51 @@ def _complaint_intake_pending(message: str) -> bool:
     return any(term in lowered for term in complaint_terms)
 
 
-def _try_agent_orchestrator(request: ChatRequest) -> ChatResponse | None:
+# In-process, non-persistent turn history keyed by session_id. Stands in for
+# the real session/long-term memory store (src/memory/) so multi-turn
+# conversations (e.g. complaint slot-filling) work across requests before
+# that module exists; history is lost on server restart.
+_SESSION_HISTORY: dict[str, list[dict[str, str]]] = {}
+
+
+def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatResponse | None:
     """Use Member 2's orchestrator when it exists.
 
     Supported future shape: handle_message(message=..., session_id=...,
-    employee_id=...) returning either ChatResponse, dict, or object with
-    response-like attributes.
+    employee_id=..., history=...) returning either ChatResponse, dict, or
+    object with response-like attributes.
     """
     try:
         from src.agent.orchestrator import handle_message
     except Exception:
         return None
 
+    history = _SESSION_HISTORY.get(session_id, [])
     result = handle_message(
         message=request.message,
-        session_id=request.session_id or str(uuid4()),
+        session_id=session_id,
         employee_id=request.employee_id,
+        history=history,
     )
     if isinstance(result, ChatResponse):
-        return result
-    if isinstance(result, dict):
-        return ChatResponse.model_validate(result)
-    return ChatResponse.model_validate(result.model_dump())
+        response = result
+    elif isinstance(result, dict):
+        response = ChatResponse.model_validate(result)
+    else:
+        response = ChatResponse.model_validate(result.model_dump())
+
+    _SESSION_HISTORY[session_id] = history + [
+        {"role": "user", "content": request.message},
+        {"role": "assistant", "content": response.reply},
+    ]
+    return response
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> ChatResponse:
     session_id = request.session_id or str(uuid4())
     with chat_trace(session_id=session_id, message=request.message) as trace:
-        agent_response = _try_agent_orchestrator(request)
+        agent_response = _try_agent_orchestrator(request, session_id)
         if agent_response is not None:
             trace["metrics"] = {
                 "citation_count": len(agent_response.citations),

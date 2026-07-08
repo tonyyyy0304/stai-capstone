@@ -183,3 +183,14 @@ def test_loop_stops_at_max_iterations(monkeypatch):
     result = orchestrator.run_turn("s7", "loop forever", client=FakeClient(responses))
     assert result.reply == orchestrator.MAX_ITERATIONS_REPLY
     assert len(result.steps) == 1 + config.MAX_REACT_ITERATIONS
+
+
+def test_gemini_api_error_returns_graceful_fallback(monkeypatch):
+    from google.genai.errors import ServerError
+
+    def raise_unavailable(message, history, client=None):
+        raise ServerError(503, {"error": {"message": "high demand"}})
+
+    monkeypatch.setattr(orchestrator, "classify_intent", raise_unavailable)
+    result = orchestrator.run_turn("s8", "how many vacation days do I get?", client=FakeClient([]))
+    assert result.reply == orchestrator.API_ERROR_REPLY

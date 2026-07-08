@@ -1,7 +1,11 @@
 """ReAct agent loop (Module 7: ReAct Agent).
 
-run_turn() is the single entry point the API layer calls:
+run_turn() is the core entry point:
     run_turn(session_id, message, history) -> AgentResponse
+
+handle_message() adapts run_turn() to src/api.py's ChatResponse contract
+(Member 4's _try_agent_orchestrator looks for this exact name) and returns a
+plain dict rather than importing api.py's models, to avoid a circular import.
 
 Per turn: classify_intent() (Module 4: Disambiguation) gates the conversation —
 ambiguous or low-confidence input gets a clarifying question, out-of-scope input
@@ -17,6 +21,7 @@ in by the caller each turn rather than persisted here.
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
@@ -24,6 +29,7 @@ from pydantic import ValidationError
 from src import config
 from src.agent import prompts, tools
 from src.agent.router import classify_intent, needs_clarification
+from src.rag.retriever import RetrievedChunk
 from src.schemas import (
     Citation,
     ComplaintCategory,
@@ -42,6 +48,10 @@ FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
 MAX_ITERATIONS_REPLY = (
     "I wasn't able to finish handling this in the usual number of steps. "
     "I've flagged it for HR to follow up on directly."
+)
+API_ERROR_REPLY = (
+    "I'm having trouble reaching the assistant service right now. Please try again "
+    "in a moment, or reach out to HR directly if this is urgent."
 )
 
 NON_LABOR_LAW_CATEGORIES = tuple(c for c in config.CATEGORIES if c != "labor_law")
@@ -62,8 +72,10 @@ class AgentResponse:
     reply: str
     citations: list[Citation] = field(default_factory=list)
     web_citations: list[WebCitation] = field(default_factory=list)
+    chunks: list[RetrievedChunk] = field(default_factory=list)
     ticket_id: str | None = None
     escalated: bool = False
+    insufficient_context: bool = False
     steps: list[AgentStep] = field(default_factory=list)
 
 
@@ -79,8 +91,10 @@ class _RunState:
 
     citations: list[Citation] = field(default_factory=list)
     web_citations: list[WebCitation] = field(default_factory=list)
+    chunks: list[RetrievedChunk] = field(default_factory=list)
     ticket_id: str | None = None
     escalated: bool = False
+    insufficient_context: bool = False
 
 
 def _check_input_stub(message: str) -> GuardrailResult:
@@ -95,6 +109,8 @@ def run_turn(
     history: list[dict[str, str]] | None = None,
     client=None,
 ) -> AgentResponse:
+    from google.genai.errors import APIError
+
     client = client or config.get_gemini_client()
     history = history or []
     steps: list[AgentStep] = []
@@ -104,34 +120,40 @@ def run_turn(
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
 
-    classification = classify_intent(message, history, client=client)
-    steps.append(
-        AgentStep(
-            thought=f"classified intent={classification.intent.value} "
-            f"confidence={classification.confidence:.2f}",
-            tool=None,
-            tool_args={},
-            observation=classification.model_dump_json(),
-        )
-    )
-
-    if needs_clarification(classification):
-        return AgentResponse(
-            reply=classification.clarifying_question or FALLBACK_CLARIFYING_TEXT,
-            steps=steps,
+    try:
+        classification = classify_intent(message, history, client=client)
+        steps.append(
+            AgentStep(
+                thought=f"classified intent={classification.intent.value} "
+                f"confidence={classification.confidence:.2f}",
+                tool=None,
+                tool_args={},
+                observation=classification.model_dump_json(),
+            )
         )
 
-    if classification.intent == Intent.OUT_OF_SCOPE:
-        return AgentResponse(reply=OUT_OF_SCOPE_REPLY, steps=steps)
+        if needs_clarification(classification):
+            return AgentResponse(
+                reply=classification.clarifying_question or FALLBACK_CLARIFYING_TEXT,
+                steps=steps,
+            )
 
-    reply, run_state = _run_tool_loop(message, history, classification, steps, client)
+        if classification.intent == Intent.OUT_OF_SCOPE:
+            return AgentResponse(reply=OUT_OF_SCOPE_REPLY, steps=steps)
+
+        reply, run_state = _run_tool_loop(message, history, classification, steps, client)
+    except APIError as exc:
+        logger.warning("session=%s gemini_api_error status=%s", session_id, exc.code)
+        return AgentResponse(reply=API_ERROR_REPLY, steps=steps)
 
     return AgentResponse(
         reply=reply,
         citations=run_state.citations,
         web_citations=run_state.web_citations,
+        chunks=run_state.chunks,
         ticket_id=run_state.ticket_id,
         escalated=run_state.escalated,
+        insufficient_context=run_state.insufficient_context,
         steps=steps,
     )
 
@@ -275,6 +297,8 @@ def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
         answer, chunks = tools.search_kb(args["question"], category=args.get("category"))
         run_state.citations = answer.citations
         run_state.web_citations = answer.web_citations
+        run_state.chunks = chunks
+        run_state.insufficient_context = answer.insufficient_context
         return {
             "answer": answer.answer,
             "insufficient_context": answer.insufficient_context,
@@ -285,6 +309,7 @@ def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
         answer = tools.search_web(args["question"], client=client)
         run_state.citations = answer.citations
         run_state.web_citations = answer.web_citations
+        run_state.insufficient_context = answer.insufficient_context
         return {"answer": answer.answer, "insufficient_context": answer.insufficient_context}
 
     if name == "file_complaint":
@@ -313,3 +338,57 @@ def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
         return status or {"error": "no ticket found with that id"}
 
     return {"error": f"unknown tool: {name}"}
+
+
+def _source_dict_from_chunk(chunk: RetrievedChunk) -> dict:
+    preview = " ".join(chunk.text.split())
+    if len(preview) > 360:
+        preview = preview[:357].rstrip() + "..."
+    return {
+        "chunk_id": chunk.chunk_id,
+        "title": chunk.title,
+        "section_path": chunk.section_path,
+        "similarity": round(chunk.similarity, 4),
+        "effective_date": chunk.effective_date,
+        "version": chunk.version,
+        "preview": preview,
+    }
+
+
+def handle_message(
+    message: str,
+    session_id: str | None = None,
+    employee_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
+    client=None,
+) -> dict:
+    """Adapter for src/api.py's ChatResponse contract.
+
+    employee_id is accepted for forward-compatibility with per-employee memory
+    (src/memory/) but not used yet.
+    """
+    session_id = session_id or str(uuid.uuid4())
+    result = run_turn(session_id, message, history=history, client=client)
+
+    actions = []
+    if result.ticket_id:
+        label = "Complaint filed"
+        if result.escalated:
+            label += " and escalated to HR"
+        actions.append(
+            {
+                "type": "complaint_filed",
+                "label": label,
+                "status": "completed",
+                "ticket_id": result.ticket_id,
+            }
+        )
+
+    return {
+        "session_id": session_id,
+        "reply": result.reply,
+        "citations": result.citations,
+        "sources": [_source_dict_from_chunk(chunk) for chunk in result.chunks],
+        "actions": actions,
+        "insufficient_context": result.insufficient_context,
+    }
