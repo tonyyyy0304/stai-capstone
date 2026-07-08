@@ -26,8 +26,9 @@ API_PORT = int(os.environ.get("API_PORT", "8000"))
 API_URL = os.environ.get("API_URL", f"http://localhost:{API_PORT}")
 
 # --- Models ---
-CHAT_MODEL = "gemini-2.5-flash"
-EMBEDDING_MODEL = "gemini-embedding-001"
+EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "gemini")
+OLLAMA_EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text:latest")
+GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 EMBEDDING_DIM = 768  # via output_dimensionality; vectors are re-normalized after truncation
 EMBED_BATCH_SIZE = 64
 
@@ -51,6 +52,16 @@ CATEGORIES = ("leave", "benefits", "payroll", "conduct", "complaints", "onboardi
 # --- Agent (Module 7: ReAct Agent) ---
 MAX_REACT_ITERATIONS = 5
 ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarifying question
+
+# --- LLM backend selection ---
+# "gemini" (default, unchanged behavior) or "ollama" (self-hosted, for testing
+# without Gemini's free-tier daily request cap). Chat/reasoning only — RAG
+# embeddings and grounded-answer generation stay on Gemini regardless.
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma4:e4b")
+GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+ACTIVE_CHAT_MODEL = GEMINI_CHAT_MODEL if LLM_PROVIDER == "gemini" else f"ollama:{OLLAMA_CHAT_MODEL}"
 
 # --- Web search fallback (Module 8: Tool Use) ---
 # search_web is restricted to these domains so it can't become a general-purpose
@@ -94,3 +105,29 @@ def get_tavily_client():
     from tavily import TavilyClient
 
     return TavilyClient(api_key=get_tavily_api_key())
+
+
+def get_llm_client():
+    """Returns the active chat/reasoning client per LLM_PROVIDER: either a
+    real google-genai Client (default) or an OllamaClient adapter exposing
+    the same .models.generate_content(model, contents, config) interface.
+    Callers don't need to know which one they got."""
+    if LLM_PROVIDER == "gemini":
+        return get_gemini_client()
+    if LLM_PROVIDER == "ollama":
+        from src.agent.llm_client import OllamaClient
+
+        return OllamaClient(OLLAMA_URL, OLLAMA_CHAT_MODEL)
+    raise RuntimeError(
+        f"Unknown LLM_PROVIDER={LLM_PROVIDER!r}; expected 'gemini' or 'ollama'."
+    )
+
+
+def get_embedder():
+    if EMBEDDING_PROVIDER == "gemini":
+        from src.rag.embeddings import GeminiEmbedder
+        return GeminiEmbedder()
+    if EMBEDDING_PROVIDER == "ollama":
+        from src.rag.embeddings import OllamaEmbedder
+        return OllamaEmbedder()
+    raise RuntimeError(f"Unknown EMBEDDING_PROVIDER={EMBEDDING_PROVIDER!r}")

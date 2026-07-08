@@ -62,7 +62,7 @@ def search_web(
     if not results:
         return no_web_answer()
 
-    client = client or config.get_gemini_client()
+    client = client or config.get_llm_client()
     shape_response = client.models.generate_content(
         model=config.CHAT_MODEL,
         contents=prompts.WEB_ANSWER_SHAPE_PROMPT.format(
@@ -74,7 +74,7 @@ def search_web(
             temperature=0.0,
         ),
     )
-    usage.record_usage(config.CHAT_MODEL, usage.extract_usage(shape_response), session_id=session_id)
+    usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(shape_response), session_id=session_id)
     answer: GroundedAnswer | None = shape_response.parsed
     if answer is None or answer.insufficient_context:  # fail closed
         return no_web_answer()

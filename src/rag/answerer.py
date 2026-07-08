@@ -59,7 +59,7 @@ def generate_grounded_answer(
 
     if not chunks:
         return no_answer()
-    client = client or config.get_gemini_client()
+    client = client or config.get_llm_client() 
     response = client.models.generate_content(
         model=config.CHAT_MODEL,
         contents=ANSWER_PROMPT.format(context=_format_context(chunks), question=question),

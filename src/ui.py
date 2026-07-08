@@ -27,6 +27,7 @@ if "messages" not in st.session_state:
             "content": "Hi. Ask me about HR policies, or tell me if you need to start a complaint.",
             "citations": [],
             "sources": [],
+            "web_citations": [],
             "actions": [],
         }
     ]
@@ -80,6 +81,12 @@ def _render_assistant_details(message: dict) -> None:
                 )
                 st.caption(source["preview"])
 
+    web_citations = message.get("web_citations") or []
+    if web_citations:
+        with st.expander("Web sources (DOLE/official)", expanded=False):
+            for citation in web_citations:
+                st.markdown(f"- [{citation['title']}]({citation['url']})")
+
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -105,6 +112,7 @@ if prompt:
                     "reply": f"I could not reach the API: {exc}",
                     "citations": [],
                     "sources": [],
+                    "web_citations": [],
                     "actions": [],
                 }
         st.markdown(data["reply"])
@@ -113,6 +121,7 @@ if prompt:
             "content": data["reply"],
             "citations": data.get("citations", []),
             "sources": data.get("sources", []),
+            "web_citations": data.get("web_citations", []),
             "actions": data.get("actions", []),
         }
         _render_assistant_details(assistant_message)

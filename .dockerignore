@@ -2,6 +2,8 @@
 .env
 __pycache__/
 .pytest_cache/
+.venv/
+venv/
 data/chroma/
 data/mlruns/
 data/*.db

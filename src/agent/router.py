@@ -25,7 +25,7 @@ def classify_intent(
 ) -> IntentClassification:
     from google.genai import types
 
-    client = client or config.get_gemini_client()
+    client = client or config.get_llm_client()
     response = client.models.generate_content(
         model=config.CHAT_MODEL,
         contents=prompts.ROUTER_PROMPT.format(
@@ -37,7 +37,7 @@ def classify_intent(
             temperature=0.0,
         ),
     )
-    usage.record_usage(config.CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
+    usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
     result: IntentClassification | None = response.parsed
     if result is None:  # fail closed: ask rather than guess
         return IntentClassification(

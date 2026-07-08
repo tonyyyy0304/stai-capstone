@@ -2,7 +2,7 @@
 
 **Course:** Introduction to Agentic AI (STAI100) — Midterm Capstone (Week 9)
 **Use case type:** Vector DB RAG (HR/Legal domain)
-**LLM provider:** Google Gemini API (primary — chat + embeddings). Evaluating Groq (free-tier Llama/Gemma models) as an alternate chat backend on `feat/react-agent-general`; see §2.1.
+**LLM provider:** Google Gemini API (embeddings, always) + selectable chat/reasoning backend — Gemini (default) or a self-hosted Ollama server, switchable via `LLM_PROVIDER`. See §2.1.
 
 ---
 
@@ -61,26 +61,30 @@ Employees constantly ask HR the same questions (leave policy, benefits, payroll 
 | Monitoring | MLflow (tracing + metrics) | Spec-suggested; autolog support for Gemini calls. |
 | Packaging | Docker (single image, docker-compose optional) | Spec requirement. |
 
-### 2.1 LLM Provider Abstraction (in progress — `feat/react-agent-general`)
+### 2.1 LLM Provider Abstraction — shipped
 
-**Why:** Gemini's free tier caps `gemini-2.5-flash` at **20 `generate_content` requests/day per project**, not per-minute. A single agent turn already costs several requests (1 router classification + up to `MAX_REACT_ITERATIONS`=5 ReAct loop calls + 2 more if `search_web` fires), so the quota was exhausted mid-testing well before the free allowance felt low. §8 already flags this risk ("Gemini rate limits/outage during demo") — it stopped being hypothetical.
+**Why:** Gemini's free tier caps `gemini-2.5-flash` at **20 `generate_content` requests/day per project**, not per-minute. A single agent turn already costs several requests (1 router classification + up to `MAX_REACT_ITERATIONS`=5 ReAct loop calls + 2 more if `search_web` fires), so the quota was exhausted mid-testing repeatedly, well before the free allowance felt low. §8 already flags this risk ("Gemini rate limits/outage during demo") — it stopped being hypothetical.
 
-**Mitigations shipped so far (this session):**
-- `run_turn()` now catches `google.genai.errors.APIError` and degrades to a plain-language "try again" reply instead of a raw 500.
-- `src/agent/usage.py` logs every agent LLM call's token usage to SQLite; `GET /usage` reports today's + all-time request counts and token totals, so the team can see quota consumption before it's a surprise.
-- `search_web` no longer depends on Gemini's `google_search` grounding tool — it now uses **Tavily** for the actual search (domain-restricted via `include_domains`) and a single Gemini `response_schema` call just to shape the results. This removes one of the four Gemini-lock-in points below and cuts the tool from two LLM calls to one. Needs a real `TAVILY_API_KEY` in `.env` (free tier at tavily.com) — fails closed to "I don't know" if missing/invalid, doesn't crash.
+**Mitigations shipped:**
+- `run_turn()` catches `google.genai.errors.APIError` (and now `LLMBackendError`, see below) and degrades to a plain-language "try again" reply instead of a raw 500.
+- `src/agent/usage.py` logs every agent LLM call's token usage to SQLite, tagged by which model actually served it; `GET /usage` reports today's + all-time request counts and token totals per model, so the team can see quota consumption before it's a surprise.
+- `search_web` no longer depends on Gemini's `google_search` grounding tool — it uses **Tavily** for the actual search (domain-restricted via `include_domains`) and one `response_schema` call just to shape the results into a `GroundedAnswer`.
+- **`src/agent/llm_client.py`** — an `OllamaClient` adapter that lets the whole agent (router classification, the ReAct tool-calling loop, and `search_web`'s shaping call) run against a self-hosted Ollama server instead of Gemini, selected via `LLM_PROVIDER=ollama` in `.env` (default stays `gemini`, fully backward compatible). The adapter mimics `google-genai`'s exact `client.models.generate_content(model, contents, config)` call signature and Gemini-shaped response attributes (`.text`, `.parsed`, `.candidates[0].content.parts[*].function_call`, `.usage_metadata`), so **router.py, orchestrator.py, and tools.py needed almost no changes** — the adapter conforms to what they already read. Verified live end-to-end against a real Ollama VM (`gemma4:e4b`): router classification, `search_kb` tool-calling, multi-field `file_complaint` tool-calling with correct deterministic escalation, and `search_web`'s Tavily+shaping path all work correctly.
 
-**What's being explored:** Groq as an alternate chat backend, since its free tier hosts open-weight models (Llama, Gemma) and is generally more generous than Gemini's 20/day cap. This is **not a drop-in swap** — it requires a real provider abstraction, because the agent still leans on a few Gemini-specific features:
+**Explicitly out of scope, unchanged:** RAG embeddings (`gemini-embedding-001`, `src/rag/embeddings.py`) and RAG grounded-answer generation (`src/rag/answerer.py`) always stay on Gemini regardless of `LLM_PROVIDER` — those weren't touched.
 
-| Feature | Where used | Groq/OpenAI-compatible equivalent |
+| Feature | Where used | Status on Ollama |
 | --- | --- | --- |
-| `response_schema` typed output | `router.py`, `orchestrator.py`, `tools.py` | Different mechanism (JSON-schema `format` param) |
-| `types.FunctionDeclaration` tool calling | `orchestrator.py` ReAct loop | Different schema shape, some models only |
-| `gemini-embedding-001` | `src/rag/embeddings.py` | Not served by Groq — RAG embeddings stay on Gemini regardless of chat backend |
+| `response_schema` typed output | `router.py`, `orchestrator.py` (tool args), `tools.py` | Resolved — adapter translates to Ollama's `format=<json schema>` |
+| Tool/function calling | `orchestrator.py` ReAct loop | Resolved — adapter translates `types.FunctionDeclaration` to Ollama's OpenAI-style `tools=`, and translates responses back into Gemini-shaped `function_call` parts |
+| `google_search` grounding tool | `tools.search_web` | N/A — already resolved via Tavily, provider-independent |
+| `gemini-embedding-001` | `src/rag/embeddings.py` | Out of scope — always Gemini |
 
-~~`google_search` grounding tool~~ — resolved: `search_web` now uses Tavily instead, so this is no longer Gemini-specific.
+**Known limitation:** small local models (`gemma4:e2b`/`e4b`) are less reliable at strict JSON-schema conformance and tool-calling than Gemini, especially on nested schemas like `GroundedAnswer`. This is a **quality** risk, not a correctness one — the existing fail-closed paths (`.parsed = None` → router asks a clarifying question, `search_web` returns "I don't know") already bound the blast radius; expect more clarifying questions or `MAX_REACT_ITERATIONS` fallbacks on Ollama than on Gemini, never a crash.
 
-`TokenUsage` (in `src/schemas.py`) is already named provider-agnostically (`prompt_tokens`/`completion_tokens`/`total_tokens`, not Gemini's `*_token_count` field names) so usage tracking survives whichever backend ends up serving chat.
+**Operational note:** the Ollama VM used for verification (`OLLAMA_URL` in the user's local `.env`, not committed) was found reachable with **no authentication** — anyone who finds the port can use it, including its `:cloud`-suffixed models which proxy to billed cloud credits. Worth locking down (firewall to known IPs, reverse proxy with auth, or VPN-only binding) before this becomes a default path for a live demo.
+
+`TokenUsage` (in `src/schemas.py`) is named provider-agnostically (`prompt_tokens`/`completion_tokens`/`total_tokens`, not Gemini's `*_token_count` field names), which is why `usage.py` needed zero changes to support the new backend.
 
 ---
 
@@ -155,8 +159,8 @@ Each chunk carries:
 | 4 | **Disambiguation** | Router emits `confidence` + `intent` (`faq`\|`complaint`\|`ambiguous`\|`out_of_scope`); low confidence or ambiguous → ask one clarifying question before any tool runs; out-of-scope → declines without calling a tool. Implemented in `src/agent/router.py`. |
 | 5 | **Memory** | Short-term: not yet real — `api.py` currently threads conversation history via an in-process, non-persistent dict keyed by `session_id` (stopgap, lost on restart). Long-term: not yet built. Both still owned by whoever has Memory. |
 | 6 | **Guardrails** | Input/output checks (`src/guardrails/`) not yet built — stubbed pass-through in `orchestrator.py`. Escalation itself is deterministic and already shipped: `tools.should_escalate(category)` fires for harassment/discrimination/safety/legal, is never LLM-callable, and its result is fed back to the model as a tool observation so the reply can state HR was notified. **Note:** this is a simpler, conversational version of what §6.1 below describes (no consent gate, no form UI, no danger scan yet) — see the flag at the top of §6.1. |
-| 7 | **ReAct Agent** | Real Gemini function-calling loop in `src/agent/orchestrator.py`: model picks a tool → `tools.py` executes it → result fed back as an observation → repeat, capped at `MAX_REACT_ITERATIONS`=5. Falls back to a plain-language message on hitting the cap or on a Gemini `APIError` (rate limit/outage) instead of crashing. |
-| 8 | **Tool Use** | Model-callable tools: `search_kb` (internal RAG), `search_web` (DOLE/labor-law fallback: Tavily search domain-restricted to `dole.gov.ph`/`officialgazette.gov.ph`/`lawphil.net` + one Gemini `response_schema` call to shape results), `file_complaint`, `get_ticket_status`. `escalate_to_hr` is deliberately **not** model-callable — see Module 6. |
+| 7 | **ReAct Agent** | Real function-calling loop in `src/agent/orchestrator.py`: model picks a tool → `tools.py` executes it → result fed back as an observation → repeat, capped at `MAX_REACT_ITERATIONS`=5. Falls back to a plain-language message on hitting the cap or on an LLM-backend error (`APIError`/`LLMBackendError` — rate limit, outage, or Ollama connectivity) instead of crashing. Runs on either Gemini or Ollama via `LLM_PROVIDER` (§2.1) — same loop code either way. |
+| 8 | **Tool Use** | Model-callable tools: `search_kb` (internal RAG), `search_web` (DOLE/labor-law fallback: Tavily search domain-restricted to `dole.gov.ph`/`officialgazette.gov.ph`/`lawphil.net` + one `response_schema` call to shape results), `file_complaint`, `get_ticket_status`. `escalate_to_hr` is deliberately **not** model-callable — see Module 6. |
 | 9 | **Chat UI** | Streamlit chat (`src/ui.py`) with session state, citation/source expanders, complaint action cards. Built; talks to the API, not to Gemini directly. |
 | 10 | **API Endpoint** | FastAPI (`src/api.py`): `POST /chat` (session_id, message → reply, citations, sources, actions, token_usage), `GET /tickets/{id}`, `GET /usage` (today's + all-time agent token/request usage), `GET /health`. Built. |
 | 11 | **LLMOps Monitoring** | MLflow tracing per request (`src/monitoring.py` + `src/api.py`): latency, citation/source/action counts, and now `prompt_tokens`/`completion_tokens`/`total_tokens` (this session — was previously untracked entirely). **Still missing:** tool-call sequence and guardrail triggers aren't in MLflow yet (the ReAct loop's per-step trace, `orchestrator.AgentStep`, exists but is discarded before it reaches the API response or MLflow). |
@@ -199,6 +203,7 @@ stai-capstone/
 │   │   ├── router.py          # intent classification + disambiguation (built)
 │   │   ├── tools.py           # search_kb, search_web, file_complaint, get_ticket_status, escalate_to_hr (built)
 │   │   ├── usage.py           # token usage tracking, SQLite-backed (built)
+│   │   ├── llm_client.py      # Ollama backend adapter (built, §2.1)
 │   │   └── prompts.py         # versioned prompt variants
 │   ├── rag/
 │   │   ├── chunking.py
@@ -325,7 +330,8 @@ Document failure modes found (e.g., retrieval misses on table data, router confu
 ## 8. Key Risks & Mitigations
 
 - **Demo failure during presentation** → run fully local (Chroma + SQLite), record a fallback video, disclose upfront per spec.
-- **Gemini rate limits/outage during demo** → **materialized during development**, not just a theoretical risk: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing (each agent turn costs several requests). Mitigations: `run_turn()` now catches `APIError` and degrades gracefully instead of crashing; `GET /usage` gives visibility into consumption; evaluating Groq as an alternate backend for headroom (§2.1). Still keep: cache golden-path responses, keep the fallback video, disclose upfront.
+- **Gemini rate limits/outage during demo** → **materialized during development**, not just a theoretical risk: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing repeatedly (each agent turn costs several requests). Mitigations: `run_turn()` catches `APIError`/`LLMBackendError` and degrades gracefully instead of crashing; `GET /usage` gives visibility into consumption per model; `LLM_PROVIDER=ollama` gives real headroom by moving chat/reasoning off Gemini entirely (§2.1, verified working end-to-end). Still keep: cache golden-path responses, keep the fallback video, disclose upfront. New risk this introduces: the verified Ollama VM is currently reachable with no authentication — don't rely on it as the live-demo path without locking it down first (§2.1 operational note).
+- **Ollama backend quality/availability for a live demo** → small local models are less reliable at strict tool-calling/schema conformance than Gemini (§2.1), and a remote self-hosted VM has none of Gemini's managed-service reliability guarantees. Treat `LLM_PROVIDER=ollama` as a development/testing escape valve, not the default for the actual presentation, unless it's been dry-run tested end-to-end beforehand.
 - **Hallucinated policy answers** → similarity floor + citation verification + "I don't know" path; measured in evals.
 - **Sensitive complaints mishandled** → hard-coded escalation rules (not LLM-discretionary) for harassment/safety/legal categories. Currently the simple category-based version (§6.1 status flag) — confirm with whoever owns Guardrails whether the fuller form-driven design in §6.1 is still the target before the demo.
 - **Scope creep** → milestones 1–5 are the MVP; graph memory, reranking, multi-language are explicitly out of scope.

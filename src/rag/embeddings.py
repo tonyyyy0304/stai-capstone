@@ -6,9 +6,10 @@ we re-normalize before storing/querying (cosine space in Chroma).
 """
 
 import math
+from typing import Protocol
 
 from src import config
-
+from ollama import Client
 
 def _normalize(vector: list[float]) -> list[float]:
     norm = math.sqrt(sum(v * v for v in vector))
@@ -16,6 +17,13 @@ def _normalize(vector: list[float]) -> list[float]:
         return vector
     return [v / norm for v in vector]
 
+
+class Embedder(Protocol):
+    """Structural type both embedders satisfy — lets Retriever/ingest.py accept
+    either without importing a concrete class."""
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+    def embed_query(self, text: str) -> list[float]: ...
 
 class GeminiEmbedder:
     def __init__(self, client=None):
@@ -49,3 +57,42 @@ class GeminiEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed([text], task_type="RETRIEVAL_QUERY")[0]
+
+
+
+class OllamaEmbedder:
+    def __init__(self, base_url: str | None = None, model: str | None = None):
+        self._base_url = base_url or config.OLLAMA_URL
+        self._model = model or config.OLLAMA_EMBEDDING_MODEL
+        self._client = None  # created lazily so tests can inject a fake
+
+    @property
+    def client(self):
+        if self._client is None:
+            from ollama import Client
+
+            self._client = Client(host=self._base_url)
+        return self._client
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        from ollama import ResponseError
+
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), config.EMBED_BATCH_SIZE):
+            batch = texts[start : start + config.EMBED_BATCH_SIZE]
+            try:
+                response = self.client.embed(model=self._model, input=batch)
+            except ResponseError as exc:
+                from src.agent.llm_client import LLMBackendError
+
+                raise LLMBackendError(
+                    f"Ollama embed failed: {exc}", code=getattr(exc, "status_code", 503)
+                ) from exc
+            vectors.extend(response.embeddings)
+        return vectors
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text])[0]

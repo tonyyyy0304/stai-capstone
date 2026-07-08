@@ -114,7 +114,9 @@ def run_turn(
 ) -> AgentResponse:
     from google.genai.errors import APIError
 
-    client = client or config.get_gemini_client()
+    from src.agent.llm_client import LLMBackendError
+
+    client = client or config.get_llm_client()
     history = history or []
     steps: list[AgentStep] = []
     turn_started_at = datetime.now(timezone.utc)
@@ -153,8 +155,8 @@ def run_turn(
         reply, run_state = _run_tool_loop(
             message, history, classification, steps, client, session_id
         )
-    except APIError as exc:
-        logger.warning("session=%s gemini_api_error status=%s", session_id, exc.code)
+    except (APIError, LLMBackendError) as exc:
+        logger.warning("session=%s llm_api_error status=%s", session_id, exc.code)
         return AgentResponse(
             reply=API_ERROR_REPLY,
             steps=steps,
@@ -209,7 +211,7 @@ def _run_tool_loop(
                 temperature=0.2,
             ),
         )
-        usage.record_usage(config.CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
+        usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
         candidate_content = response.candidates[0].content
         function_calls = [
             part.function_call for part in candidate_content.parts if part.function_call
@@ -420,6 +422,7 @@ def handle_message(
         "reply": result.reply,
         "citations": result.citations,
         "sources": [_source_dict_from_chunk(chunk) for chunk in result.chunks],
+        "web_citations": result.web_citations,
         "actions": actions,
         "insufficient_context": result.insufficient_context,
         "token_usage": result.token_usage,

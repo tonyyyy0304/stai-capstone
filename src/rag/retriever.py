@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import chromadb
 
 from src import config
-from src.rag.embeddings import GeminiEmbedder
+from src.rag.embeddings import Embedder
 
 
 @dataclass
@@ -61,8 +61,8 @@ def apply_floor(
 
 
 class Retriever:
-    def __init__(self, embedder: GeminiEmbedder | None = None, collection=None):
-        self.embedder = embedder or GeminiEmbedder()
+    def __init__(self, embedder: Embedder | None = None, collection=None):
+        self.embedder = embedder or config.get_embedder()
         self.collection = collection if collection is not None else get_collection()
 
     def retrieve(

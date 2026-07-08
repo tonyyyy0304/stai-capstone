@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src import config
 from src.rag.chunking import Chunk, chunk_document
-from src.rag.embeddings import GeminiEmbedder
+from src.rag.embeddings import Embedder
 from src.rag.retriever import get_collection
 
 SUPPORTED_SUFFIXES = (".md", ".pdf", ".docx")
@@ -115,7 +115,7 @@ def plan_changes(current_hashes: dict[str, str], manifest: dict, force: bool = F
 
 # --- Stage 4: embed & index ---
 
-def index_chunks(collection, embedder: GeminiEmbedder, doc_id: str, chunks: list[Chunk]) -> None:
+def index_chunks(collection, embedder: Embedder, doc_id: str, chunks: list[Chunk]) -> None:
     """Replace a document's chunks in Chroma (delete old, upsert new)."""
     collection.delete(where={"doc_id": {"$eq": doc_id}})
     if not chunks:
@@ -146,7 +146,7 @@ def run_ingestion(force: bool = False) -> dict:
 
     config.PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     collection = get_collection()
-    embedder = GeminiEmbedder()
+    embedder = config.get_embedder()
     files_entry = dict(manifest.get("files", {}))
 
     for name in plan.deleted:

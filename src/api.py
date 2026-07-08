@@ -22,7 +22,7 @@ from src import config
 from src.monitoring import chat_trace, configure_mlflow
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, TokenUsage
+from src.schemas import Citation, TokenUsage, WebCitation
 
 
 @asynccontextmanager
@@ -63,6 +63,7 @@ class ChatResponse(BaseModel):
     reply: str
     citations: list[Citation] = Field(default_factory=list)
     sources: list[SourceResponse] = Field(default_factory=list)
+    web_citations: list[WebCitation] = Field(default_factory=list)
     actions: list[ActionResponse] = Field(default_factory=list)
     insufficient_context: bool = False
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
@@ -80,8 +81,12 @@ class UsageResponse(BaseModel):
     today: dict[str, int]
     all_time: dict[str, int]
     note: str = (
-        "Covers the agent's own Gemini calls only (router, ReAct loop, search_web). "
-        "Does not include the plain-RAG fallback path or ingestion embedding calls."
+        "Covers the agent's own LLM calls only (router, ReAct loop, search_web), "
+        "combined across whichever backend(s) LLM_PROVIDER has pointed at over "
+        "time — Gemini and Ollama usage are logged with different model labels in "
+        "the underlying token_usage table but summed together here. Does not "
+        "include the plain-RAG fallback path or ingestion embedding calls, which "
+        "always use Gemini."
     )
 
 
@@ -171,6 +176,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             trace["metrics"] = {
                 "citation_count": len(agent_response.citations),
                 "source_count": len(agent_response.sources),
+                "web_citation_count": len(agent_response.web_citations),
                 "action_count": len(agent_response.actions),
                 "prompt_tokens": agent_response.token_usage.prompt_tokens,
                 "completion_tokens": agent_response.token_usage.completion_tokens,

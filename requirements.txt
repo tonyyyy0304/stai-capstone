@@ -1,5 +1,6 @@
 # LLM + embeddings
 google-genai==1.21.1
+ollama==0.6.0
 
 # Web search (search_web tool — provider-agnostic, doesn't depend on Gemini grounding)
 tavily-python==0.7.26
