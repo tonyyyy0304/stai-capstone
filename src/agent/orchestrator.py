@@ -6,6 +6,9 @@ run_turn() is the core entry point:
 handle_message() adapts run_turn() to src/api.py's ChatResponse contract
 (Member 4's _try_agent_orchestrator looks for this exact name) and returns a
 plain dict rather than importing api.py's models, to avoid a circular import.
+It's also where session/long-term memory (src/memory/) is wired in — run_turn()
+itself stays a pure function over an explicit history list, so existing tests
+that call it directly don't gain surprise DB side effects.
 
 Per turn: classify_intent() (Module 4: Disambiguation) gates the conversation —
 ambiguous or low-confidence input gets a clarifying question, out-of-scope input
@@ -14,9 +17,10 @@ Gemini picks a tool, tools.py executes it, the result is fed back as an
 observation, and the model repeats until it answers in plain text or
 MAX_REACT_ITERATIONS is hit.
 
-Guardrail and memory hooks are stubbed pass-through: input/output checks belong
-in src/guardrails/, session/long-term memory in src/memory/. history is passed
-in by the caller each turn rather than persisted here.
+Guardrails (Module 6, src/guardrails/) run at both ends of run_turn(): input
+checks (prompt-injection heuristics, toxicity) gate entry before the router
+even runs; an output grounding check re-verifies citations before the final
+AgentResponse is returned.
 """
 
 import json
@@ -30,11 +34,15 @@ from pydantic import ValidationError
 from src import config
 from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
+from src.guardrails.grounding import check_grounding
+from src.guardrails.input_checks import check_topic_and_injection
+from src.guardrails.toxicity import check_toxicity
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
     Citation,
     ComplaintCategory,
     ComplaintTicket,
+    GuardrailResult,
     Intent,
     IntentClassification,
     Severity,
@@ -83,12 +91,6 @@ class AgentResponse:
 
 
 @dataclass
-class GuardrailResult:
-    allowed: bool
-    reason: str = ""
-
-
-@dataclass
 class _RunState:
     """Side effects collected across ReAct iterations for the final AgentResponse."""
 
@@ -100,10 +102,17 @@ class _RunState:
     insufficient_context: bool = False
 
 
-def _check_input_stub(message: str) -> GuardrailResult:
-    """Pass-through until src/guardrails/input_checks.py ships: topic filter,
-    prompt-injection heuristics, PII detection."""
-    return GuardrailResult(allowed=True)
+def _check_input(message: str) -> GuardrailResult:
+    """Deterministic, no-LLM-call input guardrails: prompt-injection
+    heuristics and a small toxicity wordlist. Topic restriction's
+    authoritative enforcement is the intent router's out_of_scope
+    classification further down in run_turn() (already a hard block) — see
+    src/guardrails/input_checks.py's docstring for why this doesn't
+    duplicate that with keyword topic-matching."""
+    result = check_topic_and_injection(message)
+    if not result.allowed:
+        return result
+    return check_toxicity(message)
 
 
 def run_turn(
@@ -122,7 +131,7 @@ def run_turn(
     turn_started_at = datetime.now(timezone.utc)
 
     logger.info("session=%s turn_start", session_id)
-    guardrail_result = _check_input_stub(message)
+    guardrail_result = _check_input(message)
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
 
@@ -163,14 +172,21 @@ def run_turn(
             token_usage=_turn_token_usage(turn_started_at, session_id),
         )
 
+    # Output guardrail: hard-verify (not just prompt-instruct) that every
+    # citation actually maps to a chunk retrieved this turn, before the reply
+    # goes back to the employee.
+    verified_citations, insufficient_context = check_grounding(
+        run_state.citations, run_state.chunks, run_state.insufficient_context
+    )
+
     return AgentResponse(
         reply=reply,
-        citations=run_state.citations,
+        citations=verified_citations,
         web_citations=run_state.web_citations,
         chunks=run_state.chunks,
         ticket_id=run_state.ticket_id,
         escalated=run_state.escalated,
-        insufficient_context=run_state.insufficient_context,
+        insufficient_context=insufficient_context,
         token_usage=_turn_token_usage(turn_started_at, session_id),
         steps=steps,
     )
@@ -395,13 +411,32 @@ def handle_message(
     history: list[dict[str, str]] | None = None,
     client=None,
 ) -> dict:
-    """Adapter for src/api.py's ChatResponse contract.
+    """Adapter for src/api.py's ChatResponse contract. Also where session and
+    long-term memory (src/memory/) are wired in — run_turn() itself stays a
+    pure function over an explicit history list.
 
-    employee_id is accepted for forward-compatibility with per-employee memory
-    (src/memory/) but not used yet.
+    If `history` is passed explicitly (tests, callers that manage their own
+    context), it's used as-is and no memory read/write happens — matches the
+    prior behavior so existing callers aren't surprised by new DB writes.
+    Otherwise history is loaded from src/memory/persistent.get_context()
+    (trimmed recent turns + rolling summary, seeded from the employee's most
+    recent summary on a brand-new session), and the turn is appended back
+    afterward.
     """
+    from src.memory import persistent as memory_persistent
+    from src.memory import session as memory_session
+
     session_id = session_id or str(uuid.uuid4())
+    manage_memory = history is None
+    if manage_memory:
+        history = memory_persistent.get_context(session_id, employee_id)
+
     result = run_turn(session_id, message, history=history, client=client)
+
+    if manage_memory:
+        memory_session.append_turn(session_id, "user", message)
+        memory_session.append_turn(session_id, "assistant", result.reply)
+        memory_persistent.maybe_update_summary(session_id, employee_id, client=client)
 
     actions = []
     if result.ticket_id:

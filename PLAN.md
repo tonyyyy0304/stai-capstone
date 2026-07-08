@@ -2,7 +2,7 @@
 
 **Course:** Introduction to Agentic AI (STAI100) — Midterm Capstone (Week 9)
 **Use case type:** Vector DB RAG (HR/Legal domain)
-**LLM provider:** Google Gemini API (embeddings, always) + selectable chat/reasoning backend — Gemini (default) or a self-hosted Ollama server, switchable via `LLM_PROVIDER`. See §2.1.
+**LLM provider:** fully switchable, chat *and* embeddings independently — Gemini (default for both) or a self-hosted Ollama server, via `LLM_PROVIDER` and `EMBEDDING_PROVIDER`. See §2.1.
 
 ---
 
@@ -40,8 +40,8 @@ Employees constantly ask HR the same questions (leave policy, benefits, payroll 
                │               │                │              │
         ┌──────▼──────┐ ┌──────▼───────┐ ┌──────▼───────┐ ┌────▼─────────┐
         │  RAG tool   │ │ Complaint    │ │  Escalation  │ │   Memory     │
-        │  (ChromaDB  │ │ filing tool  │ │  tool (email │ │  session +   │
-        │  + Gemini   │ │ (SQLite      │ │  /flag to    │ │  persistent  │
+        │  (Chroma +  │ │ filing tool  │ │  tool (email │ │  session +   │
+        │  switchable │ │ (SQLite      │ │  /flag to    │ │  persistent  │
         │  embeddings)│ │  tickets)    │ │  HR human)   │ │  (SQLite)    │
         └─────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
 
@@ -52,8 +52,8 @@ Employees constantly ask HR the same questions (leave policy, benefits, payroll 
 
 | Layer | Choice | Rationale |
 | --- | --- | --- |
-| LLM | Gemini 2.5 Flash (`gemini-2.5-flash`) via `google-genai` SDK | Fast + cheap for chat; supports function calling and JSON schema output. Use `gemini-2.5-pro` only if Flash quality falls short in evals. |
-| Embeddings | `gemini-embedding-001` (768-dim via `output_dimensionality`) | Same provider, one API key; 768 dims keeps Chroma small with negligible quality loss. |
+| LLM | `LLM_PROVIDER` switchable: Gemini 2.5 Flash (`gemini-2.5-flash`, default) via `google-genai` SDK, or a self-hosted Ollama model (default `gemma4:e4b`) via `src/agent/llm_client.py`'s adapter | Fast + cheap for chat; supports function calling and JSON schema output. Ollama option exists for quota-free testing — see §2.1. |
+| Embeddings | `EMBEDDING_PROVIDER` switchable: `gemini-embedding-001` (768-dim via `output_dimensionality`, default) or Ollama's `nomic-embed-text` (native 768-dim) | Independent of the chat provider — you can mix, e.g. Gemini chat + Ollama embeddings. Switching requires re-running `scripts/ingest.py`; the two embedding spaces aren't compatible. |
 | Vector store | ChromaDB (persistent, local) | Zero-ops, metadata filtering, runs inside the container. |
 | Structured data | SQLite | Complaint tickets + long-term memory; no server needed. |
 | API | FastAPI | REST endpoint requirement. |
@@ -71,20 +71,31 @@ Employees constantly ask HR the same questions (leave policy, benefits, payroll 
 - `search_web` no longer depends on Gemini's `google_search` grounding tool — it uses **Tavily** for the actual search (domain-restricted via `include_domains`) and one `response_schema` call just to shape the results into a `GroundedAnswer`.
 - **`src/agent/llm_client.py`** — an `OllamaClient` adapter that lets the whole agent (router classification, the ReAct tool-calling loop, and `search_web`'s shaping call) run against a self-hosted Ollama server instead of Gemini, selected via `LLM_PROVIDER=ollama` in `.env` (default stays `gemini`, fully backward compatible). The adapter mimics `google-genai`'s exact `client.models.generate_content(model, contents, config)` call signature and Gemini-shaped response attributes (`.text`, `.parsed`, `.candidates[0].content.parts[*].function_call`, `.usage_metadata`), so **router.py, orchestrator.py, and tools.py needed almost no changes** — the adapter conforms to what they already read. Verified live end-to-end against a real Ollama VM (`gemma4:e4b`): router classification, `search_kb` tool-calling, multi-field `file_complaint` tool-calling with correct deterministic escalation, and `search_web`'s Tavily+shaping path all work correctly.
 
-**Explicitly out of scope, unchanged:** RAG embeddings (`gemini-embedding-001`, `src/rag/embeddings.py`) and RAG grounded-answer generation (`src/rag/answerer.py`) always stay on Gemini regardless of `LLM_PROVIDER` — those weren't touched.
+**Embeddings are switchable too, independently of chat** — this expanded beyond the original scope of this section. `EMBEDDING_PROVIDER` (`gemini` default or `ollama`) selects between `GeminiEmbedder` and a new `OllamaEmbedder` (`src/rag/embeddings.py`, using Ollama's `nomic-embed-text`, native 768-dim, no truncation/re-normalization needed unlike Gemini's). `config.get_embedder()` dispatches between them; `scripts/ingest.py` and `src/rag/retriever.py` both call it rather than hardcoding a class. **`src/rag/answerer.py`'s grounded-answer generation also now routes through `config.get_llm_client()`** (previously hardcoded to Gemini) — so with `LLM_PROVIDER=ollama`, RAG answer synthesis runs on Ollama too, not just the agent's own reasoning. Net effect: with both `LLM_PROVIDER=ollama` and `EMBEDDING_PROVIDER=ollama` set, **the app makes zero Gemini calls** during normal operation.
+
+Config additions backing this: `GEMINI_CHAT_MODEL`/`OLLAMA_CHAT_MODEL`/`ACTIVE_CHAT_MODEL` and `GEMINI_EMBEDDING_MODEL`/`OLLAMA_EMBEDDING_MODEL`/`ACTIVE_EMBEDDING_MODEL` (the old bare `CHAT_MODEL` constant no longer exists — it split into a real/resolved pair per concern, chat and embeddings separately).
+
+**Switching `EMBEDDING_PROVIDER` requires re-running `scripts/ingest.py` against a cleared index.** Gemini and Ollama embeddings are different vector spaces (both happen to be 768-dim, which masks the incompatibility instead of erroring on it) — mixing them doesn't crash, it silently returns wrong/garbage similarity rankings. Clear `data/chroma/` and `data/index_manifest.json` and re-ingest whenever `EMBEDDING_PROVIDER` changes.
 
 | Feature | Where used | Status on Ollama |
 | --- | --- | --- |
-| `response_schema` typed output | `router.py`, `orchestrator.py` (tool args), `tools.py` | Resolved — adapter translates to Ollama's `format=<json schema>` |
+| `response_schema` typed output | `router.py`, `orchestrator.py` (tool args), `tools.py`, `answerer.py` | Resolved — adapter translates to Ollama's `format=<json schema>` |
 | Tool/function calling | `orchestrator.py` ReAct loop | Resolved — adapter translates `types.FunctionDeclaration` to Ollama's OpenAI-style `tools=`, and translates responses back into Gemini-shaped `function_call` parts |
 | `google_search` grounding tool | `tools.search_web` | N/A — already resolved via Tavily, provider-independent |
-| `gemini-embedding-001` | `src/rag/embeddings.py` | Out of scope — always Gemini |
+| `gemini-embedding-001` | `src/rag/embeddings.py` | Resolved — `EMBEDDING_PROVIDER=ollama` uses `nomic-embed-text` via `OllamaEmbedder` |
 
-**Known limitation:** small local models (`gemma4:e2b`/`e4b`) are less reliable at strict JSON-schema conformance and tool-calling than Gemini, especially on nested schemas like `GroundedAnswer`. This is a **quality** risk, not a correctness one — the existing fail-closed paths (`.parsed = None` → router asks a clarifying question, `search_web` returns "I don't know") already bound the blast radius; expect more clarifying questions or `MAX_REACT_ITERATIONS` fallbacks on Ollama than on Gemini, never a crash.
+**Known limitations:** small local models (`gemma4:e2b`/`e4b`) are less reliable at strict JSON-schema conformance and tool-calling than Gemini, especially on nested schemas like `GroundedAnswer`. This is a **quality** risk, not a correctness one — the existing fail-closed paths (`.parsed = None` → router asks a clarifying question, `search_web`/RAG return "I don't know") already bound the blast radius; expect more clarifying questions or `MAX_REACT_ITERATIONS` fallbacks on Ollama than on Gemini, never a crash. Retrieval quality with `nomic-embed-text` has been spot-checked (0.6–0.77 cosine similarity, correct top results on test queries) but not run through the golden-set hit-rate@k eval the way Gemini embeddings were.
 
 **Operational note:** the Ollama VM used for verification (`OLLAMA_URL` in the user's local `.env`, not committed) was found reachable with **no authentication** — anyone who finds the port can use it, including its `:cloud`-suffixed models which proxy to billed cloud credits. Worth locking down (firewall to known IPs, reverse proxy with auth, or VPN-only binding) before this becomes a default path for a live demo.
 
 `TokenUsage` (in `src/schemas.py`) is named provider-agnostically (`prompt_tokens`/`completion_tokens`/`total_tokens`, not Gemini's `*_token_count` field names), which is why `usage.py` needed zero changes to support the new backend.
+
+**Bugs found and fixed while wiring this up** (worth knowing if similar patterns get copied elsewhere):
+- `src/monitoring.py` referenced the old `config.CHAT_MODEL` name after it was split into `GEMINI_CHAT_MODEL`/`ACTIVE_CHAT_MODEL`. Since `chat_trace()` runs at the very start of every `/chat` request, this crashed **every single request** with `AttributeError` — surfaced as "monitoring not working," but the actual bug was upstream of monitoring, not in it.
+- A duplicated-prefix typo, `config.ACTIVE_ACTIVE_CHAT_MODEL` (doesn't exist), was introduced in `router.py`, `orchestrator.py`, and `tools.py` — crashed usage tracking immediately after every successful LLM call.
+- `src/rag/embeddings.py` had an unconditional top-level `from ollama import Client` — and unused, since `OllamaEmbedder` does its own lazy import already. This broke importing the embeddings module (and therefore most of the app) whenever the `ollama` pip package wasn't installed, *even on the pure-Gemini path*. Removed; the project convention is to lazy-import provider SDKs inside functions specifically to avoid this.
+- Local (host) ingestion and containerized (Docker) ingestion sharing the same bind-mounted `data/chroma/` hit a recurring cross-platform chromadb incompatibility (Rust panic, `range start index out of range`) — happened three separate times this session. Not a code bug, an operational one: **don't run `python scripts/ingest.py` on the host and `docker compose up` against the same `data/chroma/` interchangeably** — pick one environment per index, or clear and re-ingest when switching.
+- `answer_question()` (`src/rag/answerer.py`) was returning retrieved chunks to the caller even when the grounded-answer step decided it couldn't actually answer from them (`insufficient_context=True`) — the UI would show "Retrieved policy excerpts" right next to an "I don't know" reply, which read as contradictory. Fixed: chunks are withheld when the answer is insufficient.
 
 ---
 
@@ -133,8 +144,8 @@ Each chunk carries:
 | `token_count` | 387 | context budget control |
 
 **Stage 4 — Embed & index**
-- Embed with `gemini-embedding-001`, `task_type="RETRIEVAL_DOCUMENT"`, `output_dimensionality=768`, in batches.
-- Upsert into a persistent ChromaDB collection keyed by `chunk_id` (re-ingestion is idempotent; changed docs are re-embedded, deleted docs removed).
+- Embed via `config.get_embedder()` (§2.1): Gemini's `gemini-embedding-001` (`task_type="RETRIEVAL_DOCUMENT"`, `output_dimensionality=768`, default) or Ollama's `nomic-embed-text` (native 768-dim) depending on `EMBEDDING_PROVIDER`, in batches.
+- Upsert into a persistent ChromaDB collection keyed by `chunk_id` (re-ingestion is idempotent; changed docs are re-embedded, deleted docs removed). Switching `EMBEDDING_PROVIDER` requires clearing the index and re-ingesting from scratch — the two embedding spaces aren't compatible even though both happen to be 768-dim.
 - Write an ingestion manifest (`data/index_manifest.json`): file hashes, chunk counts, embedding model + date — so we can detect stale indexes and report corpus stats in the write-up.
 
 **Stage 5 — Retrieval (query time)**
@@ -153,12 +164,12 @@ Each chunk carries:
 
 | # | Module | Implementation in this project |
 | --- | --- | --- |
-| 1 | **RAG** | Pipeline above; ChromaDB + Gemini embeddings; cited, grounded answers |
+| 1 | **RAG** | Pipeline above; ChromaDB + switchable embeddings (Gemini or Ollama, §2.1); cited, grounded answers |
 | 2 | **Prompt Engineering** | System prompt with role/scope/refusal rules; few-shot examples for intent routing; ablation across ≥3 prompt variants measured on the golden set |
 | 3 | **Structured Outputs** | Pydantic schemas via Gemini `response_schema`: `IntentClassification`, `ComplaintTicket` (category, severity, parties, description, desired outcome), `GroundedAnswer` (answer + citations) |
 | 4 | **Disambiguation** | Router emits `confidence` + `intent` (`faq`\|`complaint`\|`ambiguous`\|`out_of_scope`); low confidence or ambiguous → ask one clarifying question before any tool runs; out-of-scope → declines without calling a tool. Implemented in `src/agent/router.py`. |
-| 5 | **Memory** | Short-term: not yet real — `api.py` currently threads conversation history via an in-process, non-persistent dict keyed by `session_id` (stopgap, lost on restart). Long-term: not yet built. Both still owned by whoever has Memory. |
-| 6 | **Guardrails** | Input/output checks (`src/guardrails/`) not yet built — stubbed pass-through in `orchestrator.py`. Escalation itself is deterministic and already shipped: `tools.should_escalate(category)` fires for harassment/discrimination/safety/legal, is never LLM-callable, and its result is fed back to the model as a tool observation so the reply can state HR was notified. **Note:** this is a simpler, conversational version of what §6.1 below describes (no consent gate, no form UI, no danger scan yet) — see the flag at the top of §6.1. |
+| 5 | **Memory** | Built, `src/memory/`. Short-term (`session.py`): SQLite-backed `session_turns`, replaced the in-process `_SESSION_HISTORY` dict api.py used to carry — survives a restart now. `get_history()` trims to the last `MEMORY_TRIM_TURNS` (20) turns for the in-context window; full history always persists. Long-term (`persistent.py`): a rolling per-session summary, extended via **one incremental LLM call** only once `MEMORY_SUMMARY_BATCH_SIZE` (5) turns have overflowed the trim window since the last summary — deliberately batched, not per-turn, given the Gemini quota constraint (§2.1). Cross-session recall: a brand-new session seeds from the same `employee_id`'s latest summary from any prior session. Wired into `orchestrator.handle_message()`, not `run_turn()` — keeps `run_turn()` a pure function over an explicit history list for existing tests. |
+| 6 | **Guardrails** | Built, `src/guardrails/`. Four deterministic, no-LLM-call checks: `input_checks.py` (prompt-injection heuristics — topic restriction's actual enforcement is the intent router's `out_of_scope` classification, already a hard block in `orchestrator.py`; duplicating that with keyword topic-matching would be redundant and worse at nuance), `toxicity.py` (small documented wordlist, ~10 words), `pii.py` (regex email/phone/employee-ID detection + redaction — used for redaction, never as an input-blocking gate, since the complaint-intake flow legitimately collects PII and blocking ordinary contact-info mentions in FAQ chat would be bad UX), `grounding.py` (output-side, re-verifies every citation maps to a retrieved chunk_id, hard-verify defense-in-depth on top of `answerer.verify_citations()`). Wired into `orchestrator.run_turn()` at both ends: `_check_input()` (injection + toxicity) gates entry before the router runs; `check_grounding()` runs right before the final `AgentResponse` is returned. Escalation itself is deterministic and already shipped: `tools.should_escalate(category)` fires for harassment/discrimination/safety/legal, is never LLM-callable, and its result is fed back to the model as a tool observation so the reply can state HR was notified. **Note:** this is a simpler, conversational version of what §6.1 below describes (no consent gate, no form UI, no danger scan yet) — see the flag at the top of §6.1. |
 | 7 | **ReAct Agent** | Real function-calling loop in `src/agent/orchestrator.py`: model picks a tool → `tools.py` executes it → result fed back as an observation → repeat, capped at `MAX_REACT_ITERATIONS`=5. Falls back to a plain-language message on hitting the cap or on an LLM-backend error (`APIError`/`LLMBackendError` — rate limit, outage, or Ollama connectivity) instead of crashing. Runs on either Gemini or Ollama via `LLM_PROVIDER` (§2.1) — same loop code either way. |
 | 8 | **Tool Use** | Model-callable tools: `search_kb` (internal RAG), `search_web` (DOLE/labor-law fallback: Tavily search domain-restricted to `dole.gov.ph`/`officialgazette.gov.ph`/`lawphil.net` + one `response_schema` call to shape results), `file_complaint`, `get_ticket_status`. `escalate_to_hr` is deliberately **not** model-callable — see Module 6. |
 | 9 | **Chat UI** | Streamlit chat (`src/ui.py`) with session state, citation/source expanders, complaint action cards. Built; talks to the API, not to Gemini directly. |
@@ -207,14 +218,16 @@ stai-capstone/
 │   │   └── prompts.py         # versioned prompt variants
 │   ├── rag/
 │   │   ├── chunking.py
-│   │   ├── embeddings.py
+│   │   ├── embeddings.py     # GeminiEmbedder + OllamaEmbedder, dispatched via config.get_embedder() (built, §2.1)
 │   │   └── retriever.py
-│   ├── guardrails/            # not yet built — input/output checks stubbed in orchestrator.py
-│   │   ├── input_checks.py
-│   │   └── output_checks.py
-│   ├── memory/                # not yet built — session history stopgap lives in api.py for now
-│   │   ├── session.py
-│   │   └── persistent.py
+│   ├── guardrails/             # built (Module 6) — deterministic, no LLM calls
+│   │   ├── input_checks.py    # prompt-injection heuristics
+│   │   ├── toxicity.py        # small documented wordlist
+│   │   ├── pii.py             # email/phone/employee-ID detect + redact
+│   │   └── grounding.py       # output-side citation re-verification
+│   ├── memory/                 # built (Module 5)
+│   │   ├── session.py         # SQLite short-term history, trim window
+│   │   └── persistent.py      # rolling summary, batched incremental LLM call, cross-session recall
 │   ├── schemas.py             # Pydantic models (tickets, intents, answers, token usage)
 │   ├── api.py                 # FastAPI app (built)
 │   └── ui.py                  # Streamlit app (built)
@@ -232,9 +245,9 @@ stai-capstone/
 1. **Corpus + ingestion** — author HR docs, build `ingest.py` end-to-end (parse → chunk → embed → Chroma), write golden eval set. *Everything else depends on this.*
 2. **RAG core** — retriever + grounded-answer prompt + citations; retrieval eval running (hit-rate@k baseline).
 3. **Agent loop** — intent router, ReAct orchestrator, four tools, complaint schema + SQLite tickets. **Done.**
-4. **Guardrails + memory** — input/output checks, escalation path, session + persistent memory. **Partial:** deterministic category-based escalation shipped; input/output guardrail checks and real memory still stubbed (see Module 5/6 status above).
+4. **Guardrails + memory** — input/output checks, escalation path, session + persistent memory. **Done for what's in scope:** deterministic category-based escalation, all four guardrail checks, and both memory tiers are built and tested (see Module 5/6 status above). The fuller form-driven escalation design in §6.1 remains unbuilt beyond Rule 1 — that's a separate, larger scope decision, not part of this milestone.
 5. **Interfaces** — FastAPI endpoint, then Streamlit UI on top of it. **Done**, including wiring the agent orchestrator into `/chat` (was previously falling back to plain RAG only).
-6. **Ops** — MLflow tracing wired through the orchestrator; Dockerfile + compose; README. **Partial:** latency + token usage now traced; tool-call sequence/guardrail triggers still missing from MLflow. Dockerfile/compose review statically checked out (`.dockerignore`, env-var wiring for inter-service URLs) but an actual `docker compose build`/`up` hasn't been run yet — Docker Desktop wasn't available when this was last checked.
+6. **Ops** — MLflow tracing wired through the orchestrator; Dockerfile + compose; README. **Done for the core loop, partial on completeness:** `docker compose up --build` verified working end-to-end (all four services: ingest, api, ui, mlflow) with both Gemini and Ollama backends; latency + token usage traced cleanly in MLflow. Still missing: tool-call sequence/guardrail triggers in MLflow, and the README hasn't caught up to the `LLM_PROVIDER`/`EMBEDDING_PROVIDER` env vars yet.
 7. **Experiments + deliverables** — prompt ablations, chunk-size ablation (e.g., 250 vs 400 vs 600 tokens), guardrail red-team tests; write-up (≥2,000 words), slides, demo dry-run + fallback recording.
 
 ---
@@ -319,7 +332,7 @@ escalated" eval (§7).
 | Chunking ablation | retrieval hit-rate@5, MRR on golden set | 250 / 400 / 600 tokens; with vs. without context headers |
 | Prompt ablation | answer faithfulness (LLM-as-judge), citation accuracy | 3 system-prompt variants |
 | Similarity threshold | false-answer rate vs. "I don't know" rate | sweep 0.3–0.7 |
-| Guardrail red-team | block rate on off-topic / injection / PII probes | ~20 adversarial prompts |
+| Guardrail red-team | block rate (injection/toxicity), detection rate (PII) | `evals/run_guardrail_eval.py` + `evals/guardrail_redteam.jsonl`, 20 adversarial prompts — currently 100%/100% on the deterministic checks. Off-topic block rate needs `--with-router` (costs LLM calls, off by default) since that's the intent router's job, not a deterministic guardrail. |
 | Escalation correctness | % of harassment/safety scenarios correctly escalated | scripted complaint scenarios |
 | Latency & cost | p50/p95 latency, tokens per request (from MLflow) | Flash vs. Pro on a sample |
 
@@ -330,8 +343,9 @@ Document failure modes found (e.g., retrieval misses on table data, router confu
 ## 8. Key Risks & Mitigations
 
 - **Demo failure during presentation** → run fully local (Chroma + SQLite), record a fallback video, disclose upfront per spec.
-- **Gemini rate limits/outage during demo** → **materialized during development**, not just a theoretical risk: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing repeatedly (each agent turn costs several requests). Mitigations: `run_turn()` catches `APIError`/`LLMBackendError` and degrades gracefully instead of crashing; `GET /usage` gives visibility into consumption per model; `LLM_PROVIDER=ollama` gives real headroom by moving chat/reasoning off Gemini entirely (§2.1, verified working end-to-end). Still keep: cache golden-path responses, keep the fallback video, disclose upfront. New risk this introduces: the verified Ollama VM is currently reachable with no authentication — don't rely on it as the live-demo path without locking it down first (§2.1 operational note).
-- **Ollama backend quality/availability for a live demo** → small local models are less reliable at strict tool-calling/schema conformance than Gemini (§2.1), and a remote self-hosted VM has none of Gemini's managed-service reliability guarantees. Treat `LLM_PROVIDER=ollama` as a development/testing escape valve, not the default for the actual presentation, unless it's been dry-run tested end-to-end beforehand.
+- **Gemini rate limits/outage during demo** → **materialized during development**, not just a theoretical risk: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing repeatedly (each agent turn costs several requests). Mitigations: `run_turn()` catches `APIError`/`LLMBackendError` and degrades gracefully instead of crashing; `GET /usage` gives visibility into consumption per model; `LLM_PROVIDER=ollama` + `EMBEDDING_PROVIDER=ollama` together give real headroom by moving chat/reasoning *and* embeddings off Gemini entirely (§2.1, verified working end-to-end — zero Gemini calls in that configuration). Still keep: cache golden-path responses, keep the fallback video, disclose upfront. New risk this introduces: the verified Ollama VM is currently reachable with no authentication — don't rely on it as the live-demo path without locking it down first (§2.1 operational note).
+- **Ollama backend quality/availability for a live demo** → small local models are less reliable at strict tool-calling/schema conformance than Gemini (§2.1), and a remote self-hosted VM has none of Gemini's managed-service reliability guarantees. Treat `LLM_PROVIDER=ollama`/`EMBEDDING_PROVIDER=ollama` as a development/testing escape valve, not the default for the actual presentation, unless it's been dry-run tested end-to-end beforehand.
+- **Mixed local/Docker ingestion corrupts the index** → hit three times this session: running `scripts/ingest.py` on the host (native Windows chromadb) and then `docker compose up` (Linux chromadb) against the same bind-mounted `data/chroma/` causes a Rust panic on open. Not data-destructive (the fix is just re-ingesting), but wastes real time if you don't recognize it immediately. Pick one environment per index; clear and re-ingest if you switch.
 - **Hallucinated policy answers** → similarity floor + citation verification + "I don't know" path; measured in evals.
 - **Sensitive complaints mishandled** → hard-coded escalation rules (not LLM-discretionary) for harassment/safety/legal categories. Currently the simple category-based version (§6.1 status flag) — confirm with whoever owns Guardrails whether the fuller form-driven design in §6.1 is still the target before the demo.
 - **Scope creep** → milestones 1–5 are the MVP; graph memory, reranking, multi-language are explicitly out of scope.

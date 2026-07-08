@@ -67,3 +67,14 @@ Question: {question}
 
 Search results:
 {search_results}"""
+
+SESSION_SUMMARY_PROMPT = """Extend the existing conversation summary below with the new \
+turns that follow. Keep it concise — a few sentences covering what the employee asked \
+about and what was resolved or is still pending. Integrate the new information into the \
+existing summary; do not just restate the existing summary verbatim or discard it.
+
+Existing summary:
+{existing_summary}
+
+New turns to fold in:
+{new_turns}"""

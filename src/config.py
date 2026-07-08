@@ -64,6 +64,41 @@ OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma4:e4b")
 GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
 ACTIVE_CHAT_MODEL = GEMINI_CHAT_MODEL if LLM_PROVIDER == "gemini" else f"ollama:{OLLAMA_CHAT_MODEL}"
 
+# --- Memory (Module 5) ---
+# Short-term in-context window; full history still persists in SQLite
+# (src/memory/session.py) regardless of this trim. PLAN.md §4 originally
+# scoped "summarization past ~20 turns" — kept that number.
+MEMORY_TRIM_TURNS = 20
+# Don't re-summarize on every single turn once the window overflows (that
+# would be an LLM call per turn) - batch evictions and only summarize once
+# this many turns have fallen out of the window since the last summary.
+MEMORY_SUMMARY_BATCH_SIZE = 5
+
+# --- Guardrails (Module 6) ---
+# Small, documented wordlist - this is an internal HR tool (authenticated
+# employees), not public-facing, so the bar is catching blatant abuse aimed
+# at the bot/HR staff, not comprehensive content moderation (PLAN.md §8
+# explicitly flags scope creep as a risk).
+TOXIC_WORDLIST = (
+    "fuck",
+    "fucking",
+    "shit",
+    "bitch",
+    "asshole",
+    "bastard",
+    "cunt",
+    "whore",
+    "retard",
+    "retarded",
+)
+# Employee-ID format assumed for the PII guardrail — no convention exists
+# elsewhere in this repo's data/schemas, so this is a documented invention:
+# "EMP-" followed by 4-6 digits (e.g. EMP-00123).
+EMPLOYEE_ID_PATTERN = r"\bEMP-\d{4,6}\b"
+# PH mobile format (+639XXXXXXXXX or 09XXXXXXXXX), matching the PH-flavored
+# HR content throughout data/raw/.
+PHONE_PATTERN = r"(?:\+63|0)9\d{2}[-.\s]?\d{3}[-.\s]?\d{4}"
+
 # --- Web search fallback (Module 8: Tool Use) ---
 # search_web is restricted to these domains so it can't become a general-purpose
 # search engine (would defeat the HR-only topic-filter guardrail). Enforced via

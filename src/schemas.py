@@ -132,3 +132,26 @@ class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+# --- Guardrails (Module 6) ---
+
+class GuardrailResult(BaseModel):
+    """Pass/fail signal from an input guardrail check. Lives here (not in
+    orchestrator.py) so both orchestrator.py and src/guardrails/ can import it
+    without a circular dependency."""
+
+    allowed: bool
+    reason: str = ""
+
+
+# --- Memory (Module 5) ---
+
+class SessionSummary(BaseModel):
+    """Incremental rolling summary of a session's older turns. Each
+    summarization call extends this rather than rewriting it from scratch —
+    see src/memory/persistent.py."""
+
+    summary_text: str = Field(
+        description="Concise summary of what's been discussed so far, a few sentences"
+    )

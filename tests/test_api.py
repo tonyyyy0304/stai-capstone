@@ -69,12 +69,15 @@ def test_chat_routes_through_agent_when_available(monkeypatch):
     assert body["actions"] == []
 
 
-def test_chat_threads_session_history_across_turns(monkeypatch):
-    api._SESSION_HISTORY.clear()
+def test_chat_threads_session_history_across_turns(monkeypatch, tmp_path):
+    """History now comes from src/memory/ (SQLite), not an in-process dict in
+    api.py — handle_message() loads/saves it internally since _try_agent_
+    orchestrator no longer passes history= explicitly."""
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
     seen_history = []
 
     def fake_run_turn(session_id, message, history=None, client=None):
-        seen_history.append(history or [])
+        seen_history.append(history)
         return orchestrator.AgentResponse(reply=f"reply to: {message}")
 
     monkeypatch.setattr(orchestrator, "run_turn", fake_run_turn)

@@ -127,44 +127,31 @@ def _complaint_intake_pending(message: str) -> bool:
     return any(term in lowered for term in complaint_terms)
 
 
-# In-process, non-persistent turn history keyed by session_id. Stands in for
-# the real session/long-term memory store (src/memory/) so multi-turn
-# conversations (e.g. complaint slot-filling) work across requests before
-# that module exists; history is lost on server restart.
-_SESSION_HISTORY: dict[str, list[dict[str, str]]] = {}
-
-
 def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatResponse | None:
     """Use Member 2's orchestrator when it exists.
 
     Supported future shape: handle_message(message=..., session_id=...,
-    employee_id=..., history=...) returning either ChatResponse, dict, or
-    object with response-like attributes.
+    employee_id=...) returning either ChatResponse, dict, or object with
+    response-like attributes. `history` is deliberately not passed — leaving
+    it unset tells handle_message() to manage session/long-term memory
+    itself via src/memory/ (SQLite-backed, survives a restart), rather than
+    api.py maintaining its own in-process copy.
     """
     try:
         from src.agent.orchestrator import handle_message
     except Exception:
         return None
 
-    history = _SESSION_HISTORY.get(session_id, [])
     result = handle_message(
         message=request.message,
         session_id=session_id,
         employee_id=request.employee_id,
-        history=history,
     )
     if isinstance(result, ChatResponse):
-        response = result
-    elif isinstance(result, dict):
-        response = ChatResponse.model_validate(result)
-    else:
-        response = ChatResponse.model_validate(result.model_dump())
-
-    _SESSION_HISTORY[session_id] = history + [
-        {"role": "user", "content": request.message},
-        {"role": "assistant", "content": response.reply},
-    ]
-    return response
+        return result
+    if isinstance(result, dict):
+        return ChatResponse.model_validate(result)
+    return ChatResponse.model_validate(result.model_dump())
 
 
 @app.post("/chat", response_model=ChatResponse)
