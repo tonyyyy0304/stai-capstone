@@ -53,8 +53,8 @@ def chat_trace(session_id: str, message: str) -> Iterator[dict[str, Any]]:
             {
                 "component": "api",
                 "session_id": session_id,
-                "chat_model": config.CHAT_MODEL,
-                "embedding_model": config.EMBEDDING_MODEL,
+                "chat_model": config.ACTIVE_CHAT_MODEL,
+                "embedding_model": config.ACTIVE_EMBEDDING_MODEL,
             }
         )
         mlflow.log_params(

@@ -183,7 +183,7 @@ def run_ingestion(force: bool = False) -> dict:
         print(f"  ingested: {name} -> {len(chunks)} chunks (doc_id={doc_id})")
 
     new_manifest = {
-        "embedding_model": config.EMBEDDING_MODEL,
+        "embedding_model": config.ACTIVE_EMBEDDING_MODEL,
         "embedding_dim": config.EMBEDDING_DIM,
         "chunk_target_tokens": config.CHUNK_TARGET_TOKENS,
         "ingested_at": datetime.now(timezone.utc).isoformat(),

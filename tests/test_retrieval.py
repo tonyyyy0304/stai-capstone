@@ -1,10 +1,10 @@
 from pathlib import Path
 
 from src import config
-from src.rag.answerer import no_answer, verify_citations
+from src.rag.answerer import answer_question, no_answer, verify_citations
 from src.rag.chunking import chunk_document
 from src.rag.retriever import RetrievedChunk, apply_floor
-from src.schemas import Citation, GroundedAnswer
+from src.schemas import AnswerSource, Citation, GroundedAnswer
 
 
 def make_chunk(chunk_id="leave-policy#001", similarity=0.8):
@@ -43,6 +43,58 @@ def test_no_answer_offers_hr_routing():
     assert answer.insufficient_context is True
     assert answer.citations == []
     assert "HR" in answer.answer
+
+
+class FakeShapeResponse:
+    def __init__(self, parsed):
+        self.parsed = parsed
+
+
+class FakeShapeModels:
+    def __init__(self, parsed):
+        self._parsed = parsed
+
+    def generate_content(self, model, contents, config):
+        return FakeShapeResponse(self._parsed)
+
+
+class FakeShapeClient:
+    def __init__(self, parsed):
+        self.models = FakeShapeModels(parsed)
+
+
+class FakeRetriever:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def retrieve(self, question, top_k=None, category=None):
+        return self._chunks
+
+
+def test_answer_question_withholds_chunks_when_insufficient_context():
+    """Chunks passed the similarity floor, but the model still couldn't answer
+    from them — the UI shouldn't show them as if they were the evidence."""
+    retriever = FakeRetriever([make_chunk(similarity=0.6)])
+    insufficient = GroundedAnswer(
+        answer="I don't know", source=AnswerSource.INTERNAL_KB, insufficient_context=True
+    )
+    client = FakeShapeClient(insufficient)
+
+    answer, chunks = answer_question("obscure question", retriever=retriever, client=client)
+
+    assert answer.insufficient_context is True
+    assert chunks == []
+
+
+def test_answer_question_returns_chunks_when_answer_is_grounded():
+    retriever = FakeRetriever([make_chunk(similarity=0.8)])
+    grounded = GroundedAnswer(answer="15 days.", source=AnswerSource.INTERNAL_KB)
+    client = FakeShapeClient(grounded)
+
+    answer, chunks = answer_question("vacation days", retriever=retriever, client=client)
+
+    assert answer.insufficient_context is False
+    assert len(chunks) == 1
 
 
 def test_entire_raw_corpus_chunks_cleanly():

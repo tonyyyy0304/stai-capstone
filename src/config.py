@@ -29,6 +29,7 @@ API_URL = os.environ.get("API_URL", f"http://localhost:{API_PORT}")
 EMBEDDING_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "gemini")
 OLLAMA_EMBEDDING_MODEL = os.environ.get("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text:latest")
 GEMINI_EMBEDDING_MODEL = os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+ACTIVE_EMBEDDING_MODEL = GEMINI_EMBEDDING_MODEL if EMBEDDING_PROVIDER == "gemini" else f"ollama:{OLLAMA_EMBEDDING_MODEL}"
 EMBEDDING_DIM = 768  # via output_dimensionality; vectors are re-normalized after truncation
 EMBED_BATCH_SIZE = 64
 

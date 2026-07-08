@@ -114,7 +114,7 @@ def main() -> None:
             mlflow.log_params(
                 {
                     "top_k": args.top_k,
-                    "embedding_model": config.EMBEDDING_MODEL,
+                    "embedding_model": config.ACTIVE_EMBEDDING_MODEL,
                     "embedding_dim": config.EMBEDDING_DIM,
                     "chunk_target_tokens": config.CHUNK_TARGET_TOKENS,
                     "chunk_overlap_tokens": config.CHUNK_OVERLAP_TOKENS,

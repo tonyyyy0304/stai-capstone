@@ -27,7 +27,7 @@ def classify_intent(
 
     client = client or config.get_llm_client()
     response = client.models.generate_content(
-        model=config.CHAT_MODEL,
+        model=config.ACTIVE_CHAT_MODEL,
         contents=prompts.ROUTER_PROMPT.format(
             history=format_history(history or []), message=message
         ),

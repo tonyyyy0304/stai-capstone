@@ -203,7 +203,7 @@ def _run_tool_loop(
 
     for iteration in range(config.MAX_REACT_ITERATIONS):
         response = client.models.generate_content(
-            model=config.CHAT_MODEL,
+            model=config.ACTIVE_CHAT_MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=prompts.REACT_SYSTEM_PROMPT,

@@ -9,7 +9,7 @@ import math
 from typing import Protocol
 
 from src import config
-from ollama import Client
+
 
 def _normalize(vector: list[float]) -> list[float]:
     norm = math.sqrt(sum(v * v for v in vector))
@@ -42,7 +42,7 @@ class GeminiEmbedder:
         for start in range(0, len(texts), config.EMBED_BATCH_SIZE):
             batch = texts[start : start + config.EMBED_BATCH_SIZE]
             response = self.client.models.embed_content(
-                model=config.EMBEDDING_MODEL,
+                model=config.GEMINI_EMBEDDING_MODEL,
                 contents=batch,
                 config=types.EmbedContentConfig(
                     task_type=task_type,
@@ -61,10 +61,10 @@ class GeminiEmbedder:
 
 
 class OllamaEmbedder:
-    def __init__(self, base_url: str | None = None, model: str | None = None):
-        self._base_url = base_url or config.OLLAMA_URL
-        self._model = model or config.OLLAMA_EMBEDDING_MODEL
-        self._client = None  # created lazily so tests can inject a fake
+    def __init__(self, client=None):
+        self._base_url = config.OLLAMA_URL
+        self._model = config.OLLAMA_EMBEDDING_MODEL
+        self._client = client  # created lazily so tests can inject a fake
 
     @property
     def client(self):

@@ -64,7 +64,7 @@ def search_web(
 
     client = client or config.get_llm_client()
     shape_response = client.models.generate_content(
-        model=config.CHAT_MODEL,
+        model=config.ACTIVE_CHAT_MODEL,
         contents=prompts.WEB_ANSWER_SHAPE_PROMPT.format(
             question=question, search_results=_format_tavily_results(results)
         ),

@@ -61,7 +61,7 @@ def generate_grounded_answer(
         return no_answer()
     client = client or config.get_llm_client() 
     response = client.models.generate_content(
-        model=config.CHAT_MODEL,
+        model=config.ACTIVE_CHAT_MODEL,
         contents=ANSWER_PROMPT.format(context=_format_context(chunks), question=question),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -87,10 +87,16 @@ def answer_question(
     """End-to-end RAG: retrieve → floor check → grounded answer.
 
     Returns the answer plus the chunks that passed the floor (for UI expanders
-    and MLflow traces).
+    and MLflow traces). Chunks are withheld when the answer is insufficient —
+    otherwise the UI would show "possibly relevant" excerpts right next to an
+    "I don't know" reply, which reads as contradictory even though those
+    excerpts were exactly what the model just checked and rejected.
     """
     retriever = retriever or Retriever()
     chunks = apply_floor(retriever.retrieve(question, category=category))
     if not chunks:
         return no_answer(), []
-    return generate_grounded_answer(question, chunks, client=client), chunks
+    answer = generate_grounded_answer(question, chunks, client=client)
+    if answer.insufficient_context:
+        return answer, []
+    return answer, chunks
