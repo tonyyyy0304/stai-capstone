@@ -1,0 +1,49 @@
+services:
+  ingest:
+    build: .
+    command: python scripts/ingest.py
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+
+  api:
+    build: .
+    command: uvicorn src.api:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: hr-agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+      mlflow:
+        condition: service_started
+
+  ui:
+    build: .
+    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+  mlflow:
+    build: .
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /app/data/mlruns
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data

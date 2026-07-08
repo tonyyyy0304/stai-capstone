@@ -20,6 +20,11 @@ CHROMA_DIR = DATA_DIR / "chroma"
 MANIFEST_PATH = DATA_DIR / "index_manifest.json"
 SQLITE_PATH = DATA_DIR / "hr_agent.db"
 
+# --- API / UI ---
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+API_PORT = int(os.environ.get("API_PORT", "8000"))
+API_URL = os.environ.get("API_URL", f"http://localhost:{API_PORT}")
+
 # --- Models ---
 CHAT_MODEL = "gemini-2.5-flash"
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -51,6 +56,10 @@ ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarif
 # search_web is restricted to these domains so it can't become a general-purpose
 # search engine (would defeat the HR-only topic-filter guardrail).
 DOLE_ALLOWED_DOMAINS = ("dole.gov.ph", "officialgazette.gov.ph", "lawphil.net")
+
+# --- Monitoring ---
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", (DATA_DIR / "mlruns").as_uri())
+MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "hr-agent")
 
 
 def get_gemini_api_key() -> str:

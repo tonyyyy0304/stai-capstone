@@ -16,9 +16,42 @@ python scripts/ingest.py        # build the knowledge base (data/raw -> Chroma)
 python scripts/ingest.py            # rebuild knowledge base (idempotent; --force to redo all)
 uvicorn src.api:app --reload        # API on :8000        (Member 4)
 streamlit run src/ui.py             # UI on :8501         (Member 4)
+python scripts/check_member4.py     # quick API/UI/MLflow readiness check
 python evals/run_retrieval_eval.py  # retrieval hit-rate@k + MRR on the golden set
 pytest tests/                       # unit tests
 docker compose up --build           # full stack          (Member 4)
+```
+
+## Member 4: API, UI, MLflow, Docker
+
+`src/api.py` exposes:
+
+- `POST /chat` with `session_id` and `message`, returning `reply`, verified `citations`, retrieved `sources`, and workflow `actions`.
+- `GET /tickets/{ticket_id}` for complaint-ticket lookup once Member 2's tool writes tickets to SQLite.
+- `GET /health` for demo readiness checks: Chroma index, manifest, Gemini key, and MLflow URI.
+
+The API uses `src.monitoring.chat_trace()` to log sanitized MLflow telemetry: latency, source/citation/action counts, route, and request size. It does not log raw employee messages or model answers, because complaint text can contain PII.
+
+`src/ui.py` is a Streamlit chat client that talks only to the FastAPI endpoint. It renders citations and retrieved policy excerpts in expanders and carries a stable session ID across turns.
+
+Docker Compose starts three runtime services plus a first-boot ingestion job:
+
+- API: [http://localhost:8000](http://localhost:8000)
+- Streamlit UI: [http://localhost:8501](http://localhost:8501)
+- MLflow: [http://localhost:5000](http://localhost:5000)
+
+Before running Compose, copy `.env.example` to `.env` and set `GEMINI_API_KEY`.
+
+To check the demo surfaces quickly after startup:
+
+```bash
+python scripts/check_member4.py
+```
+
+If you only want to check that the services are reachable without calling Gemini:
+
+```bash
+python scripts/check_member4.py --skip-chat
 ```
 
 ## Module Ownership

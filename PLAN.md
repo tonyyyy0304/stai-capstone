@@ -146,8 +146,8 @@ Each chunk carries:
 | Member | Modules |
 | --- | --- |
 | Member 1 | RAG + data pipeline, Structured Outputs |
-| Member 2 | ReAct Agent, Tool Use, Disambiguation |
-| Member 3 | Guardrails, Memory, Prompt Engineering |
+| Member 2 | (FAQ) ReAct Agent, Tool Use, Disambiguation, Guardrails, Memory, Prompt Engineering |
+| Member 3 | (Escalation) ReAct Agent, Tool Use, Disambiguation, Guardrails, Memory, Prompt Engineering |
 | Member 4 (if any) | Chat UI, API Endpoint, MLflow, Docker |
 
 ---
@@ -208,6 +208,77 @@ stai-capstone/
 5. **Interfaces** — FastAPI endpoint, then Streamlit UI on top of it.
 6. **Ops** — MLflow tracing wired through the orchestrator; Dockerfile + compose; README.
 7. **Experiments + deliverables** — prompt ablations, chunk-size ablation (e.g., 250 vs 400 vs 600 tokens), guardrail red-team tests; write-up (≥2,000 words), slides, demo dry-run + fallback recording.
+
+---
+
+## 6.1 Escalation Rules (Guardrails detail)
+
+Escalation is a **consent-gated, form-driven flow** whose routing decisions are made by deterministic
+functions in `src/guardrails/` — never by LLM judgment (per CLAUDE.md, §8 risk). Grounded in
+`anti-harassment-policy.md` (§Reporting: 24h to a human HR officer; automated systems never triage,
+adjudicate, or close) and `grievance-procedure.md` (§Scope). **Fail toward escalation:** any
+ambiguity, parse error, or missing field on a potentially-sensitive category escalates.
+
+### Escalation flow (user-facing)
+
+- **Step A — Consent gate.** When the router detects complaint / escalation intent, the agent does
+  not silently start filing. It asks the user which they want: **(a) write a complaint** (tracked
+  ticket) or **(b) escalate the query to HR**. Nothing is sent until the user chooses. This reuses the
+  Disambiguation module's clarifying-question mechanism (§4, Module 4).
+- **Step B — Structured intake form.** On the user's choice, the agent presents a **Streamlit form
+  card** (not free chat) with the `ComplaintTicket` fields (category, description, parties involved,
+  incident date, desired outcome) plus the identity fields needed to write the HR email (employee
+  name, department, contact). Form fields are submitted straight to the API, giving a clean PII
+  boundary. If the danger scan (Rule 3) flags the case, the form additionally renders the
+  building-security / local-911 emergency-contact banner at the top — the safety guidance is never
+  dropped even though the flow always goes through the form.
+- **Step C — Email generation & auto-send.** On submit, the validated form populates an HR email
+  template; `escalate_to_hr` renders and sends it to the HR case queue (email/webhook, mocked in dev),
+  while `file_complaint` writes the SQLite ticket. The user gets the ticket number and the 24h-review
+  message.
+
+### Form PII guardrail (distinct from the global one)
+
+The intake form **intentionally collects PII** (names, contact, parties) because the HR email needs
+it — so this guardrail's job is the inverse of the global "redact PII in logs" rule: it must
+**preserve** PII on the path to the email/secure record while **excluding it from every observable
+surface**. Concretely: the form payload bypasses normal MLflow request tracing; only a redacted
+summary + the structured non-PII fields (category, severity, trigger_rule, ticket_id) are logged;
+raw PII lives only in the email and the SQLite record, never in LLM context that gets traced.
+
+### Deterministic routing rules
+
+- **Rule 1 — Mandatory category escalation.** Route to escalation (option b behavior) regardless of
+  severity/confidence/completeness when `ComplaintTicket.category` ∈
+  `{harassment, discrimination, safety, legal}`.
+- **Rule 2 — Severity escalation.** For all other categories (`payroll`, `benefits`,
+  `workplace_conflict`, `policy_violation`, `other`): escalate only if `severity ∈ {high, critical}`;
+  otherwise file a normal tracked ticket into the standard grievance queue.
+- **Rule 3 — Danger scan.** A reviewed keyword/heuristic scan over the form text
+  (weapon/assault/threat/self-harm/"right now" cues) flags the case `critical` and triggers the
+  emergency-contact banner in Step B. Per team decision the flow still goes through the consent gate
+  and form; the scan changes severity and surfaced guidance, it does not skip the form.
+- **Rule 4 — Deterministic severity floors.** Rule 1 categories floor at `high` (Rule 3 hit →
+  `critical`); any retaliation cue floors at `high`. The LLM does not freely set severity for
+  sensitive categories.
+- **Rule 5 — Escalation payload.** A firing case builds a structured `EscalationEvent`
+  (`ticket_id`, `category`, `severity`, `trigger_rule`, `sla_deadline` = created_at + **24h**,
+  `redacted_summary`) that both feeds the email template and is the only thing logged (Step C + PII
+  guardrail).
+- **Rule 6 — User-facing behavior.** After submit, tell the employee a human HR officer will review
+  within 24h, give the ticket number for status inquiries, and (danger cases) reiterate the emergency
+  contact. The bot never claims to resolve, judge, or close a sensitive report.
+- **Rule 7 — Fail-safe.** Escalate with `trigger_rule = parse_failure` when the form fails schema
+  validation, category is `other` but the danger scan is inconclusive, or complaint-intent confidence
+  is below threshold. Never silently drop a sensitive-looking report.
+
+New code: `src/guardrails/escalation.py` (`should_escalate(ticket, raw_text) -> EscalationDecision`,
+Rules 1–4, 7), `src/guardrails/danger_scan.py` (Rule 3 + retaliation lexicons), and
+`src/guardrails/form_pii.py` (Form PII guardrail); `EscalationForm` / `EscalationDecision` /
+`EscalationEvent` schemas in `src/schemas.py`; an HR email template + `escalate_to_hr` sender (mocked
+in dev); the form-card UI in `src/ui.py` and its submit endpoint in `src/api.py`; the 24h SLA constant
+in `src/config.py`. Directly testable against the "% of harassment/safety scenarios correctly
+escalated" eval (§7).
 
 ---
 

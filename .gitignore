@@ -9,6 +9,7 @@ data/index_manifest.json
 # Eval outputs
 evals/results/
 mlruns/
+data/mlruns/
 
 # Python
 __pycache__/
@@ -22,3 +23,4 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+AGENTS.md

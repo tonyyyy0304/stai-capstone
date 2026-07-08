@@ -1,0 +1,10 @@
+.git
+.env
+__pycache__/
+.pytest_cache/
+data/chroma/
+data/mlruns/
+data/*.db
+data/processed/
+data/index_manifest.json
+evals/results/
