@@ -2,7 +2,7 @@
 
 **Course:** Introduction to Agentic AI (STAI100) — Midterm Capstone (Week 9)
 **Use case type:** Vector DB RAG (HR/Legal domain)
-**LLM provider:** Google Gemini API
+**LLM provider:** Google Gemini API (primary — chat + embeddings). Evaluating Groq (free-tier Llama/Gemma models) as an alternate chat backend on `feat/react-agent-general`; see §2.1.
 
 ---
 
@@ -60,6 +60,27 @@ Employees constantly ask HR the same questions (leave policy, benefits, payroll 
 | UI | Streamlit | Chat UI requirement; talks to FastAPI, not to the LLM directly. |
 | Monitoring | MLflow (tracing + metrics) | Spec-suggested; autolog support for Gemini calls. |
 | Packaging | Docker (single image, docker-compose optional) | Spec requirement. |
+
+### 2.1 LLM Provider Abstraction (in progress — `feat/react-agent-general`)
+
+**Why:** Gemini's free tier caps `gemini-2.5-flash` at **20 `generate_content` requests/day per project**, not per-minute. A single agent turn already costs several requests (1 router classification + up to `MAX_REACT_ITERATIONS`=5 ReAct loop calls + 2 more if `search_web` fires), so the quota was exhausted mid-testing well before the free allowance felt low. §8 already flags this risk ("Gemini rate limits/outage during demo") — it stopped being hypothetical.
+
+**Mitigations shipped so far (this session):**
+- `run_turn()` now catches `google.genai.errors.APIError` and degrades to a plain-language "try again" reply instead of a raw 500.
+- `src/agent/usage.py` logs every agent LLM call's token usage to SQLite; `GET /usage` reports today's + all-time request counts and token totals, so the team can see quota consumption before it's a surprise.
+- `search_web` no longer depends on Gemini's `google_search` grounding tool — it now uses **Tavily** for the actual search (domain-restricted via `include_domains`) and a single Gemini `response_schema` call just to shape the results. This removes one of the four Gemini-lock-in points below and cuts the tool from two LLM calls to one. Needs a real `TAVILY_API_KEY` in `.env` (free tier at tavily.com) — fails closed to "I don't know" if missing/invalid, doesn't crash.
+
+**What's being explored:** Groq as an alternate chat backend, since its free tier hosts open-weight models (Llama, Gemma) and is generally more generous than Gemini's 20/day cap. This is **not a drop-in swap** — it requires a real provider abstraction, because the agent still leans on a few Gemini-specific features:
+
+| Feature | Where used | Groq/OpenAI-compatible equivalent |
+| --- | --- | --- |
+| `response_schema` typed output | `router.py`, `orchestrator.py`, `tools.py` | Different mechanism (JSON-schema `format` param) |
+| `types.FunctionDeclaration` tool calling | `orchestrator.py` ReAct loop | Different schema shape, some models only |
+| `gemini-embedding-001` | `src/rag/embeddings.py` | Not served by Groq — RAG embeddings stay on Gemini regardless of chat backend |
+
+~~`google_search` grounding tool~~ — resolved: `search_web` now uses Tavily instead, so this is no longer Gemini-specific.
+
+`TokenUsage` (in `src/schemas.py`) is already named provider-agnostically (`prompt_tokens`/`completion_tokens`/`total_tokens`, not Gemini's `*_token_count` field names) so usage tracking survives whichever backend ends up serving chat.
 
 ---
 
@@ -131,14 +152,14 @@ Each chunk carries:
 | 1 | **RAG** | Pipeline above; ChromaDB + Gemini embeddings; cited, grounded answers |
 | 2 | **Prompt Engineering** | System prompt with role/scope/refusal rules; few-shot examples for intent routing; ablation across ≥3 prompt variants measured on the golden set |
 | 3 | **Structured Outputs** | Pydantic schemas via Gemini `response_schema`: `IntentClassification`, `ComplaintTicket` (category, severity, parties, description, desired outcome), `GroundedAnswer` (answer + citations) |
-| 4 | **Disambiguation** | Router emits `confidence`; low confidence → ask one clarifying question before retrieving or filing ("Do you want to know the policy, or file a complaint?") |
-| 5 | **Memory** | Short-term: rolling session window with summarization past ~20 turns. Long-term: SQLite per-employee profile (name, department, open ticket IDs) recalled at session start |
-| 6 | **Guardrails** | Input: topic filter (HR-only), prompt-injection heuristics, PII detection. Output: citation/grounding check, PII redaction in logs, mandatory escalation for harassment/safety/legal-risk complaints (human-in-the-loop — the bot never adjudicates) |
-| 7 | **ReAct Agent** | Gemini function-calling loop: think → pick tool (`search_kb`, `file_complaint`, `escalate_to_hr`, `get_ticket_status`) → observe → repeat, max 5 iterations |
-| 8 | **Tool Use** | The four tools above; `file_complaint` writes to SQLite and returns a ticket ID; `escalate_to_hr` sends email/webhook (mocked in dev) |
-| 9 | **Chat UI** | Streamlit chat with session state, source-citation expanders, ticket confirmation cards |
-| 10 | **API Endpoint** | FastAPI: `POST /chat` (session_id, message → reply, citations, actions), `GET /tickets/{id}`, `GET /health` |
-| 11 | **LLMOps Monitoring** | MLflow tracing on every request: latency, input/output tokens, tool-call sequence, guardrail triggers, errors; eval runs logged as MLflow experiments |
+| 4 | **Disambiguation** | Router emits `confidence` + `intent` (`faq`\|`complaint`\|`ambiguous`\|`out_of_scope`); low confidence or ambiguous → ask one clarifying question before any tool runs; out-of-scope → declines without calling a tool. Implemented in `src/agent/router.py`. |
+| 5 | **Memory** | Short-term: not yet real — `api.py` currently threads conversation history via an in-process, non-persistent dict keyed by `session_id` (stopgap, lost on restart). Long-term: not yet built. Both still owned by whoever has Memory. |
+| 6 | **Guardrails** | Input/output checks (`src/guardrails/`) not yet built — stubbed pass-through in `orchestrator.py`. Escalation itself is deterministic and already shipped: `tools.should_escalate(category)` fires for harassment/discrimination/safety/legal, is never LLM-callable, and its result is fed back to the model as a tool observation so the reply can state HR was notified. **Note:** this is a simpler, conversational version of what §6.1 below describes (no consent gate, no form UI, no danger scan yet) — see the flag at the top of §6.1. |
+| 7 | **ReAct Agent** | Real Gemini function-calling loop in `src/agent/orchestrator.py`: model picks a tool → `tools.py` executes it → result fed back as an observation → repeat, capped at `MAX_REACT_ITERATIONS`=5. Falls back to a plain-language message on hitting the cap or on a Gemini `APIError` (rate limit/outage) instead of crashing. |
+| 8 | **Tool Use** | Model-callable tools: `search_kb` (internal RAG), `search_web` (DOLE/labor-law fallback: Tavily search domain-restricted to `dole.gov.ph`/`officialgazette.gov.ph`/`lawphil.net` + one Gemini `response_schema` call to shape results), `file_complaint`, `get_ticket_status`. `escalate_to_hr` is deliberately **not** model-callable — see Module 6. |
+| 9 | **Chat UI** | Streamlit chat (`src/ui.py`) with session state, citation/source expanders, complaint action cards. Built; talks to the API, not to Gemini directly. |
+| 10 | **API Endpoint** | FastAPI (`src/api.py`): `POST /chat` (session_id, message → reply, citations, sources, actions, token_usage), `GET /tickets/{id}`, `GET /usage` (today's + all-time agent token/request usage), `GET /health`. Built. |
+| 11 | **LLMOps Monitoring** | MLflow tracing per request (`src/monitoring.py` + `src/api.py`): latency, citation/source/action counts, and now `prompt_tokens`/`completion_tokens`/`total_tokens` (this session — was previously untracked entirely). **Still missing:** tool-call sequence and guardrail triggers aren't in MLflow yet (the ReAct loop's per-step trace, `orchestrator.AgentStep`, exists but is discarded before it reaches the API response or MLflow). |
 | 12 | **Dockerization** | Single Dockerfile (FastAPI + Streamlit via supervisor or two-stage compose); `docker compose up` runs everything incl. ingestion on first boot |
 
 **Ownership (team of 3–4, ≥2 modules each):** fill in names.
@@ -172,29 +193,31 @@ stai-capstone/
 │   └── ingest.py              # full preprocessing pipeline (Section 3)
 ├── src/
 │   ├── config.py              # settings, model names, paths
+│   ├── monitoring.py          # MLflow tracing helpers (built)
 │   ├── agent/
-│   │   ├── orchestrator.py    # ReAct loop
-│   │   ├── router.py          # intent classification + disambiguation
-│   │   ├── tools.py           # search_kb, file_complaint, escalate, ticket_status
+│   │   ├── orchestrator.py    # ReAct loop + handle_message() API adapter (built)
+│   │   ├── router.py          # intent classification + disambiguation (built)
+│   │   ├── tools.py           # search_kb, search_web, file_complaint, get_ticket_status, escalate_to_hr (built)
+│   │   ├── usage.py           # token usage tracking, SQLite-backed (built)
 │   │   └── prompts.py         # versioned prompt variants
 │   ├── rag/
 │   │   ├── chunking.py
 │   │   ├── embeddings.py
 │   │   └── retriever.py
-│   ├── guardrails/
+│   ├── guardrails/            # not yet built — input/output checks stubbed in orchestrator.py
 │   │   ├── input_checks.py
 │   │   └── output_checks.py
-│   ├── memory/
+│   ├── memory/                # not yet built — session history stopgap lives in api.py for now
 │   │   ├── session.py
 │   │   └── persistent.py
-│   ├── schemas.py             # Pydantic models (tickets, intents, answers)
-│   ├── api.py                 # FastAPI app
-│   └── ui.py                  # Streamlit app
+│   ├── schemas.py             # Pydantic models (tickets, intents, answers, token usage)
+│   ├── api.py                 # FastAPI app (built)
+│   └── ui.py                  # Streamlit app (built)
 ├── evals/
 │   ├── golden_set.jsonl       # Q&A pairs w/ expected chunk IDs
 │   ├── run_retrieval_eval.py  # hit-rate@k, MRR
 │   └── run_answer_eval.py     # faithfulness / LLM-as-judge via Gemini
-└── tests/                     # unit tests (chunking, guardrails, schemas)
+└── tests/                     # unit tests (chunking, guardrails, schemas, agent, api)
 ```
 
 ---
@@ -203,15 +226,17 @@ stai-capstone/
 
 1. **Corpus + ingestion** — author HR docs, build `ingest.py` end-to-end (parse → chunk → embed → Chroma), write golden eval set. *Everything else depends on this.*
 2. **RAG core** — retriever + grounded-answer prompt + citations; retrieval eval running (hit-rate@k baseline).
-3. **Agent loop** — intent router, ReAct orchestrator, four tools, complaint schema + SQLite tickets.
-4. **Guardrails + memory** — input/output checks, escalation path, session + persistent memory.
-5. **Interfaces** — FastAPI endpoint, then Streamlit UI on top of it.
-6. **Ops** — MLflow tracing wired through the orchestrator; Dockerfile + compose; README.
+3. **Agent loop** — intent router, ReAct orchestrator, four tools, complaint schema + SQLite tickets. **Done.**
+4. **Guardrails + memory** — input/output checks, escalation path, session + persistent memory. **Partial:** deterministic category-based escalation shipped; input/output guardrail checks and real memory still stubbed (see Module 5/6 status above).
+5. **Interfaces** — FastAPI endpoint, then Streamlit UI on top of it. **Done**, including wiring the agent orchestrator into `/chat` (was previously falling back to plain RAG only).
+6. **Ops** — MLflow tracing wired through the orchestrator; Dockerfile + compose; README. **Partial:** latency + token usage now traced; tool-call sequence/guardrail triggers still missing from MLflow. Dockerfile/compose review statically checked out (`.dockerignore`, env-var wiring for inter-service URLs) but an actual `docker compose build`/`up` hasn't been run yet — Docker Desktop wasn't available when this was last checked.
 7. **Experiments + deliverables** — prompt ablations, chunk-size ablation (e.g., 250 vs 400 vs 600 tokens), guardrail red-team tests; write-up (≥2,000 words), slides, demo dry-run + fallback recording.
 
 ---
 
 ## 6.1 Escalation Rules (Guardrails detail)
+
+> **Status flag:** this section describes the target design. What's actually implemented today (`src/agent/tools.py`, `orchestrator.py`) is simpler: conversational complaint intake through the ReAct loop (no consent gate, no form card), and `should_escalate()` only implements Rule 1 (mandatory category escalation for harassment/discrimination/safety/legal) — Rules 2–7 (severity floors, danger scan, consent gate, form PII handling, fail-safe escalation, `EscalationEvent`/24h SLA) are not built. Whoever owns Guardrails/Escalation should confirm whether to build toward this doc as written or reconcile the plan with the simpler shipped version before more work goes into either direction.
 
 Escalation is a **consent-gated, form-driven flow** whose routing decisions are made by deterministic
 functions in `src/guardrails/` — never by LLM judgment (per CLAUDE.md, §8 risk). Grounded in
@@ -300,7 +325,7 @@ Document failure modes found (e.g., retrieval misses on table data, router confu
 ## 8. Key Risks & Mitigations
 
 - **Demo failure during presentation** → run fully local (Chroma + SQLite), record a fallback video, disclose upfront per spec.
-- **Gemini rate limits/outage during demo** → cache golden-path responses; keep the fallback video.
+- **Gemini rate limits/outage during demo** → **materialized during development**, not just a theoretical risk: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing (each agent turn costs several requests). Mitigations: `run_turn()` now catches `APIError` and degrades gracefully instead of crashing; `GET /usage` gives visibility into consumption; evaluating Groq as an alternate backend for headroom (§2.1). Still keep: cache golden-path responses, keep the fallback video, disclose upfront.
 - **Hallucinated policy answers** → similarity floor + citation verification + "I don't know" path; measured in evals.
-- **Sensitive complaints mishandled** → hard-coded escalation rules (not LLM-discretionary) for harassment/safety/legal categories.
+- **Sensitive complaints mishandled** → hard-coded escalation rules (not LLM-discretionary) for harassment/safety/legal categories. Currently the simple category-based version (§6.1 status flag) — confirm with whoever owns Guardrails whether the fuller form-driven design in §6.1 is still the target before the demo.
 - **Scope creep** → milestones 1–5 are the MVP; graph memory, reranking, multi-language are explicitly out of scope.

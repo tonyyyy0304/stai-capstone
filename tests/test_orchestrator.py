@@ -26,10 +26,18 @@ class FakeCandidate:
         self.content = content
 
 
+class FakeUsageMetadata:
+    def __init__(self, prompt=10, candidates=5, total=15):
+        self.prompt_token_count = prompt
+        self.candidates_token_count = candidates
+        self.total_token_count = total
+
+
 class FakeResponse:
-    def __init__(self, parts, text=None):
+    def __init__(self, parts, text=None, usage_metadata=None):
         self.candidates = [FakeCandidate(FakeContent(parts))]
         self.text = text
+        self.usage_metadata = usage_metadata
 
 
 class FakeModels:
@@ -45,12 +53,14 @@ class FakeClient:
         self.models = FakeModels(responses)
 
 
-def text_response(text):
-    return FakeResponse([FakePart(function_call=None)], text=text)
+def text_response(text, usage_metadata=None):
+    return FakeResponse([FakePart(function_call=None)], text=text, usage_metadata=usage_metadata)
 
 
-def tool_call_response(name, args):
-    return FakeResponse([FakePart(function_call=FakeFunctionCall(name, args))])
+def tool_call_response(name, args, usage_metadata=None):
+    return FakeResponse(
+        [FakePart(function_call=FakeFunctionCall(name, args))], usage_metadata=usage_metadata
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +72,11 @@ def mock_classification(monkeypatch, intent, confidence=0.9, category=None, clar
     classification = IntentClassification(
         intent=intent, confidence=confidence, category=category, clarifying_question=clarifying_question
     )
-    monkeypatch.setattr(orchestrator, "classify_intent", lambda message, history, client=None: classification)
+    monkeypatch.setattr(
+        orchestrator,
+        "classify_intent",
+        lambda message, history, client=None, session_id=None: classification,
+    )
 
 
 def test_ambiguous_intent_short_circuits_without_tool_call(monkeypatch):
@@ -113,7 +127,7 @@ def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
     monkeypatch.setattr(
         tools,
         "search_web",
-        lambda question, client=None: GroundedAnswer(
+        lambda question, client=None, session_id=None: GroundedAnswer(
             answer="13th month pay is mandated by PD 851.", source=AnswerSource.WEB
         ),
     )
@@ -188,9 +202,38 @@ def test_loop_stops_at_max_iterations(monkeypatch):
 def test_gemini_api_error_returns_graceful_fallback(monkeypatch):
     from google.genai.errors import ServerError
 
-    def raise_unavailable(message, history, client=None):
+    def raise_unavailable(message, history, client=None, session_id=None):
         raise ServerError(503, {"error": {"message": "high demand"}})
 
     monkeypatch.setattr(orchestrator, "classify_intent", raise_unavailable)
     result = orchestrator.run_turn("s8", "how many vacation days do I get?", client=FakeClient([]))
     assert result.reply == orchestrator.API_ERROR_REPLY
+
+
+def test_token_usage_aggregates_across_react_iterations(monkeypatch):
+    mock_classification(monkeypatch, Intent.FAQ, category="leave")
+    monkeypatch.setattr(
+        tools,
+        "search_kb",
+        lambda question, category=None: (
+            GroundedAnswer(answer="15 sick days a year.", source=AnswerSource.INTERNAL_KB),
+            ["chunk1"],
+        ),
+    )
+    client = FakeClient(
+        [
+            tool_call_response(
+                "search_kb",
+                {"question": "sick leave days"},
+                usage_metadata=FakeUsageMetadata(prompt=10, candidates=5, total=15),
+            ),
+            text_response(
+                "You get 15 sick leave days per year.",
+                usage_metadata=FakeUsageMetadata(prompt=20, candidates=8, total=28),
+            ),
+        ]
+    )
+    result = orchestrator.run_turn("s9", "how many sick leave days do I get?", client=client)
+    assert result.token_usage.prompt_tokens == 30
+    assert result.token_usage.completion_tokens == 13
+    assert result.token_usage.total_tokens == 43

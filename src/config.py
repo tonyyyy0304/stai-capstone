@@ -54,8 +54,10 @@ ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarif
 
 # --- Web search fallback (Module 8: Tool Use) ---
 # search_web is restricted to these domains so it can't become a general-purpose
-# search engine (would defeat the HR-only topic-filter guardrail).
+# search engine (would defeat the HR-only topic-filter guardrail). Enforced via
+# Tavily's include_domains param at search time, not post-hoc filtering.
 DOLE_ALLOWED_DOMAINS = ("dole.gov.ph", "officialgazette.gov.ph", "lawphil.net")
+TAVILY_MAX_RESULTS = 5
 
 # --- Monitoring ---
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", (DATA_DIR / "mlruns").as_uri())
@@ -76,3 +78,19 @@ def get_gemini_client():
     from google import genai
 
     return genai.Client(api_key=get_gemini_api_key())
+
+
+def get_tavily_api_key() -> str:
+    key = os.environ.get("TAVILY_API_KEY", "")
+    if not key:
+        raise RuntimeError(
+            "TAVILY_API_KEY is not set. Copy .env.example to .env and add your key."
+        )
+    return key
+
+
+def get_tavily_client():
+    """Create a Tavily client. Kept as a function so tests can mock it."""
+    from tavily import TavilyClient
+
+    return TavilyClient(api_key=get_tavily_api_key())

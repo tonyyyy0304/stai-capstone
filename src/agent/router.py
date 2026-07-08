@@ -6,7 +6,7 @@ surface that directly to the employee instead of calling any tool.
 """
 
 from src import config
-from src.agent import prompts
+from src.agent import prompts, usage
 from src.schemas import Intent, IntentClassification
 
 DEFAULT_CLARIFYING_QUESTION = (
@@ -21,6 +21,7 @@ def classify_intent(
     message: str,
     history: list[dict[str, str]] | None = None,
     client=None,
+    session_id: str | None = None,
 ) -> IntentClassification:
     from google.genai import types
 
@@ -36,6 +37,7 @@ def classify_intent(
             temperature=0.0,
         ),
     )
+    usage.record_usage(config.CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
     result: IntentClassification | None = response.parsed
     if result is None:  # fail closed: ask rather than guess
         return IntentClassification(

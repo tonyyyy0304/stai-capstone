@@ -1,9 +1,10 @@
 from fastapi.testclient import TestClient
 
-from src import api
+from src import api, config
 from src.agent import orchestrator
+from src.agent import usage as usage_tracker
 from src.rag.retriever import RetrievedChunk
-from src.schemas import GroundedAnswer
+from src.schemas import GroundedAnswer, TokenUsage
 
 
 def test_health_degraded_without_runtime_state(monkeypatch, tmp_path):
@@ -106,4 +107,40 @@ def test_chat_reports_filed_and_escalated_complaint(monkeypatch):
     action = body["actions"][0]
     assert action["ticket_id"] == "ticket-abc"
     assert "escalated" in action["label"].lower()
+
+
+def test_chat_includes_token_usage(monkeypatch):
+    scripted = orchestrator.AgentResponse(
+        reply="15 sick leave days.",
+        token_usage=TokenUsage(prompt_tokens=30, completion_tokens=13, total_tokens=43),
+    )
+    monkeypatch.setattr(orchestrator, "run_turn", lambda *args, **kwargs: scripted)
+
+    client = TestClient(api.app)
+    response = client.post("/chat", json={"message": "how many sick leave days do I get?"})
+
+    assert response.status_code == 200
+    assert response.json()["token_usage"] == {
+        "prompt_tokens": 30,
+        "completion_tokens": 13,
+        "total_tokens": 43,
+    }
+
+
+def test_usage_endpoint_reports_recorded_totals(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    usage_tracker.record_usage(
+        "gemini-2.5-flash",
+        TokenUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+        session_id="s1",
+    )
+
+    client = TestClient(api.app)
+    response = client.get("/usage")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["today"]["request_count"] == 1
+    assert body["today"]["total_tokens"] == 15
+    assert body["all_time"]["total_tokens"] == 15
 

@@ -1,6 +1,9 @@
 # LLM + embeddings
 google-genai==1.21.1
 
+# Web search (search_web tool — provider-agnostic, doesn't depend on Gemini grounding)
+tavily-python==0.7.26
+
 # Vector store
 chromadb==1.0.13
 

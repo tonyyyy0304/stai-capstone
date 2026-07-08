@@ -22,7 +22,7 @@ from src import config
 from src.monitoring import chat_trace, configure_mlflow
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation
+from src.schemas import Citation, TokenUsage
 
 
 @asynccontextmanager
@@ -65,6 +65,7 @@ class ChatResponse(BaseModel):
     sources: list[SourceResponse] = Field(default_factory=list)
     actions: list[ActionResponse] = Field(default_factory=list)
     insufficient_context: bool = False
+    token_usage: TokenUsage = Field(default_factory=TokenUsage)
 
 
 class HealthResponse(BaseModel):
@@ -73,6 +74,15 @@ class HealthResponse(BaseModel):
     manifest_exists: bool
     gemini_api_key_configured: bool
     mlflow_tracking_uri: str
+
+
+class UsageResponse(BaseModel):
+    today: dict[str, int]
+    all_time: dict[str, int]
+    note: str = (
+        "Covers the agent's own Gemini calls only (router, ReAct loop, search_web). "
+        "Does not include the plain-RAG fallback path or ingestion embedding calls."
+    )
 
 
 app = FastAPI(
@@ -162,6 +172,9 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "citation_count": len(agent_response.citations),
                 "source_count": len(agent_response.sources),
                 "action_count": len(agent_response.actions),
+                "prompt_tokens": agent_response.token_usage.prompt_tokens,
+                "completion_tokens": agent_response.token_usage.completion_tokens,
+                "total_tokens": agent_response.token_usage.total_tokens,
             }
             trace["tags"] = {"route": "agent", "insufficient_context": agent_response.insufficient_context}
             return agent_response
@@ -224,6 +237,20 @@ def get_ticket(ticket_id: str) -> dict[str, Any]:
     if ticket is None:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
+
+
+@app.get("/usage", response_model=UsageResponse)
+def usage() -> UsageResponse:
+    try:
+        from src.agent import usage as usage_tracker
+    except Exception:
+        empty = {"request_count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return UsageResponse(today=empty, all_time=empty)
+
+    return UsageResponse(
+        today=usage_tracker.get_usage_today(),
+        all_time=usage_tracker.get_usage_all_time(),
+    )
 
 
 @app.get("/health", response_model=HealthResponse)

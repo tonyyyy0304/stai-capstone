@@ -23,11 +23,12 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
 from src import config
-from src.agent import prompts, tools
+from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
@@ -37,6 +38,7 @@ from src.schemas import (
     Intent,
     IntentClassification,
     Severity,
+    TokenUsage,
     WebCitation,
 )
 
@@ -76,6 +78,7 @@ class AgentResponse:
     ticket_id: str | None = None
     escalated: bool = False
     insufficient_context: bool = False
+    token_usage: TokenUsage = field(default_factory=TokenUsage)
     steps: list[AgentStep] = field(default_factory=list)
 
 
@@ -114,6 +117,7 @@ def run_turn(
     client = client or config.get_gemini_client()
     history = history or []
     steps: list[AgentStep] = []
+    turn_started_at = datetime.now(timezone.utc)
 
     logger.info("session=%s turn_start", session_id)
     guardrail_result = _check_input_stub(message)
@@ -121,7 +125,7 @@ def run_turn(
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
 
     try:
-        classification = classify_intent(message, history, client=client)
+        classification = classify_intent(message, history, client=client, session_id=session_id)
         steps.append(
             AgentStep(
                 thought=f"classified intent={classification.intent.value} "
@@ -136,15 +140,26 @@ def run_turn(
             return AgentResponse(
                 reply=classification.clarifying_question or FALLBACK_CLARIFYING_TEXT,
                 steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
             )
 
         if classification.intent == Intent.OUT_OF_SCOPE:
-            return AgentResponse(reply=OUT_OF_SCOPE_REPLY, steps=steps)
+            return AgentResponse(
+                reply=OUT_OF_SCOPE_REPLY,
+                steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
+            )
 
-        reply, run_state = _run_tool_loop(message, history, classification, steps, client)
+        reply, run_state = _run_tool_loop(
+            message, history, classification, steps, client, session_id
+        )
     except APIError as exc:
         logger.warning("session=%s gemini_api_error status=%s", session_id, exc.code)
-        return AgentResponse(reply=API_ERROR_REPLY, steps=steps)
+        return AgentResponse(
+            reply=API_ERROR_REPLY,
+            steps=steps,
+            token_usage=_turn_token_usage(turn_started_at, session_id),
+        )
 
     return AgentResponse(
         reply=reply,
@@ -154,7 +169,19 @@ def run_turn(
         ticket_id=run_state.ticket_id,
         escalated=run_state.escalated,
         insufficient_context=run_state.insufficient_context,
+        token_usage=_turn_token_usage(turn_started_at, session_id),
         steps=steps,
+    )
+
+
+def _turn_token_usage(turn_started_at: datetime, session_id: str) -> TokenUsage:
+    """Sums the usage log rows this turn's calls just wrote, rather than
+    threading an accumulator through every call site."""
+    summary = usage.get_usage_summary(since=turn_started_at, session_id=session_id)
+    return TokenUsage(
+        prompt_tokens=summary["prompt_tokens"],
+        completion_tokens=summary["completion_tokens"],
+        total_tokens=summary["total_tokens"],
     )
 
 
@@ -164,6 +191,7 @@ def _run_tool_loop(
     classification: IntentClassification,
     steps: list[AgentStep],
     client,
+    session_id: str,
 ) -> tuple[str, _RunState]:
     from google.genai import types
 
@@ -181,6 +209,7 @@ def _run_tool_loop(
                 temperature=0.2,
             ),
         )
+        usage.record_usage(config.CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
         candidate_content = response.candidates[0].content
         function_calls = [
             part.function_call for part in candidate_content.parts if part.function_call
@@ -193,7 +222,7 @@ def _run_tool_loop(
         response_parts = []
         for call in function_calls:
             args = dict(call.args or {})
-            observation = _execute_tool(call.name, args, client, run_state)
+            observation = _execute_tool(call.name, args, client, run_state, session_id)
             steps.append(
                 AgentStep(
                     thought=f"iteration {iteration + 1}: calling {call.name}",
@@ -292,7 +321,9 @@ def _function_declarations() -> list:
     ]
 
 
-def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
+def _execute_tool(
+    name: str, args: dict, client, run_state: _RunState, session_id: str
+) -> dict:
     if name == "search_kb":
         answer, chunks = tools.search_kb(args["question"], category=args.get("category"))
         run_state.citations = answer.citations
@@ -306,7 +337,7 @@ def _execute_tool(name: str, args: dict, client, run_state: _RunState) -> dict:
         }
 
     if name == "search_web":
-        answer = tools.search_web(args["question"], client=client)
+        answer = tools.search_web(args["question"], client=client, session_id=session_id)
         run_state.citations = answer.citations
         run_state.web_citations = answer.web_citations
         run_state.insufficient_context = answer.insufficient_context
@@ -391,4 +422,5 @@ def handle_message(
         "sources": [_source_dict_from_chunk(chunk) for chunk in result.chunks],
         "actions": actions,
         "insufficient_context": result.insufficient_context,
+        "token_usage": result.token_usage,
     }

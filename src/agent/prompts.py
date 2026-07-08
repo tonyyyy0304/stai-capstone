@@ -2,7 +2,9 @@
 
 ROUTER_PROMPT drives intent classification (Module 4: Disambiguation).
 REACT_SYSTEM_PROMPT drives the tool-calling loop (Module 7: ReAct Agent).
-WEB_SEARCH_PROMPT / WEB_ANSWER_SHAPE_PROMPT drive the search_web fallback tool.
+WEB_ANSWER_SHAPE_PROMPT drives the search_web fallback tool — Tavily does the
+actual searching (provider-agnostic), this prompt just shapes its results into
+a structured GroundedAnswer.
 """
 
 ROUTER_PROMPT = """You are the intent router for an HR assistant that helps Philippine \
@@ -56,18 +58,12 @@ HR — before you ask for whatever is still missing of category, severity, and \
 description. Don't make them sit through several back-and-forth questions before \
 hearing that reassurance."""
 
-WEB_SEARCH_PROMPT = """Answer the following Philippine labor law question using web \
-search, preferring official sources ({domains}). Be precise about article numbers, \
-thresholds, and amounts. If you cannot find a reliable answer from these sources, say \
-so plainly instead of guessing.
-
-Question: {question}"""
-
-WEB_ANSWER_SHAPE_PROMPT = """Reshape the following grounded research into a structured \
-answer. Base the answer only on the research text below; do not add outside knowledge. \
-If the research does not actually answer the question, set insufficient_context to true.
+WEB_ANSWER_SHAPE_PROMPT = """Answer the Philippine labor law question using ONLY the \
+search results below. Be precise about article numbers, thresholds, and amounts. If the \
+results do not actually answer the question, set insufficient_context to true instead \
+of guessing.
 
 Question: {question}
 
-Research:
-{grounded_text}"""
+Search results:
+{search_results}"""

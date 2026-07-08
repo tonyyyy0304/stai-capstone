@@ -1,8 +1,9 @@
 """Tools the ReAct agent can call (Module 8: Tool Use).
 
 - search_kb    -> internal RAG, delegates to answer_question() in src/rag/answerer.py
-- search_web   -> fallback for DOLE/labor-law questions the internal KB doesn't
-                  cover; Gemini native google_search grounding, domain-restricted
+- search_web   -> fallback for DOLE/labor-law questions the internal KB doesn't cover;
+                  Tavily search (domain-restricted, provider-agnostic) + one structured
+                  Gemini call to shape results into a GroundedAnswer
 - file_complaint / get_ticket_status -> SQLite-backed ticket tools, exposed to the model
 - escalate_to_hr / should_escalate -> deterministic, code-only; never exposed as a
   callable tool, so escalation for harassment/safety/legal is never an LLM decision
@@ -15,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 
 from src import config
-from src.agent import prompts
+from src.agent import prompts, usage
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
@@ -46,37 +47,26 @@ def search_kb(
 
 # --- search_web (DOLE/labor-law fallback) -------------------------------------
 
-def search_web(question: str, client=None) -> GroundedAnswer:
+def search_web(
+    question: str, client=None, session_id: str | None = None, tavily_client=None
+) -> GroundedAnswer:
     """Fallback for questions the internal KB doesn't cover (e.g. DOLE labor law).
 
-    Two Gemini calls, because google_search grounding and response_schema cannot
-    be combined in a single call:
-      1. Grounded search restricted to config.DOLE_ALLOWED_DOMAINS, no response_schema.
-      2. Reshape the grounded text + grounding URLs into a typed GroundedAnswer.
+    Tavily does the actual searching (domain-restricted, works the same regardless
+    of which LLM serves chat), then one Gemini call with response_schema shapes the
+    results into a typed GroundedAnswer.
     """
     from google.genai import types
 
-    client = client or config.get_gemini_client()
-
-    search_response = client.models.generate_content(
-        model=config.CHAT_MODEL,
-        contents=prompts.WEB_SEARCH_PROMPT.format(
-            domains=", ".join(config.DOLE_ALLOWED_DOMAINS), question=question
-        ),
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.2,
-        ),
-    )
-    grounded_text = (search_response.text or "").strip()
-    web_citations = _extract_web_citations(search_response)
-    if not grounded_text or not web_citations:
+    results = _tavily_search(question, tavily_client=tavily_client)
+    if not results:
         return no_web_answer()
 
+    client = client or config.get_gemini_client()
     shape_response = client.models.generate_content(
         model=config.CHAT_MODEL,
         contents=prompts.WEB_ANSWER_SHAPE_PROMPT.format(
-            question=question, grounded_text=grounded_text
+            question=question, search_results=_format_tavily_results(results)
         ),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -84,28 +74,55 @@ def search_web(question: str, client=None) -> GroundedAnswer:
             temperature=0.0,
         ),
     )
+    usage.record_usage(config.CHAT_MODEL, usage.extract_usage(shape_response), session_id=session_id)
     answer: GroundedAnswer | None = shape_response.parsed
     if answer is None or answer.insufficient_context:  # fail closed
         return no_web_answer()
 
+    web_citations = [
+        WebCitation(url=r["url"], title=r.get("title") or r["url"], snippet=(r.get("content") or "")[:300])
+        for r in results
+    ]
     return answer.model_copy(
         update={"source": AnswerSource.WEB, "web_citations": web_citations, "citations": []}
     )
 
 
-def _extract_web_citations(response) -> list[WebCitation]:
-    """Pull grounding URLs off a google_search response, restricted to the DOLE allowlist."""
-    citations: list[WebCitation] = []
-    for candidate in getattr(response, "candidates", None) or []:
-        metadata = getattr(candidate, "grounding_metadata", None)
-        for chunk in getattr(metadata, "grounding_chunks", None) or []:
-            web = getattr(chunk, "web", None)
-            if not web or not web.uri:
-                continue
-            if not any(domain in web.uri for domain in config.DOLE_ALLOWED_DOMAINS):
-                continue
-            citations.append(WebCitation(url=web.uri, title=web.title or web.uri))
-    return citations
+def _tavily_search(question: str, tavily_client=None) -> list[dict]:
+    """Domain-restricted Tavily search. Fails closed (empty list) on API errors
+    rather than raising — a search outage shouldn't crash the whole agent turn."""
+    from tavily.errors import (
+        BadRequestError,
+        ForbiddenError,
+        InvalidAPIKeyError,
+        UsageLimitExceededError,
+    )
+    from tavily.errors import TimeoutError as TavilyTimeoutError
+
+    tavily_client = tavily_client or config.get_tavily_client()
+    try:
+        response = tavily_client.search(
+            query=question,
+            include_domains=list(config.DOLE_ALLOWED_DOMAINS),
+            max_results=config.TAVILY_MAX_RESULTS,
+        )
+    except (
+        BadRequestError,
+        ForbiddenError,
+        InvalidAPIKeyError,
+        UsageLimitExceededError,
+        TavilyTimeoutError,
+    ) as exc:
+        logger.warning("tavily_search_error question=%r error=%s", question, exc)
+        return []
+    return response.get("results") or []
+
+
+def _format_tavily_results(results: list[dict]) -> str:
+    parts = []
+    for r in results:
+        parts.append(f"[url: {r['url']} | title: {r.get('title', '')}]\n{r.get('content', '')}")
+    return "\n\n---\n\n".join(parts)
 
 
 def no_web_answer() -> GroundedAnswer:

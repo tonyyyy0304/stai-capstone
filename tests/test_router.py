@@ -1,23 +1,41 @@
+import pytest
+
+from src import config
+from src.agent import usage
 from src.agent.router import classify_intent, format_history, needs_clarification
-from src.schemas import Intent, IntentClassification
+from src.schemas import Intent, IntentClassification, TokenUsage
+
+
+class FakeUsageMetadata:
+    def __init__(self, prompt=12, candidates=6, total=18):
+        self.prompt_token_count = prompt
+        self.candidates_token_count = candidates
+        self.total_token_count = total
 
 
 class FakeResponse:
-    def __init__(self, parsed):
+    def __init__(self, parsed, usage_metadata=None):
         self.parsed = parsed
+        self.usage_metadata = usage_metadata
 
 
 class FakeModels:
-    def __init__(self, parsed):
+    def __init__(self, parsed, usage_metadata=None):
         self._parsed = parsed
+        self._usage_metadata = usage_metadata
 
     def generate_content(self, model, contents, config):
-        return FakeResponse(self._parsed)
+        return FakeResponse(self._parsed, usage_metadata=self._usage_metadata)
 
 
 class FakeClient:
-    def __init__(self, parsed):
-        self.models = FakeModels(parsed)
+    def __init__(self, parsed, usage_metadata=None):
+        self.models = FakeModels(parsed, usage_metadata=usage_metadata)
+
+
+@pytest.fixture(autouse=True)
+def isolated_sqlite(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
 
 
 def test_classify_intent_passes_through_confident_result():
@@ -51,3 +69,16 @@ def test_format_history_empty_and_populated():
     assert format_history([]) == "(no prior turns)"
     formatted = format_history([{"role": "user", "content": "hi"}])
     assert formatted == "user: hi"
+
+
+def test_classify_intent_records_token_usage():
+    parsed = IntentClassification(intent=Intent.FAQ, confidence=0.9)
+    client = FakeClient(parsed, usage_metadata=FakeUsageMetadata(prompt=12, candidates=6, total=18))
+
+    classify_intent("how many vacation days do I get?", client=client, session_id="s1")
+
+    summary = usage.get_usage_summary(session_id="s1")
+    assert summary["request_count"] == 1
+    assert summary["prompt_tokens"] == 12
+    assert summary["completion_tokens"] == 6
+    assert summary["total_tokens"] == 18

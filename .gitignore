@@ -10,6 +10,7 @@ data/index_manifest.json
 evals/results/
 mlruns/
 data/mlruns/
+data/*.db
 
 # Python
 __pycache__/

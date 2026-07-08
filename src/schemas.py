@@ -120,3 +120,15 @@ class ComplaintTicket(BaseModel):
     desired_outcome: str | None = Field(
         default=None, description="What resolution the employee is seeking"
     )
+
+
+# --- Token usage (Module 11: LLMOps Monitoring) ---
+
+class TokenUsage(BaseModel):
+    """Aggregated LLM token usage. Field names match the common
+    prompt/completion/total convention rather than any one provider's wire
+    format, so this stays stable across LLM backends."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
