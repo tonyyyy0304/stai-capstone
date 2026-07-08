@@ -198,7 +198,12 @@ def should_escalate(category: ComplaintCategory) -> bool:
 
 
 def escalate_to_hr(ticket_id: str, reason: str) -> dict:
-    """Mocked HR escalation channel (email/webhook) for dev; flags the ticket."""
+    """Mocked HR escalation channel (email/webhook) for dev; flags the ticket.
+
+    TODO: swap for the real HR-side escalation handoff once that's built (owned by
+    another member — intake form on HR's end, escalation guardrails, notification
+    channel). This stub only flags the ticket row and logs a warning.
+    """
     conn = _get_connection()
     try:
         conn.execute(

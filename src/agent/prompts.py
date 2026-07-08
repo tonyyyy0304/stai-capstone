@@ -49,7 +49,12 @@ Rules:
 offer to route the question to HR directly.
 - Never promise a specific outcome or timeline on a complaint; that is HR's decision.
 - If a tool response says escalated is true, tell the employee HR has already been \
-notified directly given the nature of the complaint."""
+notified directly given the nature of the complaint.
+- If the employee's first message already sounds severe (harassment, safety, \
+discrimination, or legal risk), say so and reassure them up front that this will go to \
+HR — before you ask for whatever is still missing of category, severity, and \
+description. Don't make them sit through several back-and-forth questions before \
+hearing that reassurance."""
 
 WEB_SEARCH_PROMPT = """Answer the following Philippine labor law question using web \
 search, preferring official sources ({domains}). Be precise about article numbers, \
