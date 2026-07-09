@@ -2,7 +2,7 @@ import pytest
 
 from src import config
 from src.agent import orchestrator, tools
-from src.schemas import AnswerSource, ComplaintCategory, GroundedAnswer, Intent, IntentClassification
+from src.schemas import AnswerSource, GroundedAnswer, Intent, IntentClassification
 
 
 class FakeFunctionCall:
@@ -64,8 +64,11 @@ def tool_call_response(name, args, usage_metadata=None):
 
 
 @pytest.fixture(autouse=True)
-def isolated_sqlite(tmp_path, monkeypatch):
+def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("HR_ESCALATION_EMAIL_TO", raising=False)
 
 
 def mock_classification(monkeypatch, intent, confidence=0.9, category=None, clarifying_question=None):
@@ -145,7 +148,11 @@ def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
 
 def test_complaint_files_ticket_and_escalates_deterministically(monkeypatch):
     mock_classification(monkeypatch, Intent.COMPLAINT)
-    monkeypatch.setattr(tools, "should_escalate", lambda category: category == ComplaintCategory.HARASSMENT)
+    # No monkeypatch on should_escalate here: category="harassment" below hits
+    # the real Rule 1 (mandatory category) in src/guardrails/escalation.py, so
+    # this test exercises the actual deterministic rule, not a stand-in for
+    # it. (The full rule matrix -- Rules 1/2/3/4/7 -- is covered in
+    # tests/test_guardrails.py.)
     client = FakeClient(
         [
             tool_call_response(
@@ -197,6 +204,27 @@ def test_loop_stops_at_max_iterations(monkeypatch):
     result = orchestrator.run_turn("s7", "loop forever", client=FakeClient(responses))
     assert result.reply == orchestrator.MAX_ITERATIONS_REPLY
     assert len(result.steps) == 1 + config.MAX_REACT_ITERATIONS
+
+
+def test_loop_exhausts_iterations_during_complaint_triggers_failsafe_escalation(monkeypatch):
+    # Same shape as test_loop_stops_at_max_iterations above, but classified as
+    # a COMPLAINT and never successfully completing a file_complaint call --
+    # this must escalate (Rule 7), not just return MAX_ITERATIONS_REPLY.
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    responses = [
+        tool_call_response("file_complaint", {"category": "payroll"})  # missing severity/description
+        for _ in range(config.MAX_REACT_ITERATIONS)
+    ]
+    result = orchestrator.run_turn(
+        "s10", "I have an ongoing issue I can't fully explain", client=FakeClient(responses)
+    )
+    assert result.reply != orchestrator.MAX_ITERATIONS_REPLY
+    assert result.ticket_id is not None
+    assert result.escalated is True
+    assert result.trigger_rule == "parse_failure"
+    status = tools.get_ticket_status(result.ticket_id)
+    assert status["status"] == "escalated"
+    assert status["category"] == "other"
 
 
 def test_gemini_api_error_returns_graceful_fallback(monkeypatch):

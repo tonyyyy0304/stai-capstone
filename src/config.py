@@ -61,7 +61,7 @@ ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarif
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "gemini")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma4:e4b")
-GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-2.5-flash")
+GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-3.1-flash-lite")
 ACTIVE_CHAT_MODEL = GEMINI_CHAT_MODEL if LLM_PROVIDER == "gemini" else f"ollama:{OLLAMA_CHAT_MODEL}"
 
 # --- Memory (Module 5) ---

@@ -39,10 +39,13 @@ any policy question.
 - search_web(question): official DOLE/government sources. Use this only when search_kb \
 reports insufficient_context, for questions about Philippine labor law rather than \
 company-internal policy.
-- file_complaint(category, severity, description, parties_involved, incident_date, \
-desired_outcome): files a formal complaint. Only call this once you know the category, \
-severity, and a description of what happened — ask the employee directly for anything \
-missing before calling it.
+- file_complaint(category, severity, description, parties_involved, incident_date, \ 
+desired_outcome): files a formal complaint. category, severity, and description are \
+required — ask the employee directly for whichever of those three is still missing \
+before calling it. parties_involved, incident_date, and desired_outcome are optional: \
+mention them once if it comes up naturally, but never delay filing to collect them. If \
+the complaint sounds urgent or unsafe, file with just the three required fields \
+immediately rather than asking anything further first.
 - get_ticket_status(ticket_id): looks up a previously filed complaint.
 
 Rules:
@@ -56,7 +59,8 @@ notified directly given the nature of the complaint.
 discrimination, or legal risk), say so and reassure them up front that this will go to \
 HR — before you ask for whatever is still missing of category, severity, and \
 description. Don't make them sit through several back-and-forth questions before \
-hearing that reassurance."""
+hearing that reassurance, and don't ask about parties_involved, incident_date, or \
+desired_outcome before filing in these cases either."""
 
 WEB_ANSWER_SHAPE_PROMPT = """Answer the Philippine labor law question using ONLY the \
 search results below. Be precise about article numbers, thresholds, and amounts. If the \

@@ -13,6 +13,43 @@ from typing import Any, Iterator
 
 from src import config
 
+# Fail-closed allowlist (Module 6: Guardrails, Module 11: LLMOps Monitoring).
+#
+# Rather than trying to detect and strip PII/free-text after the fact, only
+# these exact keys are ever allowed into an MLflow tag or metric. Anything
+# else passed via trace_state["tags"]/["metrics"] -- e.g. a future caller
+# accidentally including a complaint description or form field -- is
+# silently dropped here rather than logged. escalated/trigger_rule are
+# intentionally on this list: both come from EscalationEvent/ActionResponse,
+# which never carry free-text or identity fields in the first place (see
+# src/guardrails/form_pii.py).
+_ALLOWED_TAG_KEYS = frozenset(
+    {
+        "component",
+        "session_id",
+        "chat_model",
+        "embedding_model",
+        "route",
+        "insufficient_context",
+        "escalated",
+        "trigger_rule",
+        "status",
+        "error_type",
+    }
+)
+_ALLOWED_METRIC_KEYS = frozenset(
+    {
+        "citation_count",
+        "source_count",
+        "web_citation_count",
+        "action_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "latency_ms",
+    }
+)
+
 
 def _safe_import_mlflow():
     try:
@@ -75,8 +112,12 @@ def chat_trace(session_id: str, message: str) -> Iterator[dict[str, Any]]:
             latency_ms = (perf_counter() - trace_state["started_at"]) * 1000
             mlflow.log_metric("latency_ms", latency_ms)
             for key, value in trace_state.get("metrics", {}).items():
+                if key not in _ALLOWED_METRIC_KEYS:
+                    continue
                 if isinstance(value, (int, float)):
                     mlflow.log_metric(key, value)
             for key, value in trace_state.get("tags", {}).items():
+                if key not in _ALLOWED_TAG_KEYS:
+                    continue
                 mlflow.set_tag(key, str(value))
 

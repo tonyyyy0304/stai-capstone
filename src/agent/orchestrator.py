@@ -17,10 +17,15 @@ Gemini picks a tool, tools.py executes it, the result is fed back as an
 observation, and the model repeats until it answers in plain text or
 MAX_REACT_ITERATIONS is hit.
 
-Guardrails (Module 6, src/guardrails/) run at both ends of run_turn(): input
-checks (prompt-injection heuristics, toxicity) gate entry before the router
-even runs; an output grounding check re-verifies citations before the final
-AgentResponse is returned.
+Guardrails (Module 6, src/guardrails/) run at multiple points in run_turn():
+input checks (prompt-injection heuristics, toxicity) gate entry before the
+router even runs; an output grounding check re-verifies citations before the
+final AgentResponse is returned; and escalation for filed complaints is
+decided by the deterministic rule engine in src/guardrails/escalation.py
+(should_escalate) and src/guardrails/danger_scan.py -- never by the LLM. If
+the loop exhausts MAX_REACT_ITERATIONS while the turn was already classified
+as a complaint, _failsafe_escalate_incomplete_complaint() forces a Rule 7
+escalation rather than letting the conversation end in silence.
 """
 
 import json
@@ -34,6 +39,8 @@ from pydantic import ValidationError
 from src import config
 from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
+from src.guardrails.escalation import fail_safe_decision, should_escalate
+from src.guardrails.form_pii import to_escalation_event
 from src.guardrails.grounding import check_grounding
 from src.guardrails.input_checks import check_topic_and_injection
 from src.guardrails.toxicity import check_toxicity
@@ -85,6 +92,7 @@ class AgentResponse:
     chunks: list[RetrievedChunk] = field(default_factory=list)
     ticket_id: str | None = None
     escalated: bool = False
+    trigger_rule: str | None = None
     insufficient_context: bool = False
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     steps: list[AgentStep] = field(default_factory=list)
@@ -99,6 +107,7 @@ class _RunState:
     chunks: list[RetrievedChunk] = field(default_factory=list)
     ticket_id: str | None = None
     escalated: bool = False
+    trigger_rule: str | None = None
     insufficient_context: bool = False
 
 
@@ -186,6 +195,7 @@ def run_turn(
         chunks=run_state.chunks,
         ticket_id=run_state.ticket_id,
         escalated=run_state.escalated,
+        trigger_rule=run_state.trigger_rule,
         insufficient_context=insufficient_context,
         token_usage=_turn_token_usage(turn_started_at, session_id),
         steps=steps,
@@ -216,6 +226,14 @@ def _run_tool_loop(
     run_state = _RunState()
     contents = _build_initial_contents(history, message, classification)
     agent_tools = types.Tool(function_declarations=_function_declarations())
+    # Guardrail scanning (danger_scan/should_escalate) needs the employee's
+    # full, literal wording across the whole conversation, not just this
+    # turn's fragment -- a multi-turn complaint often states the substantive
+    # (and potentially dangerous/retaliatory) content in an earlier turn and
+    # only dates/parties/desired-outcome in the turn that actually completes
+    # the ComplaintTicket. Using only `message` here would silently miss
+    # anything said before the final turn.
+    guardrail_raw_text = _combine_user_text(message, history)
 
     for iteration in range(config.MAX_REACT_ITERATIONS):
         response = client.models.generate_content(
@@ -240,7 +258,7 @@ def _run_tool_loop(
         response_parts = []
         for call in function_calls:
             args = dict(call.args or {})
-            observation = _execute_tool(call.name, args, client, run_state, session_id)
+            observation = _execute_tool(call.name, args, client, run_state, session_id, guardrail_raw_text)
             steps.append(
                 AgentStep(
                     thought=f"iteration {iteration + 1}: calling {call.name}",
@@ -254,7 +272,58 @@ def _run_tool_loop(
             )
         contents.append(types.Content(role="user", parts=response_parts))
 
+    if classification.intent == Intent.COMPLAINT and run_state.ticket_id is None:
+        reply = _failsafe_escalate_incomplete_complaint(guardrail_raw_text, run_state, session_id)
+        return reply, run_state
+
     return MAX_ITERATIONS_REPLY, run_state
+
+
+def _combine_user_text(message: str, history: list[dict[str, str]]) -> str:
+    """Concatenate every user-authored turn (prior history + this turn) for
+    guardrail scanning. See the comment in _run_tool_loop for why this needs
+    to span the whole conversation rather than just the current message."""
+    prior_user_turns = [turn["content"] for turn in history if turn.get("role") == "user"]
+    return "\n".join([*prior_user_turns, message])
+
+
+def _failsafe_escalate_incomplete_complaint(
+    message: str, run_state: "_RunState", session_id: str
+) -> str:
+    """Rule 7 fail-safe (src/guardrails/escalation.py:fail_safe_decision).
+
+    The router already classified this turn as a complaint, but the ReAct
+    loop exhausted MAX_REACT_ITERATIONS without ever completing a valid
+    file_complaint call -- e.g. the model kept re-asking for fields, or kept
+    calling the wrong tool. Rather than return the generic MAX_ITERATIONS_REPLY
+    (which would silently drop a possibly-sensitive report), file a best-effort
+    ticket from the raw message and escalate it deterministically.
+    """
+    description = (
+        f"[Auto-filed after {config.MAX_REACT_ITERATIONS} ReAct iterations without a "
+        f"completed file_complaint call] {message}"
+    )
+    ticket = ComplaintTicket(
+        category=ComplaintCategory.OTHER,
+        severity=Severity.HIGH,
+        description=description[:2000],
+    )
+    ticket_id = tools.file_complaint(ticket)
+    decision = fail_safe_decision(
+        f"max_react_iterations_reached session={session_id} original_intent=complaint"
+    )
+    event = to_escalation_event(ticket, ticket_id, decision)
+    tools.escalate_to_hr(event)
+
+    run_state.ticket_id = ticket_id
+    run_state.escalated = True
+    run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
+    logger.warning("session=%s failsafe_escalation ticket=%s", session_id, ticket_id)
+    return (
+        "I wasn't able to finish gathering the details in the usual number of steps, "
+        "so rather than risk losing your report I've escalated it to HR directly. "
+        f"Reference ticket: {ticket_id}."
+    )
 
 
 def _build_initial_contents(
@@ -340,8 +409,12 @@ def _function_declarations() -> list:
 
 
 def _execute_tool(
-    name: str, args: dict, client, run_state: _RunState, session_id: str
+    name: str, args: dict, client, run_state: _RunState, session_id: str, message: str
 ) -> dict:
+    """`message` here is the combined multi-turn guardrail text built by
+    _combine_user_text() in _run_tool_loop, not just the current turn --
+    see should_escalate() below, which needs the employee's full wording
+    across the conversation, not a single fragment of it."""
     if name == "search_kb":
         answer, chunks = tools.search_kb(args["question"], category=args.get("category"))
         run_state.citations = answer.citations
@@ -375,12 +448,18 @@ def _execute_tool(
             return {"error": f"could not file complaint, invalid fields: {exc}"}
 
         ticket_id = tools.file_complaint(ticket)
-        escalated = tools.should_escalate(ticket.category)
-        if escalated:
-            tools.escalate_to_hr(ticket_id, reason=f"category={ticket.category.value}")
+        decision = should_escalate(ticket, raw_text=message)
         run_state.ticket_id = ticket_id
-        run_state.escalated = escalated
-        return {"ticket_id": ticket_id, "escalated": escalated}
+        run_state.escalated = decision.should_escalate
+        run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
+        if decision.should_escalate:
+            event = to_escalation_event(ticket, ticket_id, decision)
+            tools.escalate_to_hr(event)
+        return {
+            "ticket_id": ticket_id,
+            "escalated": decision.should_escalate,
+            "danger_flag": decision.danger_flag,
+        }
 
     if name == "get_ticket_status":
         status = tools.get_ticket_status(args["ticket_id"])
@@ -449,6 +528,8 @@ def handle_message(
                 "label": label,
                 "status": "completed",
                 "ticket_id": result.ticket_id,
+                "escalated": result.escalated,
+                "trigger_rule": result.trigger_rule,
             }
         )
 

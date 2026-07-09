@@ -5,15 +5,21 @@
                   Tavily search (domain-restricted, provider-agnostic) + one structured
                   Gemini call to shape results into a GroundedAnswer
 - file_complaint / get_ticket_status -> SQLite-backed ticket tools, exposed to the model
-- escalate_to_hr / should_escalate -> deterministic, code-only; never exposed as a
-  callable tool, so escalation for harassment/safety/legal is never an LLM decision
+- escalate_to_hr -> deterministic hand-off, code-only; never exposed as a callable
+  tool. The should_escalate/danger_scan rules it relies on live in
+  src/guardrails/ (Module 6), so tools.py itself carries no escalation *logic* --
+  only execution (SQLite write + notification hand-off).
 """
 
 import json
 import logging
+import smtplib
 import sqlite3
+import ssl
 import uuid
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from os import environ
 
 from src import config
 from src.agent import prompts, usage
@@ -21,8 +27,8 @@ from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
     AnswerSource,
-    ComplaintCategory,
     ComplaintTicket,
+    EscalationEvent,
     GroundedAnswer,
     WebCitation,
 )
@@ -152,6 +158,9 @@ def _get_connection() -> sqlite3.Connection:
             desired_outcome TEXT,
             status TEXT NOT NULL,
             escalated INTEGER NOT NULL DEFAULT 0,
+            trigger_rule TEXT,
+            sla_deadline TEXT,
+            redacted_summary TEXT,
             created_at TEXT NOT NULL
         )
         """
@@ -199,36 +208,118 @@ def get_ticket_status(ticket_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-ESCALATION_CATEGORIES = frozenset(
-    {
-        ComplaintCategory.HARASSMENT,
-        ComplaintCategory.DISCRIMINATION,
-        ComplaintCategory.SAFETY,
-        ComplaintCategory.LEGAL,
+# --- Escalation handoff (Module 6: Guardrails, Module 8: Tool Use) -----------
+
+def _send_email_notification(event: EscalationEvent) -> bool:
+    """Attempt a real SMTP send. Returns True on success, False on anything
+    that should fall back to the mock channel -- never raises, since a
+    misconfigured or unreachable mail server must not fail the employee's
+    chat turn."""
+    smtp_host = environ.get("SMTP_HOST", "")
+    to_addr = environ.get("HR_ESCALATION_EMAIL_TO", "")
+    if not smtp_host or not to_addr:
+        return False  # not configured -> caller falls back to the mock channel
+
+    from_addr = environ.get("HR_ESCALATION_EMAIL_FROM", "hr-agent@localhost")
+    smtp_port = int(environ.get("SMTP_PORT", "587"))
+    smtp_username = environ.get("SMTP_USERNAME", "")
+    smtp_password = environ.get("SMTP_PASSWORD", "")
+
+    message = EmailMessage()
+    message["Subject"] = f"[HR Escalation] {event.category.value} ({event.severity.value})"
+    message["From"] = from_addr
+    message["To"] = to_addr
+    message.set_content(
+        "An HR complaint has been escalated for human review.\n\n"
+        f"Ticket ID: {event.ticket_id}\n"
+        f"Category: {event.category.value}\n"
+        f"Severity: {event.severity.value}\n"
+        f"Trigger rule: {event.trigger_rule.value}\n"
+        f"SLA deadline: {event.sla_deadline.isoformat()}\n\n"
+        f"Summary: {event.redacted_summary}\n"
+    )
+
+    try:
+        if smtp_port == 465:
+            # Implicit TLS from the first byte (Gmail/most providers' "SSL" port).
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10, context=ssl.create_default_context()) as server:
+                if smtp_username:
+                    server.login(smtp_username, smtp_password)
+                server.send_message(message)
+        else:
+            # STARTTLS: connect in plaintext, then upgrade (587 is the near-universal default).
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+                server.starttls(context=ssl.create_default_context())
+                if smtp_username:
+                    server.login(smtp_username, smtp_password)
+                server.send_message(message)
+        return True
+    except (smtplib.SMTPException, OSError, TimeoutError, ssl.SSLError) as exc:
+        logger.warning("smtp_escalation_send_failed ticket=%s error=%s", event.ticket_id, exc)
+        return False
+
+
+def _write_mock_outbox(event: EscalationEvent) -> None:
+    """Local fallback notification channel: appends a JSON line so an
+    escalation stays inspectable during dev/demo without a real mail server."""
+    outbox_path = config.DATA_DIR / "escalation_outbox.jsonl"
+    outbox_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ticket_id": event.ticket_id,
+        "category": event.category.value,
+        "severity": event.severity.value,
+        "trigger_rule": event.trigger_rule.value,
+        "sla_deadline": event.sla_deadline.isoformat(),
+        "redacted_summary": event.redacted_summary,
+        "created_at": event.created_at.isoformat(),
     }
-)
+    with open(outbox_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
 
 
-def should_escalate(category: ComplaintCategory) -> bool:
-    """Deterministic escalation rule — never delegated to the model."""
-    return category in ESCALATION_CATEGORIES
+def escalate_to_hr(event: EscalationEvent) -> dict:
+    """Notify HR of an escalation and flag the ticket.
 
-
-def escalate_to_hr(ticket_id: str, reason: str) -> dict:
-    """Mocked HR escalation channel (email/webhook) for dev; flags the ticket.
-
-    TODO: swap for the real HR-side escalation handoff once that's built (owned by
-    another member — intake form on HR's end, escalation guardrails, notification
-    channel). This stub only flags the ticket row and logs a warning.
+    event is an EscalationEvent (non-PII) built by
+    src/guardrails/form_pii.py::to_escalation_event -- this function never
+    receives the employee's free-text description, named parties, or contact
+    info, only category/severity/trigger metadata.
     """
     conn = _get_connection()
     try:
         conn.execute(
-            "UPDATE tickets SET escalated = 1, status = 'escalated' WHERE ticket_id = ?",
-            (ticket_id,),
+            """
+            UPDATE tickets
+            SET escalated = 1, status = 'escalated', trigger_rule = ?,
+                sla_deadline = ?, redacted_summary = ?
+            WHERE ticket_id = ?
+            """,
+            (
+                event.trigger_rule.value,
+                event.sla_deadline.isoformat(),
+                event.redacted_summary,
+                event.ticket_id,
+            ),
         )
         conn.commit()
     finally:
         conn.close()
-    logger.warning("ESCALATION ticket=%s reason=%s", ticket_id, reason)
-    return {"ticket_id": ticket_id, "escalated": True, "reason": reason}
+
+    delivered = _send_email_notification(event)
+    channel = "smtp" if delivered else "mock"
+    if not delivered:
+        _write_mock_outbox(event)
+
+    logger.warning(
+        "ESCALATION ticket=%s trigger=%s severity=%s channel=%s",
+        event.ticket_id,
+        event.trigger_rule.value,
+        event.severity.value,
+        channel,
+    )
+    return {
+        "ticket_id": event.ticket_id,
+        "escalated": True,
+        "channel": channel,
+        "sla_deadline": event.sla_deadline.isoformat(),
+    }

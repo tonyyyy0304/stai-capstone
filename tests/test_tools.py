@@ -1,7 +1,10 @@
+import json
+
 import pytest
 
 from src import config
 from src.agent import tools
+from src.guardrails import escalation, form_pii
 from src.schemas import (
     AnswerSource,
     ComplaintCategory,
@@ -12,8 +15,14 @@ from src.schemas import (
 
 
 @pytest.fixture(autouse=True)
-def isolated_sqlite(tmp_path, monkeypatch):
+def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    # escalate_to_hr's mock-outbox fallback writes under config.DATA_DIR --
+    # isolate it the same way SQLITE_PATH is isolated, so tests never touch
+    # the real repo's data/ directory.
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("HR_ESCALATION_EMAIL_TO", raising=False)
 
 
 def make_ticket(category=ComplaintCategory.HARASSMENT, severity=Severity.HIGH):
@@ -37,28 +46,102 @@ def test_get_ticket_status_missing_id_returns_none():
     assert tools.get_ticket_status("does-not-exist") is None
 
 
+def _build_event(ticket: ComplaintTicket, ticket_id: str, raw_text: str = "test complaint text"):
+    decision = escalation.should_escalate(ticket, raw_text=raw_text)
+    assert decision.should_escalate is True  # test setup guard, not the thing under test
+    return form_pii.to_escalation_event(ticket, ticket_id, decision), decision
+
+
 def test_escalate_to_hr_flags_ticket():
-    ticket_id = tools.file_complaint(make_ticket())
-    result = tools.escalate_to_hr(ticket_id, reason="category=harassment")
+    ticket = make_ticket()
+    ticket_id = tools.file_complaint(ticket)
+    event, decision = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
+
+    result = tools.escalate_to_hr(event)
+
     assert result["escalated"] is True
+    assert result["channel"] == "mock"  # no SMTP configured in the test env -> fails closed to mock
     status = tools.get_ticket_status(ticket_id)
     assert status["status"] == "escalated"
     assert status["escalated"] == 1
+    assert status["trigger_rule"] == decision.trigger_rule.value
 
 
-@pytest.mark.parametrize(
-    "category,expected",
-    [
-        (ComplaintCategory.HARASSMENT, True),
-        (ComplaintCategory.DISCRIMINATION, True),
-        (ComplaintCategory.SAFETY, True),
-        (ComplaintCategory.LEGAL, True),
-        (ComplaintCategory.PAYROLL, False),
-        (ComplaintCategory.OTHER, False),
-    ],
-)
-def test_should_escalate_is_deterministic(category, expected):
-    assert tools.should_escalate(category) is expected
+def test_escalate_to_hr_writes_mock_outbox_when_smtp_not_configured():
+    ticket = make_ticket()
+    ticket_id = tools.file_complaint(ticket)
+    event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
+
+    tools.escalate_to_hr(event)
+
+    outbox_path = config.DATA_DIR / "escalation_outbox.jsonl"
+    assert outbox_path.exists()
+    record = json.loads(outbox_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert record["ticket_id"] == ticket_id
+    assert record["trigger_rule"] == event.trigger_rule.value
+    assert "redacted_summary" in record
+
+
+class _FakeSMTP:
+    """Records every message 'sent' through it; never touches a real socket."""
+
+    sent_messages: list = []
+
+    def __init__(self, host, port, timeout=10):
+        self.host, self.port = host, port
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def starttls(self):
+        pass
+
+    def login(self, username, password):
+        pass
+
+    def send_message(self, message):
+        _FakeSMTP.sent_messages.append(message)
+
+
+class _RaisingSMTP:
+    """Simulates an unreachable mail server -- construction itself fails."""
+
+    def __init__(self, host, port, timeout=10):
+        raise OSError("connection refused")
+
+
+def test_escalate_to_hr_uses_smtp_when_configured(monkeypatch):
+    _FakeSMTP.sent_messages = []
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("HR_ESCALATION_EMAIL_TO", "hr@example.com")
+    monkeypatch.setattr(tools.smtplib, "SMTP", _FakeSMTP)
+
+    ticket = make_ticket()
+    ticket_id = tools.file_complaint(ticket)
+    event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
+
+    result = tools.escalate_to_hr(event)
+
+    assert result["channel"] == "smtp"
+    assert len(_FakeSMTP.sent_messages) == 1
+    assert ticket_id in _FakeSMTP.sent_messages[0].get_content()
+
+
+def test_escalate_to_hr_falls_back_to_mock_when_smtp_send_fails(monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("HR_ESCALATION_EMAIL_TO", "hr@example.com")
+    monkeypatch.setattr(tools.smtplib, "SMTP", _RaisingSMTP)
+
+    ticket = make_ticket()
+    ticket_id = tools.file_complaint(ticket)
+    event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
+
+    result = tools.escalate_to_hr(event)
+
+    assert result["channel"] == "mock"  # SMTP configured but unreachable -> still fails closed, no crash
 
 
 def test_search_kb_delegates_to_answerer(monkeypatch):
