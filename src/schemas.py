@@ -249,6 +249,7 @@ class EscalationFormSubmission(BaseModel):
     incident_date: str | None = None
     desired_outcome: str | None = None
 
+
 # --- Memory (Module 5) ---
 
 class SessionSummary(BaseModel):

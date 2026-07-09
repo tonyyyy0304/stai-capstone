@@ -17,15 +17,22 @@ Gemini picks a tool, tools.py executes it, the result is fed back as an
 observation, and the model repeats until it answers in plain text or
 MAX_REACT_ITERATIONS is hit.
 
-Guardrails (Module 6, src/guardrails/) run at multiple points in run_turn():
-input checks (prompt-injection heuristics, toxicity) gate entry before the
-router even runs; an output grounding check re-verifies citations before the
-final AgentResponse is returned; and escalation for filed complaints is
-decided by the deterministic rule engine in src/guardrails/escalation.py
-(should_escalate) and src/guardrails/danger_scan.py -- never by the LLM. If
-the loop exhausts MAX_REACT_ITERATIONS while the turn was already classified
-as a complaint, _failsafe_escalate_incomplete_complaint() forces a Rule 7
-escalation rather than letting the conversation end in silence.
+Guardrails (Module 6, src/guardrails/) run at two stages of run_turn():
+1. Pre-router (_check_input): deterministic prompt-injection/topic/wordlist
+   checks, then one LLM-as-judge call (src/guardrails/llm_judge.py) covering
+   toxicity/PII/injection/off-topic/jailbreak in a single structured request
+   — runs before classify_intent() so obvious attacks never need a second
+   LLM call, and paraphrased/novel attempts the deterministic layer misses
+   still get caught before anything else runs.
+2. Output (check_grounding): re-verifies citations before the final
+   AgentResponse is returned.
+
+Escalation for filed complaints is a separate deterministic concern, decided
+by the rule engine in src/guardrails/escalation.py (should_escalate) and
+src/guardrails/danger_scan.py -- never by the LLM. If the loop exhausts
+MAX_REACT_ITERATIONS while the turn was already classified as a complaint,
+_failsafe_escalate_incomplete_complaint() forces a Rule 7 escalation rather
+than letting the conversation end in silence.
 
 Consent-gate / form-card intake (PLAN.md Sec 6.1, Steps A-B): the moment a
 fresh Intent.COMPLAINT is detected (and the message isn't a ticket-status
@@ -167,14 +174,14 @@ class _RunState:
 
 
 def _check_input(message: str, client=None, session_id: str | None = None) -> GuardrailResult:
-    """Layered input guardrails. First the deterministic, no-LLM-call checks —
-    prompt-injection heuristics and a small toxicity wordlist — which
-    short-circuit blatant cases for free (Gemini quota is the #1 constraint,
-    PLAN.md §2.1/§8). Anything that gets past those goes to the LLM-as-judge
-    (src/guardrails/llm_judge.py), one structured call classifying toxicity /
-    PII / injection / off-topic / jailbreak to catch the nuanced phrasing the
-    wordlist/regex layer misses. The judge fails open, so a failed call never
-    breaks the turn — the deterministic layer above is the backstop."""
+    """Layered pre-router input guardrails. First the deterministic,
+    no-LLM-call checks — prompt-injection heuristics and a plain toxicity
+    wordlist — which short-circuit blatant cases for free (Gemini quota is
+    the #1 constraint, PLAN.md §2.1/§8). Anything that gets past those goes
+    to the LLM-as-judge (src/guardrails/llm_judge.py), one structured call
+    classifying toxicity / PII / injection / off-topic / jailbreak to catch
+    the nuanced phrasing the wordlist/regex layer misses. The judge fails
+    open, so a failed call never breaks the turn."""
     result = check_topic_and_injection(message)
     if not result.allowed:
         return result

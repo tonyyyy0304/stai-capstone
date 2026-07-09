@@ -8,15 +8,24 @@ be redundant with that and worse at nuance (an LLM router handles "what
 counts as HR-related" far better than a wordlist).
 
 What this module adds instead: a cheap, deterministic, pre-router check for
-prompt-injection attempts. This is a well-defined pattern-matching problem
-(unlike open-ended topic classification) and specifically targets attempts
-to manipulate the router/model itself, so it runs before that LLM call, not
-after — catching the obvious cases without spending a request on them.
+prompt-injection attempts (check_topic_and_injection). This is a well-defined
+pattern-matching problem (unlike open-ended topic classification) and
+specifically targets attempts to manipulate the router/model itself, so it
+runs before that LLM call, not after — catching the known-pattern cases
+without spending a request on them.
+
+check_injection_semantic() is the backstop for phrasings the regex patterns
+don't cover — it reads IntentClassification.is_injection_attempt, a field the
+router's already-mandatory LLM call fills in, so it costs nothing beyond that
+call. Unlike toxicity, injection detection has no "legitimate quoting" false-
+positive risk (nobody has a real reason to say "ignore all previous
+instructions" as part of an HR complaint), so the combined check is a
+straightforward OR of both layers, no complaint-intent carve-out needed.
 """
 
 import re
 
-from src.schemas import GuardrailResult
+from src.schemas import GuardrailResult, IntentClassification
 
 DECLINE_MESSAGE = (
     "I can't follow instructions that try to change how I operate. "
@@ -36,4 +45,10 @@ def check_topic_and_injection(message: str) -> GuardrailResult:
     for pattern in _INJECTION_PATTERNS:
         if pattern.search(message):
             return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
+    return GuardrailResult(allowed=True)
+
+
+def check_injection_semantic(classification: IntentClassification) -> GuardrailResult:
+    if classification.is_injection_attempt:
+        return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
     return GuardrailResult(allowed=True)

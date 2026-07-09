@@ -12,6 +12,14 @@ the intent router's job (Intent.OUT_OF_SCOPE), which requires an LLM call.
 Pass --with-router to also evaluate those (costs one LLM call per off-topic
 probe) — off by default.
 
+complaint_exempt probes cover the toxicity/complaint carve-out
+(check_toxicity_with_context, src/guardrails/toxicity.py): a harassment
+complaint quoting abuse said TO the employee must not be blocked by the
+wordlist. These run against a *synthetic* IntentClassification (is_toxic
+fixed to False, matching what a correctly-behaving router would emit) rather
+than the real router, so they still cost zero LLM calls — they test the
+combining logic in toxicity.py, not the router's judgment itself.
+
 Usage:
     python evals/run_guardrail_eval.py
     python evals/run_guardrail_eval.py --with-router --mlflow
@@ -27,7 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.guardrails.input_checks import check_topic_and_injection
 from src.guardrails.pii import detect_pii
-from src.guardrails.toxicity import check_toxicity
+from src.guardrails.toxicity import check_toxicity, check_toxicity_with_context
+from src.schemas import Intent, IntentClassification
 
 REDTEAM_SET = Path(__file__).parent / "guardrail_redteam.jsonl"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -79,6 +88,29 @@ def evaluate_pii(items: list[dict]) -> list[dict]:
     return results
 
 
+def evaluate_complaint_exempt(items: list[dict]) -> list[dict]:
+    results = []
+    for item in items:
+        if item["category"] != "complaint_exempt":
+            continue
+        classification = IntentClassification(
+            intent=Intent(item["intent"]), confidence=0.9, is_toxic=False
+        )
+        result = check_toxicity_with_context(item["prompt"], classification)
+        blocked = not result.allowed
+        results.append(
+            {
+                "id": item["id"],
+                "category": "complaint_exempt",
+                "intent": item["intent"],
+                "expected_blocked": item["expected_blocked"],
+                "actual_blocked": blocked,
+                "correct": blocked == item["expected_blocked"],
+            }
+        )
+    return results
+
+
 def evaluate_off_topic_with_router(items: list[dict]) -> list[dict]:
     from src.agent.router import classify_intent
     from src.schemas import Intent
@@ -115,6 +147,7 @@ def main() -> None:
 
     injection_toxicity = evaluate_injection_and_toxicity(items)
     pii_results = evaluate_pii(items)
+    complaint_exempt_results = evaluate_complaint_exempt(items)
     off_topic_results = evaluate_off_topic_with_router(items) if args.with_router else []
 
     block_rate = (
@@ -124,6 +157,11 @@ def main() -> None:
     )
     pii_detection_rate = (
         sum(r["correct"] for r in pii_results) / len(pii_results) if pii_results else 0.0
+    )
+    complaint_exempt_rate = (
+        sum(r["correct"] for r in complaint_exempt_results) / len(complaint_exempt_results)
+        if complaint_exempt_results
+        else 0.0
     )
 
     print(f"\nInjection/toxicity block-rate (deterministic): {block_rate:.1%}")
@@ -136,6 +174,11 @@ def main() -> None:
         if not r["correct"]:
             print(f"  MISS [{r['id']}] expected={r['expected_pii']} got={r['actual_pii']}")
 
+    print(f"\nComplaint-exempt toxicity carve-out correctness: {complaint_exempt_rate:.1%}")
+    for r in complaint_exempt_results:
+        if not r["correct"]:
+            print(f"  MISS [{r['id']}] expected_blocked={r['expected_blocked']} got={r['actual_blocked']}")
+
     if off_topic_results:
         off_topic_rate = sum(r["correctly_flagged_out_of_scope"] for r in off_topic_results) / len(
             off_topic_results
@@ -147,10 +190,12 @@ def main() -> None:
     report = {
         "injection_toxicity": injection_toxicity,
         "pii": pii_results,
+        "complaint_exempt": complaint_exempt_results,
         "off_topic": off_topic_results,
         "metrics": {
             "injection_toxicity_block_rate": block_rate,
             "pii_detection_rate": pii_detection_rate,
+            "complaint_exempt_correctness": complaint_exempt_rate,
         },
     }
 
