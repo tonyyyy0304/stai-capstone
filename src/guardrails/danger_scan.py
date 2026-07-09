@@ -7,14 +7,16 @@ _DANGER_PATTERNS = (
     r"\bweapon\b",
     r"\bgun\b",
     r"\bknife\b",
-    r"\bhurt (?:myself|someone|him|her|them)\b",
-    r"\bkill (?:myself|him|her|them|me)\b",
+    r"\bhurt(?:ing)? (?:myself|someone|him|her|them)\b",
+    r"\bkill(?:ing)? (?:myself|him|her|them|me)\b",
     r"\bsuicid\w*\b",
     r"\bself[- ]harm\w*\b",
     r"\bassault(?:ed|ing)?\b",
     r"\bthreaten(?:ed|ing)?\s+me\b",
     r"\bafraid for my (?:life|safety)\b",
     r"\bnot safe (?:here|at work|going back)\b",
+    r"\bmight (?:hit|hurt|attack) me\b",
+    r"\bknows? where i live\b",
 )
 
 _RETALIATION_PATTERNS = (

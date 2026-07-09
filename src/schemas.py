@@ -199,6 +199,7 @@ class TriggerRule(str, Enum):
     DANGER_SCAN = "danger_scan"                  # Rule 3
     RETALIATION_FLOOR = "retaliation_floor"      # Rule 4
     PARSE_FAILURE = "parse_failure"              # Rule 7 (fail-safe)
+    EMPLOYEE_REQUESTED = "employee_requested"    # consent-gate: chose (b), skip the form
 
 class EscalationDecision(BaseModel):
     """Output of guardrails.escalation.should_escalate(). Deterministic --
@@ -221,6 +222,32 @@ class EscalationEvent(BaseModel):
     sla_deadline: datetime
     redacted_summary: str
     created_at: datetime
+
+
+class EscalationFlowState(str, Enum):
+    """Per-session state for the consent-gate / form-card intake flow
+    (PLAN.md Sec 6.1, Steps A-B). Tracked in src/guardrails/escalation_state.py.
+    Absence of a stored row means NORMAL -- the ordinary FAQ/ReAct flow."""
+
+    NORMAL = "normal"
+    AWAITING_CONSENT = "awaiting_consent"  # Step A: (a) file a form / (b) escalate now?
+    AWAITING_FORM = "awaiting_form"        # Step B: waiting on the rendered intake form
+
+
+class EscalationFormSubmission(BaseModel):
+    """Structured payload from the rendered intake form (PLAN.md Sec 6.1, Step
+    B). Mirrors ComplaintTicket's fields exactly so a submission converts to a
+    real ComplaintTicket directly -- Step B files a properly-categorized
+    ticket through the ordinary should_escalate() pipeline, the same as the
+    conversational path, rather than forcing category=OTHER/severity=HIGH the
+    way the abandoned-form fail-safe does."""
+
+    category: ComplaintCategory
+    severity: Severity
+    description: str = Field(min_length=10, description="What happened, in the employee's words")
+    parties_involved: list[str] = Field(default_factory=list)
+    incident_date: str | None = None
+    desired_outcome: str | None = None
 
 # --- Memory (Module 5) ---
 

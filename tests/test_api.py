@@ -76,7 +76,7 @@ def test_chat_threads_session_history_across_turns(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
     seen_history = []
 
-    def fake_run_turn(session_id, message, history=None, client=None):
+    def fake_run_turn(session_id, message, history=None, client=None, escalation_form=None):
         seen_history.append(history)
         return orchestrator.AgentResponse(reply=f"reply to: {message}")
 
@@ -110,6 +110,47 @@ def test_chat_reports_filed_and_escalated_complaint(monkeypatch):
     action = body["actions"][0]
     assert action["ticket_id"] == "ticket-abc"
     assert "escalated" in action["label"].lower()
+
+
+def test_chat_surfaces_form_required_action(monkeypatch):
+    scripted = orchestrator.AgentResponse(
+        reply=orchestrator.FORM_INSTRUCTIONS_REPLY,
+        form_required=True,
+    )
+    monkeypatch.setattr(orchestrator, "run_turn", lambda *args, **kwargs: scripted)
+
+    client = TestClient(api.app)
+    response = client.post("/chat", json={"message": "a"})
+
+    assert response.status_code == 200
+    action = response.json()["actions"][0]
+    assert action["type"] == "escalation_form_required"
+    assert action["status"] == "pending"
+
+
+def test_chat_threads_escalation_form_submission_to_run_turn(monkeypatch):
+    received = {}
+
+    def _fake_run_turn(session_id, message, history=None, client=None, escalation_form=None):
+        received["escalation_form"] = escalation_form
+        return orchestrator.AgentResponse(reply="Thanks -- I've filed your complaint.", ticket_id="ticket-xyz")
+
+    monkeypatch.setattr(orchestrator, "run_turn", _fake_run_turn)
+
+    submission = {
+        "category": "benefits",
+        "severity": "low",
+        "description": "My dental claim was reimbursed less than expected.",
+    }
+    client = TestClient(api.app)
+    response = client.post(
+        "/chat",
+        json={"message": "[submitted the complaint intake form]", "escalation_form": submission},
+    )
+
+    assert response.status_code == 200
+    assert received["escalation_form"] is not None
+    assert received["escalation_form"].category.value == "benefits"
 
 
 def test_chat_includes_token_usage(monkeypatch):

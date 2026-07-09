@@ -26,10 +26,20 @@ decided by the deterministic rule engine in src/guardrails/escalation.py
 the loop exhausts MAX_REACT_ITERATIONS while the turn was already classified
 as a complaint, _failsafe_escalate_incomplete_complaint() forces a Rule 7
 escalation rather than letting the conversation end in silence.
+
+Consent-gate / form-card intake (PLAN.md Sec 6.1, Steps A-B): the moment a
+fresh Intent.COMPLAINT is detected (and the message isn't a ticket-status
+lookup), run_turn() does not enter the ReAct loop at all -- it asks the
+employee to choose (a) fill out a form or (b) escalate directly, tracked via
+src/guardrails/escalation_state.py. Every turn spent in that state machine is
+handled by _handle_escalation_flow_turn() below, which is 100% deterministic
+parsing, never an LLM call, so the ReAct loop's own file_complaint tool call
+is now only reached via the ticket-status-lookup bypass.
 """
 
 import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -39,6 +49,7 @@ from pydantic import ValidationError
 from src import config
 from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
+from src.guardrails import escalation_state
 from src.guardrails.escalation import fail_safe_decision, should_escalate
 from src.guardrails.form_pii import to_escalation_event
 from src.guardrails.grounding import check_grounding
@@ -50,11 +61,15 @@ from src.schemas import (
     Citation,
     ComplaintCategory,
     ComplaintTicket,
+    EscalationDecision,
+    EscalationFlowState,
+    EscalationFormSubmission,
     GuardrailResult,
     Intent,
     IntentClassification,
     Severity,
     TokenUsage,
+    TriggerRule,
     WebCitation,
 )
 
@@ -71,6 +86,43 @@ API_ERROR_REPLY = (
     "I'm having trouble reaching the assistant service right now. Please try again "
     "in a moment, or reach out to HR directly if this is urgent."
 )
+
+# --- Consent-gate / form-card intake (PLAN.md Sec 6.1, Steps A-B) -----------
+# All deterministic, text-parsing only -- no LLM call decides any of this.
+
+CONSENT_GATE_REPLY = (
+    "It sounds like you'd like to raise a concern. Would you like to (a) fill out "
+    "a complaint form with the details, or (b) skip the form and have this escalated "
+    "to HR directly right now? Just reply with a or b."
+)
+FORM_INSTRUCTIONS_REPLY = (
+    "Okay -- please fill out the complaint form that just appeared below with as "
+    "much detail as you're comfortable sharing. You can also type 'cancel' at any "
+    "point to back out."
+)
+CONSENT_CANCELLED_REPLY = (
+    "No problem -- I won't file anything. Let me know if you'd like to raise this again."
+)
+FORM_CANCELLED_REPLY = "No problem -- I've cancelled that. Let me know if you'd like to start again."
+FORM_REMINDER_REPLY = (
+    "I'm still waiting on the complaint form above -- please fill that in with the "
+    "details, or type 'cancel' if you'd rather not continue."
+)
+
+_TICKET_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE
+)
+_ESCALATE_CONSENT_PATTERN = re.compile(
+    r"^\s*\(?b\)?\b|\boption b\b|\bescalate\b|\bstraight to hr\b|"
+    r"\bskip (?:the )?form\b|\bjust (?:escalate|get me to hr)\b",
+    re.IGNORECASE,
+)
+_FILE_CONSENT_PATTERN = re.compile(
+    r"^\s*\(?a\)?\b|\boption a\b|\bfile (?:a |the )?(?:ticket|complaint)\b|"
+    r"\bfill (?:out|in) the form\b|\bdescribe it\b|\buse the form\b",
+    re.IGNORECASE,
+)
+_CANCEL_PATTERN = re.compile(r"\bcancel\b|\bnever ?mind\b|\bforget it\b", re.IGNORECASE)
 
 NON_LABOR_LAW_CATEGORIES = tuple(c for c in config.CATEGORIES if c != "labor_law")
 
@@ -94,6 +146,7 @@ class AgentResponse:
     ticket_id: str | None = None
     escalated: bool = False
     trigger_rule: str | None = None
+    form_required: bool = False
     insufficient_context: bool = False
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     steps: list[AgentStep] = field(default_factory=list)
@@ -109,6 +162,7 @@ class _RunState:
     ticket_id: str | None = None
     escalated: bool = False
     trigger_rule: str | None = None
+    form_required: bool = False
     insufficient_context: bool = False
 
 
@@ -135,12 +189,8 @@ def run_turn(
     message: str,
     history: list[dict[str, str]] | None = None,
     client=None,
+    escalation_form: EscalationFormSubmission | None = None,
 ) -> AgentResponse:
-    from google.genai.errors import APIError
-
-    from src.agent.llm_client import LLMBackendError
-
-    client = client or config.get_llm_client()
     history = history or []
     steps: list[AgentStep] = []
     turn_started_at = datetime.now(timezone.utc)
@@ -149,6 +199,32 @@ def run_turn(
     guardrail_result = _check_input(message, client=client, session_id=session_id)
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
+
+    flow_state = escalation_state.get_state(session_id)
+    if flow_state != EscalationFlowState.NORMAL:
+        # Deliberately checked before any LLM client is constructed: every
+        # branch of the consent-gate/form flow is deterministic text parsing
+        # (PLAN.md Sec 6.1, Steps A-B) and must never require a configured
+        # LLM provider to function.
+        flow_run_state = _RunState()
+        reply = _handle_escalation_flow_turn(
+            message, history, flow_state, session_id, flow_run_state, escalation_form
+        )
+        return AgentResponse(
+            reply=reply,
+            ticket_id=flow_run_state.ticket_id,
+            escalated=flow_run_state.escalated,
+            trigger_rule=flow_run_state.trigger_rule,
+            form_required=flow_run_state.form_required,
+            steps=steps,
+            token_usage=_turn_token_usage(turn_started_at, session_id),
+        )
+
+    from google.genai.errors import APIError
+
+    from src.agent.llm_client import LLMBackendError
+
+    client = client or config.get_llm_client()
 
     try:
         classification = classify_intent(message, history, client=client, session_id=session_id)
@@ -172,6 +248,19 @@ def run_turn(
         if classification.intent == Intent.OUT_OF_SCOPE:
             return AgentResponse(
                 reply=OUT_OF_SCOPE_REPLY,
+                steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
+            )
+
+        if classification.intent == Intent.COMPLAINT and not _TICKET_ID_PATTERN.search(message):
+            # Fresh complaint, not a status lookup on an existing ticket --
+            # gate through consent (Step A) instead of letting the ReAct loop
+            # file anything. A message that references an existing ticket id
+            # falls through to the loop below unchanged, so get_ticket_status
+            # keeps working exactly as before.
+            escalation_state.set_state(session_id, EscalationFlowState.AWAITING_CONSENT)
+            return AgentResponse(
+                reply=CONSENT_GATE_REPLY,
                 steps=steps,
                 token_usage=_turn_token_usage(turn_started_at, session_id),
             )
@@ -202,6 +291,7 @@ def run_turn(
         ticket_id=run_state.ticket_id,
         escalated=run_state.escalated,
         trigger_rule=run_state.trigger_rule,
+        form_required=run_state.form_required,
         insufficient_context=insufficient_context,
         token_usage=_turn_token_usage(turn_started_at, session_id),
         steps=steps,
@@ -293,6 +383,34 @@ def _combine_user_text(message: str, history: list[dict[str, str]]) -> str:
     return "\n".join([*prior_user_turns, message])
 
 
+def _file_and_escalate_best_effort(
+    description_prefix: str,
+    guardrail_raw_text: str,
+    run_state: "_RunState",
+    rationale: str,
+) -> str:
+    """Shared by every fail-safe path (Rule 7's iteration-cap case and the
+    consent-gate's abandoned-form case): build a minimal ComplaintTicket from
+    raw conversation text and force an escalation via
+    guardrails.escalation.fail_safe_decision(), so no path can silently drop
+    an employee's report. Returns the new ticket_id."""
+    description = f"{description_prefix} {guardrail_raw_text}"
+    ticket = ComplaintTicket(
+        category=ComplaintCategory.OTHER,
+        severity=Severity.HIGH,
+        description=description[:2000],
+    )
+    ticket_id = tools.file_complaint(ticket)
+    decision = fail_safe_decision(rationale)
+    event = to_escalation_event(ticket, ticket_id, decision)
+    tools.escalate_to_hr(event, ticket)
+
+    run_state.ticket_id = ticket_id
+    run_state.escalated = True
+    run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
+    return ticket_id
+
+
 def _failsafe_escalate_incomplete_complaint(
     message: str, run_state: "_RunState", session_id: str
 ) -> str:
@@ -305,31 +423,197 @@ def _failsafe_escalate_incomplete_complaint(
     (which would silently drop a possibly-sensitive report), file a best-effort
     ticket from the raw message and escalate it deterministically.
     """
-    description = (
+    ticket_id = _file_and_escalate_best_effort(
         f"[Auto-filed after {config.MAX_REACT_ITERATIONS} ReAct iterations without a "
-        f"completed file_complaint call] {message}"
+        "completed file_complaint call]",
+        message,
+        run_state,
+        f"max_react_iterations_reached session={session_id} original_intent=complaint",
     )
-    ticket = ComplaintTicket(
-        category=ComplaintCategory.OTHER,
-        severity=Severity.HIGH,
-        description=description[:2000],
-    )
-    ticket_id = tools.file_complaint(ticket)
-    decision = fail_safe_decision(
-        f"max_react_iterations_reached session={session_id} original_intent=complaint"
-    )
-    event = to_escalation_event(ticket, ticket_id, decision)
-    tools.escalate_to_hr(event)
-
-    run_state.ticket_id = ticket_id
-    run_state.escalated = True
-    run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
     logger.warning("session=%s failsafe_escalation ticket=%s", session_id, ticket_id)
     return (
         "I wasn't able to finish gathering the details in the usual number of steps, "
         "so rather than risk losing your report I've escalated it to HR directly. "
         f"Reference ticket: {ticket_id}."
     )
+
+
+def _parse_consent_reply(text: str) -> str | None:
+    """Deterministic, no-LLM-call parse of the employee's (a)/(b) reply to
+    CONSENT_GATE_REPLY. Returns "file_ticket", "escalate_now", or None if
+    unparseable -- callers treat None the same as "escalate_now" (fail
+    toward escalation, the same principle behind the Rule 7 fail-safe)."""
+    if _ESCALATE_CONSENT_PATTERN.search(text):
+        return "escalate_now"
+    if _FILE_CONSENT_PATTERN.search(text):
+        return "file_ticket"
+    return None
+
+
+def _is_cancel(text: str) -> bool:
+    return bool(_CANCEL_PATTERN.search(text))
+
+
+def _escalate_directly_from_consent(
+    guardrail_raw_text: str, run_state: "_RunState", session_id: str
+) -> str:
+    """The employee chose (b) at the consent gate: skip the form, file a
+    minimal ticket from the conversation so far, and escalate immediately.
+
+    Still runs the real rule engine first -- a mandatory category or danger
+    signal still determines the actual trigger_rule/severity -- and only
+    overrides to TriggerRule.EMPLOYEE_REQUESTED if the automated rules alone
+    wouldn't have escalated, since the employee's own request to reach HR
+    directly is a legitimate trigger in its own right.
+    """
+    description = f"[Escalated directly at the employee's request via the consent gate] {guardrail_raw_text}"
+    ticket = ComplaintTicket(
+        category=ComplaintCategory.OTHER,
+        # MEDIUM, not HIGH: a hardcoded HIGH would always satisfy Rule 2
+        # (severity_escalation) on its own, making the EMPLOYEE_REQUESTED
+        # override below unreachable -- MEDIUM lets danger_scan/retaliation
+        # signals in the conversation still surface their real trigger_rule
+        # first, and only falls through to EMPLOYEE_REQUESTED when nothing
+        # else in the rule matrix actually applies.
+        severity=Severity.MEDIUM,
+        description=description[:2000],
+    )
+    ticket_id = tools.file_complaint(ticket)
+    decision = should_escalate(ticket, raw_text=guardrail_raw_text)
+    if not decision.should_escalate:
+        decision = EscalationDecision(
+            should_escalate=True,
+            trigger_rule=TriggerRule.EMPLOYEE_REQUESTED,
+            # HIGH regardless of the MEDIUM used for the rule-check above:
+            # explicitly asking to skip the form and reach HR directly is
+            # itself a signal this deserves prompt attention.
+            effective_severity=Severity.HIGH,
+            danger_flag=False,
+            rationale="employee explicitly chose direct escalation via the consent gate",
+        )
+    event = to_escalation_event(ticket, ticket_id, decision)
+    tools.escalate_to_hr(event, ticket)
+
+    run_state.ticket_id = ticket_id
+    run_state.escalated = True
+    run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
+    logger.warning("session=%s consent_gate_direct_escalation ticket=%s", session_id, ticket_id)
+    return f"Understood -- I've escalated this directly to HR without further questions. Reference ticket: {ticket_id}."
+
+
+def _escalate_from_abandoned_form(
+    guardrail_raw_text: str, run_state: "_RunState", session_id: str
+) -> str:
+    """The employee typed in chat instead of submitting the rendered form
+    while AWAITING_FORM. Reuses the same fail-safe machinery as Rule 7 so
+    this path can't lose the report either -- the only difference from the
+    iteration-cap case is the reply text and the log tag."""
+    ticket_id = _file_and_escalate_best_effort(
+        "[Auto-filed from chat text instead of the intake form]",
+        guardrail_raw_text,
+        run_state,
+        f"employee_typed_instead_of_form session={session_id}",
+    )
+    logger.warning("session=%s form_abandoned_failsafe ticket=%s", session_id, ticket_id)
+    return (
+        "No problem -- I'll use what you've told me instead of the form. "
+        f"I've filed and escalated this to HR directly. Reference ticket: {ticket_id}."
+    )
+
+
+def _file_from_form_submission(
+    submission: EscalationFormSubmission, run_state: "_RunState", session_id: str
+) -> str:
+    """The employee actually submitted the rendered intake form (PLAN.md Sec
+    6.1, Step B). Unlike the fail-safe paths, this builds a real,
+    properly-categorized ComplaintTicket from their own field choices and
+    runs it through the ordinary should_escalate() pipeline -- so a routine,
+    low-severity complaint filed through the form is NOT force-escalated,
+    exactly matching what the conversational file_complaint path already
+    does today.
+    """
+    ticket = ComplaintTicket(
+        category=submission.category,
+        severity=submission.severity,
+        description=submission.description,
+        parties_involved=submission.parties_involved,
+        incident_date=submission.incident_date,
+        desired_outcome=submission.desired_outcome,
+    )
+    ticket_id = tools.file_complaint(ticket)
+    decision = should_escalate(ticket, raw_text=submission.description)
+    run_state.ticket_id = ticket_id
+    run_state.escalated = decision.should_escalate
+    run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
+    if decision.should_escalate:
+        event = to_escalation_event(ticket, ticket_id, decision)
+        tools.escalate_to_hr(event, ticket)
+        logger.warning("session=%s form_submitted_escalated ticket=%s", session_id, ticket_id)
+        return (
+            "Thanks -- I've filed your complaint and, given what you described, HR has "
+            f"already been notified directly. Reference ticket: {ticket_id}."
+        )
+    logger.info("session=%s form_submitted_filed ticket=%s", session_id, ticket_id)
+    return f"Thanks -- I've filed your complaint. Reference ticket: {ticket_id}."
+
+
+def _handle_escalation_flow_turn(
+    message: str,
+    history: list[dict[str, str]],
+    flow_state: EscalationFlowState,
+    session_id: str,
+    run_state: "_RunState",
+    escalation_form: EscalationFormSubmission | None = None,
+) -> str:
+    """Handles a turn while the session is mid consent-gate or mid
+    intake-form (PLAN.md Sec 6.1, Steps A-B). Never reaches the ReAct loop or
+    the router -- every branch here is deterministic, no-LLM-call parsing,
+    consistent with the "escalation control flow is never an LLM decision"
+    principle already established for should_escalate()/danger_scan()."""
+    guardrail_raw_text = _combine_user_text(message, history)
+
+    if flow_state == EscalationFlowState.AWAITING_CONSENT:
+        if _is_cancel(message):
+            escalation_state.clear_state(session_id)
+            return CONSENT_CANCELLED_REPLY
+
+        choice = _parse_consent_reply(message)
+        if choice == "file_ticket":
+            escalation_state.set_state(session_id, EscalationFlowState.AWAITING_FORM)
+            run_state.form_required = True
+            return FORM_INSTRUCTIONS_REPLY
+
+        # choice == "escalate_now" or unparseable -> fail toward escalation
+        escalation_state.clear_state(session_id)
+        return _escalate_directly_from_consent(guardrail_raw_text, run_state, session_id)
+
+    if flow_state == EscalationFlowState.AWAITING_FORM:
+        if _is_cancel(message):
+            escalation_state.clear_state(session_id)
+            return FORM_CANCELLED_REPLY
+
+        if escalation_form is not None:
+            # A real submission from the rendered form: file it as a proper,
+            # correctly-categorized ComplaintTicket and run it through the
+            # ordinary should_escalate() pipeline -- same rule engine as the
+            # conversational path, so a low-severity, non-mandatory-category
+            # submission can be filed WITHOUT escalating, exactly like today.
+            escalation_state.clear_state(session_id)
+            return _file_from_form_submission(escalation_form, run_state, session_id)
+
+        # Typed in chat instead of using the rendered form. Give one
+        # reminder rather than force-escalating on the very first stray
+        # message (someone might just be asking "is the form still there?")
+        # -- but never lose the report either, so a second miss fails safe.
+        miss_count = escalation_state.record_form_miss(session_id)
+        if miss_count >= 2:
+            escalation_state.clear_state(session_id)
+            return _escalate_from_abandoned_form(guardrail_raw_text, run_state, session_id)
+
+        run_state.form_required = True
+        return FORM_REMINDER_REPLY
+
+    return FALLBACK_CLARIFYING_TEXT  # defensive default; unreachable given the two states above
 
 
 def _build_initial_contents(
@@ -460,7 +744,7 @@ def _execute_tool(
         run_state.trigger_rule = decision.trigger_rule.value if decision.trigger_rule else None
         if decision.should_escalate:
             event = to_escalation_event(ticket, ticket_id, decision)
-            tools.escalate_to_hr(event)
+            tools.escalate_to_hr(event, ticket)
         return {
             "ticket_id": ticket_id,
             "escalated": decision.should_escalate,
@@ -495,6 +779,7 @@ def handle_message(
     employee_id: str | None = None,
     history: list[dict[str, str]] | None = None,
     client=None,
+    escalation_form: EscalationFormSubmission | None = None,
 ) -> dict:
     """Adapter for src/api.py's ChatResponse contract. Also where session and
     long-term memory (src/memory/) are wired in — run_turn() itself stays a
@@ -507,6 +792,10 @@ def handle_message(
     (trimmed recent turns + rolling summary, seeded from the employee's most
     recent summary on a brand-new session), and the turn is appended back
     afterward.
+
+    escalation_form is passed straight through to run_turn() -- it's only
+    ever meaningful when the session is already in the AWAITING_FORM flow
+    state (PLAN.md Sec 6.1, Step B); run_turn() ignores it otherwise.
     """
     from src.memory import persistent as memory_persistent
     from src.memory import session as memory_session
@@ -516,7 +805,9 @@ def handle_message(
     if manage_memory:
         history = memory_persistent.get_context(session_id, employee_id)
 
-    result = run_turn(session_id, message, history=history, client=client)
+    result = run_turn(
+        session_id, message, history=history, client=client, escalation_form=escalation_form
+    )
 
     if manage_memory:
         memory_session.append_turn(session_id, "user", message)
@@ -536,6 +827,17 @@ def handle_message(
                 "ticket_id": result.ticket_id,
                 "escalated": result.escalated,
                 "trigger_rule": result.trigger_rule,
+            }
+        )
+    if result.form_required:
+        actions.append(
+            {
+                "type": "escalation_form_required",
+                "label": "Please fill out the complaint intake form.",
+                "status": "pending",
+                "ticket_id": None,
+                "escalated": False,
+                "trigger_rule": None,
             }
         )
 

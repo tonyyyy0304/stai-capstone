@@ -57,7 +57,7 @@ def test_escalate_to_hr_flags_ticket():
     ticket_id = tools.file_complaint(ticket)
     event, decision = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
 
-    result = tools.escalate_to_hr(event)
+    result = tools.escalate_to_hr(event, ticket)
 
     assert result["escalated"] is True
     assert result["channel"] == "mock"  # no SMTP configured in the test env -> fails closed to mock
@@ -72,7 +72,7 @@ def test_escalate_to_hr_writes_mock_outbox_when_smtp_not_configured():
     ticket_id = tools.file_complaint(ticket)
     event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
 
-    tools.escalate_to_hr(event)
+    tools.escalate_to_hr(event, ticket)
 
     outbox_path = config.DATA_DIR / "escalation_outbox.jsonl"
     assert outbox_path.exists()
@@ -96,7 +96,7 @@ class _FakeSMTP:
     def __exit__(self, exc_type, exc_val, exc_tb):
         return False
 
-    def starttls(self):
+    def starttls(self, context=None):
         pass
 
     def login(self, username, password):
@@ -123,11 +123,15 @@ def test_escalate_to_hr_uses_smtp_when_configured(monkeypatch):
     ticket_id = tools.file_complaint(ticket)
     event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
 
-    result = tools.escalate_to_hr(event)
+    result = tools.escalate_to_hr(event, ticket)
 
     assert result["channel"] == "smtp"
     assert len(_FakeSMTP.sent_messages) == 1
-    assert ticket_id in _FakeSMTP.sent_messages[0].get_content()
+    sent = _FakeSMTP.sent_messages[0]
+    plain_body = sent.get_body(preferencelist=("plain",)).get_content()
+    html_body = sent.get_body(preferencelist=("html",)).get_content()
+    assert ticket_id in plain_body
+    assert ticket_id in html_body
 
 
 def test_escalate_to_hr_falls_back_to_mock_when_smtp_send_fails(monkeypatch):
@@ -139,9 +143,46 @@ def test_escalate_to_hr_falls_back_to_mock_when_smtp_send_fails(monkeypatch):
     ticket_id = tools.file_complaint(ticket)
     event, _ = _build_event(ticket, ticket_id, raw_text="my manager keeps yelling at me")
 
-    result = tools.escalate_to_hr(event)
+    result = tools.escalate_to_hr(event, ticket)
 
     assert result["channel"] == "mock"  # SMTP configured but unreachable -> still fails closed, no crash
+
+
+def test_escalation_email_includes_full_form_detail_not_just_redacted_summary(monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("HR_ESCALATION_EMAIL_TO", "hr@example.com")
+    monkeypatch.setattr(tools.smtplib, "SMTP", _FakeSMTP)
+    _FakeSMTP.sent_messages = []
+
+    ticket = ComplaintTicket(
+        category=ComplaintCategory.HARASSMENT,
+        severity=Severity.HIGH,
+        description="My supervisor made repeated inappropriate comments during the weekly team meeting.",
+        parties_involved=["Alex Santos (supervisor)", "Jamie Cruz (witness)"],
+        incident_date="2026-07-01",
+        desired_outcome="A formal warning and reassignment away from my supervisor.",
+    )
+    ticket_id = tools.file_complaint(ticket)
+    decision = escalation.should_escalate(ticket, raw_text=ticket.description)
+    event = form_pii.to_escalation_event(ticket, ticket_id, decision)
+
+    tools.escalate_to_hr(event, ticket)
+
+    sent = _FakeSMTP.sent_messages[0]
+    plain_body = sent.get_body(preferencelist=("plain",)).get_content()
+    html_body = sent.get_body(preferencelist=("html",)).get_content()
+
+    for body in (plain_body, html_body):
+        assert ticket.description in body
+        assert "Alex Santos" in body
+        assert "Jamie Cruz" in body
+        assert "2026-07-01" in body
+        assert "formal warning and reassignment" in body
+
+    # The redacted_summary (category/severity/trigger only) must NOT be the
+    # only content -- it's still fine if it appears, but the full
+    # description/parties/etc. are the actual point of this test.
+    assert event.redacted_summary != plain_body
 
 
 def test_search_kb_delegates_to_answerer(monkeypatch):

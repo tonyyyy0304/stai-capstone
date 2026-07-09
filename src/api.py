@@ -22,7 +22,7 @@ from src import config
 from src.monitoring import chat_trace, configure_mlflow
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, TokenUsage, WebCitation
+from src.schemas import Citation, EscalationFormSubmission, TokenUsage, WebCitation
 
 
 @asynccontextmanager
@@ -38,6 +38,15 @@ class ChatRequest(BaseModel):
     category: str | None = Field(
         default=None,
         description="Optional retrieval filter: leave|benefits|payroll|conduct|complaints|onboarding",
+    )
+    escalation_form: EscalationFormSubmission | None = Field(
+        default=None,
+        description=(
+            "Structured intake-form submission (PLAN.md Sec 6.1, Step B). Only "
+            "meaningful when the session is already awaiting a form; ignored otherwise. "
+            "`message` must still be non-empty even when this is set -- send a short "
+            "placeholder like 'submitted the complaint form'."
+        ),
     )
 
 
@@ -148,6 +157,7 @@ def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatRespon
         message=request.message,
         session_id=session_id,
         employee_id=request.employee_id,
+        escalation_form=request.escalation_form,
     )
     if isinstance(result, ChatResponse):
         return result

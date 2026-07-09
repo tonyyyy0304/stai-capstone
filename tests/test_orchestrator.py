@@ -3,6 +3,15 @@ import pytest
 from src import config
 from src.agent import orchestrator, tools
 from src.schemas import AnswerSource, GroundedAnswer, GuardrailResult, Intent, IntentClassification
+from src.guardrails import escalation_state
+from src.schemas import (
+    AnswerSource,
+    EscalationFlowState,
+    EscalationFormSubmission,
+    GroundedAnswer,
+    Intent,
+    IntentClassification,
+)
 
 
 class FakeFunctionCall:
@@ -157,42 +166,48 @@ def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
 
 def test_complaint_files_ticket_and_escalates_deterministically(monkeypatch):
     mock_classification(monkeypatch, Intent.COMPLAINT)
-    # No monkeypatch on should_escalate here: category="harassment" below hits
-    # the real Rule 1 (mandatory category) in src/guardrails/escalation.py, so
-    # this test exercises the actual deterministic rule, not a stand-in for
-    # it. (The full rule matrix -- Rules 1/2/3/4/7 -- is covered in
-    # tests/test_guardrails.py.)
-    client = FakeClient(
-        [
-            tool_call_response(
-                "file_complaint",
-                {
-                    "category": "harassment",
-                    "severity": "high",
-                    "description": "My manager keeps yelling at me in front of the team.",
-                },
-            ),
-            text_response("I've filed your complaint and HR has been notified directly."),
-        ]
+    # Fresh complaints now go through the consent gate + form (PLAN.md Sec
+    # 6.1, Steps A-B) rather than letting the ReAct loop call file_complaint
+    # directly -- so this is a three-turn flow. No monkeypatch on
+    # should_escalate: category="harassment" hits the real Rule 1 (mandatory
+    # category) in src/guardrails/escalation.py. (The full rule matrix --
+    # Rules 1/2/3/4/7 -- is covered in tests/test_guardrails.py.)
+    consent = orchestrator.run_turn("s5", "my manager keeps yelling at me", client=FakeClient([]))
+    assert consent.reply == orchestrator.CONSENT_GATE_REPLY
+    assert consent.ticket_id is None
+
+    form_prompt = orchestrator.run_turn("s5", "a, I'll fill out the form")
+    assert form_prompt.form_required is True
+    assert form_prompt.ticket_id is None
+
+    submission = EscalationFormSubmission(
+        category="harassment",
+        severity="high",
+        description="My manager keeps yelling at me in front of the team.",
     )
-    result = orchestrator.run_turn("s5", "my manager keeps yelling at me", client=client)
+    result = orchestrator.run_turn("s5", "[submitted the complaint intake form]", escalation_form=submission)
     assert result.ticket_id is not None
     assert result.escalated is True
+    assert result.trigger_rule == "mandatory_category"
     assert tools.get_ticket_status(result.ticket_id)["status"] == "escalated"
 
 
 def test_complaint_missing_fields_asks_again_without_filing(monkeypatch):
     mock_classification(monkeypatch, Intent.COMPLAINT)
+    # The old ReAct-loop "missing fields" scenario doesn't apply anymore --
+    # fresh complaints never reach file_complaint via the model. The direct
+    # equivalent under the new flow: typing free chat instead of submitting
+    # the rendered form should NOT file anything on the first attempt --
+    # it should ask again (FORM_REMINDER_REPLY), matching this test's
+    # original spirit of "incomplete info -> ask again, don't file."
     filed = []
     monkeypatch.setattr(tools, "file_complaint", lambda ticket: filed.append(ticket) or "unused")
-    client = FakeClient(
-        [
-            tool_call_response("file_complaint", {"category": "payroll"}),
-            text_response("Could you tell me the severity and what happened?"),
-        ]
-    )
-    result = orchestrator.run_turn("s6", "I have a payroll issue", client=client)
-    assert result.reply == "Could you tell me the severity and what happened?"
+
+    orchestrator.run_turn("s6", "I have a payroll issue", client=FakeClient([]))
+    orchestrator.run_turn("s6", "a")  # choose to fill out the form
+    result = orchestrator.run_turn("s6", "wait, what counts as severity here?")
+
+    assert result.reply == orchestrator.FORM_REMINDER_REPLY
     assert result.ticket_id is None
     assert filed == []
 
@@ -219,14 +234,23 @@ def test_loop_exhausts_iterations_during_complaint_triggers_failsafe_escalation(
     # Same shape as test_loop_stops_at_max_iterations above, but classified as
     # a COMPLAINT and never successfully completing a file_complaint call --
     # this must escalate (Rule 7), not just return MAX_ITERATIONS_REPLY.
+    #
+    # Fresh complaints normally never reach the ReAct loop at all anymore --
+    # they're intercepted by the consent gate (see the two tests above) -- so
+    # this scenario is only still reachable when the message looks like it
+    # references an *existing* ticket (the consent gate's own bypass, so
+    # "what's the status of ticket <id>" keeps working through the ReAct
+    # loop). That's exactly what's exercised here.
     mock_classification(monkeypatch, Intent.COMPLAINT)
+    message = (
+        "I have an ongoing issue related to ticket 12345678-1234-1234-1234-123456789abc "
+        "that I can't fully explain"
+    )
     responses = [
         tool_call_response("file_complaint", {"category": "payroll"})  # missing severity/description
         for _ in range(config.MAX_REACT_ITERATIONS)
     ]
-    result = orchestrator.run_turn(
-        "s10", "I have an ongoing issue I can't fully explain", client=FakeClient(responses)
-    )
+    result = orchestrator.run_turn("s10", message, client=FakeClient(responses))
     assert result.reply != orchestrator.MAX_ITERATIONS_REPLY
     assert result.ticket_id is not None
     assert result.escalated is True
@@ -274,3 +298,155 @@ def test_token_usage_aggregates_across_react_iterations(monkeypatch):
     assert result.token_usage.prompt_tokens == 30
     assert result.token_usage.completion_tokens == 13
     assert result.token_usage.total_tokens == 43
+
+
+# --- Consent-gate / form-card intake flow (PLAN.md Sec 6.1, Steps A-B) ------
+
+
+def test_consent_gate_shown_for_fresh_complaint_no_tool_call(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    result = orchestrator.run_turn("cg1", "I need to raise something about my team", client=FakeClient([]))
+    assert result.reply == orchestrator.CONSENT_GATE_REPLY
+    assert result.ticket_id is None
+    assert escalation_state.get_state("cg1") == EscalationFlowState.AWAITING_CONSENT
+
+
+def test_consent_gate_bypassed_for_ticket_status_lookup(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    client = FakeClient(
+        [
+            tool_call_response(
+                "get_ticket_status", {"ticket_id": "12345678-1234-1234-1234-123456789abc"}
+            ),
+            text_response("That ticket is still open."),
+        ]
+    )
+    result = orchestrator.run_turn(
+        "cg2", "what's the status of ticket 12345678-1234-1234-1234-123456789abc?", client=client
+    )
+    # Reached the ReAct loop directly -- never gated through consent.
+    assert result.reply == "That ticket is still open."
+    assert escalation_state.get_state("cg2") == EscalationFlowState.NORMAL
+
+
+def test_consent_choice_a_requires_form_and_files_nothing_yet(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg3", "I have a concern to raise", client=FakeClient([]))
+    result = orchestrator.run_turn("cg3", "a) I'll use the form")
+    assert result.form_required is True
+    assert result.ticket_id is None
+    assert escalation_state.get_state("cg3") == EscalationFlowState.AWAITING_FORM
+
+
+def test_consent_choice_b_escalates_immediately(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg4", "I have a benefits question I'd rather not detail", client=FakeClient([]))
+    result = orchestrator.run_turn("cg4", "b, just escalate to HR now")
+    assert result.ticket_id is not None
+    assert result.escalated is True
+    assert result.trigger_rule == "employee_requested"
+    assert escalation_state.get_state("cg4") == EscalationFlowState.NORMAL
+
+
+def test_consent_choice_b_still_surfaces_a_real_trigger_when_one_applies(monkeypatch):
+    # If the conversation already contains a real danger/retaliation signal,
+    # skipping to HR must still report the *actual* trigger, not paper over
+    # it with "employee_requested". run_turn() is a pure function over an
+    # explicit history list (its own docstring) -- handle_message() supplies
+    # that history from src/memory/ in production, so this test supplies it
+    # explicitly too rather than relying on run_turn to remember anything
+    # across two direct calls.
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    first_message = "he brought a knife to work and I'm afraid for my safety"
+    orchestrator.run_turn("cg5", first_message, client=FakeClient([]))
+    history = [
+        {"role": "user", "content": first_message},
+        {"role": "assistant", "content": orchestrator.CONSENT_GATE_REPLY},
+    ]
+    result = orchestrator.run_turn("cg5", "b", history=history)
+    assert result.trigger_rule == "danger_scan"
+
+
+def test_consent_unparseable_reply_fails_toward_escalation(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg6", "I need to report something", client=FakeClient([]))
+    result = orchestrator.run_turn("cg6", "I'm not sure, whatever you think is best")
+    assert result.ticket_id is not None
+    assert result.escalated is True
+    assert escalation_state.get_state("cg6") == EscalationFlowState.NORMAL
+
+
+def test_consent_cancel_returns_to_normal_without_filing(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg7", "I need to report something", client=FakeClient([]))
+    result = orchestrator.run_turn("cg7", "actually, never mind")
+    assert result.reply == orchestrator.CONSENT_CANCELLED_REPLY
+    assert result.ticket_id is None
+    assert escalation_state.get_state("cg7") == EscalationFlowState.NORMAL
+
+
+def test_form_submission_files_without_forcing_escalation(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg8", "I have a benefits question", client=FakeClient([]))
+    orchestrator.run_turn("cg8", "a")
+    submission = EscalationFormSubmission(
+        category="benefits", severity="low", description="My dental claim was reimbursed less than expected."
+    )
+    result = orchestrator.run_turn("cg8", "[submitted the complaint intake form]", escalation_form=submission)
+    assert result.ticket_id is not None
+    assert result.escalated is False
+    assert result.trigger_rule is None
+    assert tools.get_ticket_status(result.ticket_id)["status"] == "open"
+
+
+def test_form_submission_escalates_for_mandatory_category(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg9", "I need to report something", client=FakeClient([]))
+    orchestrator.run_turn("cg9", "a")
+    submission = EscalationFormSubmission(
+        category="safety", severity="low", description="A loose railing on the third floor stairwell."
+    )
+    result = orchestrator.run_turn("cg9", "[form]", escalation_form=submission)
+    assert result.escalated is True
+    assert result.trigger_rule == "mandatory_category"
+
+
+def test_form_cancel_returns_to_normal_without_filing(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg10", "I need to report something", client=FakeClient([]))
+    orchestrator.run_turn("cg10", "a")
+    result = orchestrator.run_turn("cg10", "cancel")
+    assert result.reply == orchestrator.FORM_CANCELLED_REPLY
+    assert result.ticket_id is None
+    assert escalation_state.get_state("cg10") == EscalationFlowState.NORMAL
+
+
+def test_form_stray_message_reminds_once_then_failsafes_on_second_miss(monkeypatch):
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg11", "I need to report something", client=FakeClient([]))
+    orchestrator.run_turn("cg11", "a")
+
+    first_miss = orchestrator.run_turn("cg11", "wait, does this get sent to my manager?")
+    assert first_miss.reply == orchestrator.FORM_REMINDER_REPLY
+    assert first_miss.ticket_id is None
+    assert escalation_state.get_state("cg11") == EscalationFlowState.AWAITING_FORM
+
+    second_miss = orchestrator.run_turn("cg11", "ok fine, my manager took credit for my project in the meeting")
+    assert second_miss.ticket_id is not None
+    assert second_miss.escalated is True
+    assert second_miss.trigger_rule == "parse_failure"
+    assert escalation_state.get_state("cg11") == EscalationFlowState.NORMAL
+
+
+def test_run_turn_never_constructs_an_llm_client_during_the_flow_state_branch(monkeypatch):
+    # Regression guard: consent-gate/form turns must stay deterministic and
+    # never require GEMINI_API_KEY -- if this ever calls config.get_llm_client()
+    # it would raise (no key configured in the test environment).
+    mock_classification(monkeypatch, Intent.COMPLAINT)
+    orchestrator.run_turn("cg12", "I need to report something", client=FakeClient([]))
+
+    def _boom():
+        raise AssertionError("get_llm_client() should never be called mid-flow")
+
+    monkeypatch.setattr(config, "get_llm_client", _boom)
+    orchestrator.run_turn("cg12", "cancel")  # flow_state=AWAITING_CONSENT, client=None, no crash expected

@@ -1,6 +1,7 @@
 import pytest
 
-from src.guardrails import escalation, form_pii
+from src import config
+from src.guardrails import escalation, escalation_state, form_pii
 from src.guardrails.danger_scan import danger_scan
 from src.guardrails.grounding import check_grounding, verify_response_citations
 from src.guardrails.input_checks import check_topic_and_injection
@@ -15,7 +16,18 @@ from src.schemas import (
     LLMJudgeVerdict,
     Severity,
     TriggerRule,
+    EscalationFlowState,
+    Severity,
+    TriggerRule,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_sqlite(tmp_path, monkeypatch):
+    # Only escalation_state's tests below actually touch SQLite; harmless for
+    # every other test in this file, and keeps them from touching the real
+    # repo's data/ directory.
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
 
 
 def make_chunk(chunk_id="leave-policy#001"):
@@ -344,3 +356,45 @@ def test_to_escalation_event_rejects_a_non_escalating_decision():
     assert decision.should_escalate is False
     with pytest.raises(ValueError):
         form_pii.to_escalation_event(ticket, "ticket-123", decision)
+
+
+# --- escalation_state: per-session consent-gate/form state (PLAN.md Sec 6.1) -
+
+
+def test_escalation_state_defaults_to_normal_for_unknown_session():
+    assert escalation_state.get_state("brand-new-session") == EscalationFlowState.NORMAL
+
+
+def test_escalation_state_set_and_get_roundtrip():
+    escalation_state.set_state("s1", EscalationFlowState.AWAITING_CONSENT)
+    assert escalation_state.get_state("s1") == EscalationFlowState.AWAITING_CONSENT
+
+    escalation_state.set_state("s1", EscalationFlowState.AWAITING_FORM)
+    assert escalation_state.get_state("s1") == EscalationFlowState.AWAITING_FORM
+
+
+def test_escalation_state_clear_returns_to_normal():
+    escalation_state.set_state("s2", EscalationFlowState.AWAITING_CONSENT)
+    escalation_state.clear_state("s2")
+    assert escalation_state.get_state("s2") == EscalationFlowState.NORMAL
+
+
+def test_escalation_state_set_normal_is_equivalent_to_clear():
+    escalation_state.set_state("s3", EscalationFlowState.AWAITING_FORM)
+    escalation_state.set_state("s3", EscalationFlowState.NORMAL)
+    assert escalation_state.get_state("s3") == EscalationFlowState.NORMAL
+
+
+def test_escalation_state_transitions_do_not_leak_across_sessions():
+    escalation_state.set_state("s4", EscalationFlowState.AWAITING_CONSENT)
+    assert escalation_state.get_state("s5-different-session") == EscalationFlowState.NORMAL
+
+
+def test_record_form_miss_increments_and_resets_on_new_transition():
+    escalation_state.set_state("s6", EscalationFlowState.AWAITING_FORM)
+    assert escalation_state.record_form_miss("s6") == 1
+    assert escalation_state.record_form_miss("s6") == 2
+
+    # A fresh transition into the same or a different state resets the count.
+    escalation_state.set_state("s6", EscalationFlowState.AWAITING_FORM)
+    assert escalation_state.record_form_miss("s6") == 1
