@@ -1,3 +1,7 @@
+import pytest
+
+from src.guardrails import escalation, form_pii
+from src.guardrails.danger_scan import danger_scan
 from src.guardrails.grounding import check_grounding, verify_response_citations
 from src.guardrails.input_checks import check_injection_semantic, check_topic_and_injection
 from src.guardrails.pii import detect_pii, redact_pii
@@ -7,7 +11,15 @@ from src.guardrails.toxicity import (
     check_toxicity_with_context,
 )
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, Intent, IntentClassification
+from src.schemas import (
+    Citation,
+    ComplaintCategory,
+    ComplaintTicket,
+    Intent,
+    IntentClassification,
+    Severity,
+    TriggerRule,
+)
 
 
 def make_chunk(chunk_id="leave-policy#001"):
@@ -195,3 +207,133 @@ def test_check_toxicity_with_context_blocks_non_complaint_on_semantic_signal_alo
     classification = make_classification(intent=Intent.FAQ, is_toxic=True)
     result = check_toxicity_with_context("You are a worthless piece of garbage.", classification)
     assert result.allowed is False
+
+
+# --- escalation: deterministic rule matrix (Rules 1, 2, 4, 7) ---------------
+
+
+def make_ticket(category=ComplaintCategory.PAYROLL, severity=Severity.LOW):
+    return ComplaintTicket(
+        category=category,
+        severity=severity,
+        description="My last paycheck was short by two days of overtime pay.",
+    )
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        ComplaintCategory.HARASSMENT,
+        ComplaintCategory.DISCRIMINATION,
+        ComplaintCategory.SAFETY,
+        ComplaintCategory.LEGAL,
+    ],
+)
+def test_mandatory_categories_always_escalate(category):
+    ticket = make_ticket(category=category, severity=Severity.LOW)
+    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
+    assert decision.should_escalate is True
+    assert decision.trigger_rule == TriggerRule.MANDATORY_CATEGORY
+    # severity is floored to at least HIGH even if the model under-called it
+    assert decision.effective_severity == Severity.HIGH
+
+
+@pytest.mark.parametrize(
+    "category",
+    [ComplaintCategory.PAYROLL, ComplaintCategory.BENEFITS, ComplaintCategory.OTHER],
+)
+def test_non_mandatory_low_severity_does_not_escalate(category):
+    ticket = make_ticket(category=category, severity=Severity.LOW)
+    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
+    assert decision.should_escalate is False
+    assert decision.trigger_rule is None
+
+
+@pytest.mark.parametrize("severity", [Severity.HIGH, Severity.CRITICAL])
+def test_high_or_critical_severity_escalates_regardless_of_category(severity):
+    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=severity)
+    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
+    assert decision.should_escalate is True
+    assert decision.trigger_rule == TriggerRule.SEVERITY_ESCALATION
+    assert decision.effective_severity == severity
+
+
+def test_danger_language_escalates_even_for_a_low_severity_non_mandatory_category():
+    ticket = make_ticket(category=ComplaintCategory.OTHER, severity=Severity.LOW)
+    decision = escalation.should_escalate(
+        ticket, raw_text="he brought a knife to the office and I'm afraid for my safety"
+    )
+    assert decision.should_escalate is True
+    assert decision.trigger_rule == TriggerRule.DANGER_SCAN
+    assert decision.effective_severity == Severity.CRITICAL
+    assert decision.danger_flag is True
+
+
+def test_retaliation_language_floors_severity_to_high():
+    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=Severity.LOW)
+    decision = escalation.should_escalate(
+        ticket, raw_text="I'm afraid I'll lose my job if I report this"
+    )
+    assert decision.should_escalate is True
+    assert decision.trigger_rule == TriggerRule.RETALIATION_FLOOR
+    assert decision.effective_severity == Severity.HIGH
+
+
+def test_retaliation_floor_never_lowers_an_already_critical_severity():
+    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=Severity.CRITICAL)
+    decision = escalation.should_escalate(
+        ticket, raw_text="I'm afraid I'll lose my job if I report this"
+    )
+    assert decision.effective_severity == Severity.CRITICAL
+
+
+def test_fail_safe_decision_always_escalates_at_high_severity():
+    decision = escalation.fail_safe_decision("max_react_iterations_reached")
+    assert decision.should_escalate is True
+    assert decision.trigger_rule == TriggerRule.PARSE_FAILURE
+    assert decision.effective_severity == Severity.HIGH
+
+
+# --- danger_scan: keyword/heuristic severity floor --------------------------
+
+
+def test_danger_scan_ignores_benign_text():
+    result = danger_scan("I just wanted to ask about my leave balance, nothing urgent.")
+    assert result.is_dangerous is False
+    assert result.is_retaliation is False
+
+
+def test_danger_scan_flags_weapon_language():
+    result = danger_scan("he brought a knife to the office and I'm afraid for my safety")
+    assert result.is_dangerous is True
+    assert result.matched_signal == "danger_lexicon"  # category tag only, never the raw match
+
+
+# --- form_pii: the PII/observability boundary --------------------------------
+
+
+def test_to_escalation_event_builds_a_non_pii_summary():
+    ticket = ComplaintTicket(
+        category=ComplaintCategory.HARASSMENT,
+        severity=Severity.HIGH,
+        description="Extremely sensitive first-person account naming a specific coworker.",
+        parties_involved=["Jane Doe", "John Smith"],
+    )
+    decision = escalation.should_escalate(ticket, raw_text="a normal description")
+    event = form_pii.to_escalation_event(ticket, "ticket-123", decision)
+
+    assert event.ticket_id == "ticket-123"
+    assert event.trigger_rule == TriggerRule.MANDATORY_CATEGORY
+    # the redacted summary must never contain the free-text description or names
+    assert "Jane Doe" not in event.redacted_summary
+    assert "John Smith" not in event.redacted_summary
+    assert "coworker" not in event.redacted_summary
+    assert "category=harassment" in event.redacted_summary
+
+
+def test_to_escalation_event_rejects_a_non_escalating_decision():
+    ticket = make_ticket(category=ComplaintCategory.OTHER, severity=Severity.LOW)
+    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
+    assert decision.should_escalate is False
+    with pytest.raises(ValueError):
+        form_pii.to_escalation_event(ticket, "ticket-123", decision)

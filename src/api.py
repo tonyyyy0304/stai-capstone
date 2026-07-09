@@ -56,6 +56,8 @@ class ActionResponse(BaseModel):
     label: str
     status: Literal["completed", "pending", "unavailable"] = "completed"
     ticket_id: str | None = None
+    escalated: bool = False
+    trigger_rule: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -169,7 +171,15 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "completion_tokens": agent_response.token_usage.completion_tokens,
                 "total_tokens": agent_response.token_usage.total_tokens,
             }
-            trace["tags"] = {"route": "agent", "insufficient_context": agent_response.insufficient_context}
+            complaint_action = next(
+                (a for a in agent_response.actions if a.type == "complaint_filed"), None
+            )
+            trace["tags"] = {
+                "route": "agent",
+                "insufficient_context": agent_response.insufficient_context,
+                "escalated": complaint_action.escalated if complaint_action else False,
+                "trigger_rule": (complaint_action.trigger_rule or "") if complaint_action else "",
+            }
             return agent_response
 
         answer, chunks = answer_question(request.message, category=request.category)
