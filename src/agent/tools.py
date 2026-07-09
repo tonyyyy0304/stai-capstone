@@ -11,6 +11,7 @@
   only execution (SQLite write + notification hand-off).
 """
 
+import html
 import json
 import logging
 import smtplib
@@ -30,6 +31,7 @@ from src.schemas import (
     ComplaintTicket,
     EscalationEvent,
     GroundedAnswer,
+    Severity,
     WebCitation,
 )
 
@@ -210,7 +212,127 @@ def get_ticket_status(ticket_id: str) -> dict | None:
 
 # --- Escalation handoff (Module 6: Guardrails, Module 8: Tool Use) -----------
 
-def _send_email_notification(event: EscalationEvent) -> bool:
+_SEVERITY_COLORS = {
+    Severity.LOW: "#6b7280",       # gray
+    Severity.MEDIUM: "#d97706",    # amber
+    Severity.HIGH: "#ea580c",      # orange
+    Severity.CRITICAL: "#dc2626",  # red
+}
+
+
+def _humanize(value: str) -> str:
+    """'workplace_conflict' -> 'Workplace Conflict' for display only -- the
+    underlying enum value stays untouched everywhere else in the system."""
+    return value.replace("_", " ").title()
+
+
+def _build_email_bodies(event: EscalationEvent, ticket: ComplaintTicket) -> tuple[str, str]:
+    """Build (plain_text, html) bodies carrying the full form detail --
+    description, parties involved, incident date, desired outcome. This is
+    the one place that intentionally reaches past EscalationEvent into the
+    full ComplaintTicket: HR needs the complete picture to act on a case,
+    unlike logs/MLflow traces, which stay on the redacted EscalationEvent
+    only (see src/guardrails/form_pii.py and src/monitoring.py's allowlist)."""
+    color = _SEVERITY_COLORS.get(event.severity, "#6b7280")
+    category_label = _humanize(event.category.value)
+    severity_label = _humanize(event.severity.value)
+    trigger_label = _humanize(event.trigger_rule.value)
+
+    plain_lines = [
+        "An HR complaint has been escalated for human review.",
+        "",
+        f"Ticket ID:      {event.ticket_id}",
+        f"Category:       {category_label}",
+        f"Severity:       {severity_label}",
+        f"Trigger:        {trigger_label}",
+        f"SLA deadline:   {event.sla_deadline.isoformat()}",
+        "",
+        "What happened",
+        "-------------",
+        ticket.description,
+        "",
+    ]
+    if ticket.parties_involved:
+        plain_lines += ["People involved", "---------------", ", ".join(ticket.parties_involved), ""]
+    if ticket.incident_date:
+        plain_lines += [f"Incident date:  {ticket.incident_date}", ""]
+    if ticket.desired_outcome:
+        plain_lines += ["Desired outcome", "---------------", ticket.desired_outcome, ""]
+    plain_lines.append(f"Filed at:       {event.created_at.isoformat()}")
+    plain_text = "\n".join(plain_lines)
+
+    def esc(text: str) -> str:
+        return html.escape(text)
+
+    optional_rows = ""
+    if ticket.incident_date:
+        optional_rows += (
+            f'<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;">Incident date</td>'
+            f'<td style="padding:6px 12px;font-size:13px;">{esc(ticket.incident_date)}</td></tr>'
+        )
+    if ticket.parties_involved:
+        optional_rows += (
+            f'<tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;">People involved</td>'
+            f'<td style="padding:6px 12px;font-size:13px;">{esc(", ".join(ticket.parties_involved))}</td></tr>'
+        )
+
+    desired_outcome_html = (
+        f"""
+        <tr><td style="padding:16px 20px 4px;font-size:13px;font-weight:600;color:#111827;">Desired outcome</td></tr>
+        <tr><td style="padding:0 20px 16px;font-size:14px;color:#374151;line-height:1.5;">{esc(ticket.desired_outcome)}</td></tr>
+        """
+        if ticket.desired_outcome
+        else ""
+    )
+
+    html_body = f"""\
+<html>
+  <body style="margin:0;padding:0;background-color:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f3f4f6;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="560" cellpadding="0" cellspacing="0"
+                 style="background-color:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="background-color:{color};padding:18px 20px;">
+                <span style="color:#ffffff;font-size:16px;font-weight:700;">HR Escalation -- {esc(category_label)}</span><br>
+                <span style="color:#ffffff;font-size:13px;opacity:0.9;">Severity: {esc(severity_label)} &middot; Trigger: {esc(trigger_label)}</span>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 20px 0;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;width:140px;">Ticket ID</td>
+                      <td style="padding:6px 12px;font-size:13px;font-family:monospace;">{esc(event.ticket_id)}</td></tr>
+                  <tr><td style="padding:6px 12px;color:#6b7280;font-size:13px;">SLA deadline</td>
+                      <td style="padding:6px 12px;font-size:13px;">{esc(event.sla_deadline.isoformat())}</td></tr>
+                  {optional_rows}
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 20px 4px;font-size:13px;font-weight:600;color:#111827;">What happened</td>
+            </tr>
+            <tr>
+              <td style="padding:0 20px 16px;font-size:14px;color:#374151;line-height:1.5;white-space:pre-wrap;">{esc(ticket.description)}</td>
+            </tr>
+            {desired_outcome_html}
+            <tr>
+              <td style="padding:14px 20px;background-color:#f9fafb;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;">
+                Filed at {esc(event.created_at.isoformat())} &middot; Automated HR assistant escalation
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+    return plain_text, html_body
+
+
+def _send_email_notification(event: EscalationEvent, ticket: ComplaintTicket) -> bool:
     """Attempt a real SMTP send. Returns True on success, False on anything
     that should fall back to the mock channel -- never raises, since a
     misconfigured or unreachable mail server must not fail the employee's
@@ -225,19 +347,14 @@ def _send_email_notification(event: EscalationEvent) -> bool:
     smtp_username = environ.get("SMTP_USERNAME", "")
     smtp_password = environ.get("SMTP_PASSWORD", "")
 
+    plain_text, html_body = _build_email_bodies(event, ticket)
+
     message = EmailMessage()
-    message["Subject"] = f"[HR Escalation] {event.category.value} ({event.severity.value})"
+    message["Subject"] = f"[HR Escalation] {_humanize(event.category.value)} ({_humanize(event.severity.value)})"
     message["From"] = from_addr
     message["To"] = to_addr
-    message.set_content(
-        "An HR complaint has been escalated for human review.\n\n"
-        f"Ticket ID: {event.ticket_id}\n"
-        f"Category: {event.category.value}\n"
-        f"Severity: {event.severity.value}\n"
-        f"Trigger rule: {event.trigger_rule.value}\n"
-        f"SLA deadline: {event.sla_deadline.isoformat()}\n\n"
-        f"Summary: {event.redacted_summary}\n"
-    )
+    message.set_content(plain_text)
+    message.add_alternative(html_body, subtype="html")
 
     try:
         if smtp_port == 465:
@@ -259,9 +376,13 @@ def _send_email_notification(event: EscalationEvent) -> bool:
         return False
 
 
-def _write_mock_outbox(event: EscalationEvent) -> None:
+def _write_mock_outbox(event: EscalationEvent, ticket: ComplaintTicket) -> None:
     """Local fallback notification channel: appends a JSON line so an
-    escalation stays inspectable during dev/demo without a real mail server."""
+    escalation stays inspectable during dev/demo without a real mail server.
+    Includes the same full email bodies a real send would have used, so the
+    mock channel is a faithful preview of the real notification, not just
+    the redacted structured fields."""
+    plain_text, html_body = _build_email_bodies(event, ticket)
     outbox_path = config.DATA_DIR / "escalation_outbox.jsonl"
     outbox_path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -272,18 +393,24 @@ def _write_mock_outbox(event: EscalationEvent) -> None:
         "sla_deadline": event.sla_deadline.isoformat(),
         "redacted_summary": event.redacted_summary,
         "created_at": event.created_at.isoformat(),
+        "email_subject": f"[HR Escalation] {_humanize(event.category.value)} ({_humanize(event.severity.value)})",
+        "email_plain_text": plain_text,
+        "email_html": html_body,
     }
     with open(outbox_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
 
-def escalate_to_hr(event: EscalationEvent) -> dict:
+def escalate_to_hr(event: EscalationEvent, ticket: ComplaintTicket) -> dict:
     """Notify HR of an escalation and flag the ticket.
 
     event is an EscalationEvent (non-PII) built by
-    src/guardrails/form_pii.py::to_escalation_event -- this function never
-    receives the employee's free-text description, named parties, or contact
-    info, only category/severity/trigger metadata.
+    src/guardrails/form_pii.py::to_escalation_event -- it's still the only
+    thing that reaches logs/MLflow (see the logger.warning call and
+    src/monitoring.py's allowlist). ticket is the full ComplaintTicket, used
+    only to build the actual email/mock-outbox body -- HR needs the full
+    picture to act on a case, which is a different audience and purpose than
+    an observability trace.
     """
     conn = _get_connection()
     try:
@@ -305,10 +432,10 @@ def escalate_to_hr(event: EscalationEvent) -> dict:
     finally:
         conn.close()
 
-    delivered = _send_email_notification(event)
+    delivered = _send_email_notification(event, ticket)
     channel = "smtp" if delivered else "mock"
     if not delivered:
-        _write_mock_outbox(event)
+        _write_mock_outbox(event, ticket)
 
     logger.warning(
         "ESCALATION ticket=%s trigger=%s severity=%s channel=%s",

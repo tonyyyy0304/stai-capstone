@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="1090" viewBox="0 0 1160 1090" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ar" refX="8" refY="4" markerWidth="10" markerHeight="8" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <style>
+    .edge { stroke:#475569; stroke-width:1.6; fill:none; marker-end:url(#ar); }
+    .lbl  { font-size:12px; fill:#475569; }
+    .t    { font-size:13px; fill:#0f172a; text-anchor:middle; }
+    .tw   { font-size:12.5px; fill:#0f172a; text-anchor:middle; }
+    .term { fill:#d1fae5; stroke:#059669; stroke-width:1.6; }
+    .proc { fill:#dbeafe; stroke:#2563eb; stroke-width:1.6; }
+    .det  { fill:#ede9fe; stroke:#7c3aed; stroke-width:1.6; }
+    .dec  { fill:#fef3c7; stroke:#d97706; stroke-width:1.6; }
+    .act  { fill:#fee2e2; stroke:#dc2626; stroke-width:1.6; }
+  </style>
+
+  <rect x="20" y="16" width="270" height="150" rx="8" fill="none" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+  <text x="32" y="36" font-size="12" fill="#64748b" font-weight="bold">Legend</text>
+  <rect x="32" y="46" width="26" height="16" rx="8" class="term"/><text x="66" y="59" font-size="11" fill="#334155">Start / End</text>
+  <rect x="150" y="46" width="26" height="16" class="proc"/><text x="184" y="59" font-size="11" fill="#334155">Action (LLM)</text>
+  <rect x="32" y="74" width="26" height="16" class="det"/><text x="66" y="87" font-size="11" fill="#334155">Deterministic</text>
+  <polygon points="163,74 176,82 163,90 150,82" class="dec"/><text x="184" y="87" font-size="11" fill="#334155">Decision</text>
+  <rect x="32" y="102" width="26" height="16" class="act"/><text x="66" y="115" font-size="11" fill="#334155">Escalation</text>
+
+  <!-- ================= MAIN SPINE ================= -->
+  <!-- Start -->
+  <rect x="415" y="24" width="250" height="46" rx="23" class="term"/>
+  <text class="t" x="540" y="52">Employee sends a message</text>
+
+  <!-- Input guardrails -->
+  <rect x="410" y="108" width="260" height="50" rx="4" class="det"/>
+  <text class="tw" x="540" y="130">Input guardrails</text>
+  <text class="tw" x="540" y="147">injection · toxicity</text>
+
+  <!-- D1 allowed? -->
+  <polygon points="540,196 620,238 540,280 460,238" class="dec"/>
+  <text class="t" x="540" y="242">Allowed?</text>
+
+  <!-- Refuse terminal -->
+  <rect x="120" y="215" width="180" height="46" rx="23" class="term"/>
+  <text class="t" x="210" y="243">Refuse &amp; exit</text>
+
+  <!-- Router -->
+  <rect x="410" y="312" width="260" height="50" rx="4" class="proc"/>
+  <text class="tw" x="540" y="334">Intent router</text>
+  <text class="tw" x="540" y="351">classify: faq / complaint / …</text>
+
+  <!-- D2 ambiguous -->
+  <polygon points="540,398 650,447 540,496 430,447" class="dec"/>
+  <text class="t" x="540" y="443">Ambiguous or</text>
+  <text class="t" x="540" y="459">low confidence?</text>
+
+  <!-- Clarify terminal -->
+  <rect x="105" y="424" width="200" height="46" rx="23" class="term"/>
+  <text class="t" x="205" y="452">Ask a clarifying question</text>
+
+  <!-- D3 out of scope -->
+  <polygon points="540,516 630,561 540,606 450,561" class="dec"/>
+  <text class="t" x="540" y="565">Out of scope?</text>
+
+  <!-- Decline terminal -->
+  <rect x="120" y="538" width="180" height="46" rx="23" class="term"/>
+  <text class="t" x="210" y="566">Decline politely</text>
+
+  <!-- ReAct select tool -->
+  <rect x="410" y="638" width="260" height="52" rx="4" class="proc"/>
+  <text class="tw" x="540" y="661">ReAct loop:</text>
+  <text class="tw" x="540" y="678">LLM selects a tool</text>
+
+  <!-- D4 tool call? -->
+  <polygon points="540,724 615,766 540,808 465,766" class="dec"/>
+  <text class="t" x="540" y="770">Tool call?</text>
+
+  <!-- Grounding check -->
+  <rect x="410" y="852" width="260" height="52" rx="4" class="det"/>
+  <text class="tw" x="540" y="874">Grounding check</text>
+  <text class="tw" x="540" y="891">verify every citation</text>
+
+  <!-- Return reply -->
+  <rect x="415" y="938" width="250" height="46" rx="23" class="term"/>
+  <text class="t" x="540" y="966">Return reply + citations</text>
+
+  <!-- ================= TOOL BRANCH (right) ================= -->
+  <rect x="720" y="716" width="290" height="66" rx="4" class="proc"/>
+  <text class="tw" x="865" y="742">Execute tool</text>
+  <text class="tw" x="865" y="760">search_kb · search_web</text>
+  <text class="tw" x="865" y="775">file_complaint · get_ticket_status</text>
+
+  <!-- D5 escalate? -->
+  <polygon points="865,824 985,873 865,922 745,873" class="dec"/>
+  <text class="t" x="865" y="869">Complaint to</text>
+  <text class="t" x="865" y="885">escalate?</text>
+
+  <!-- Notify HR -->
+  <rect x="1000" y="850" width="150" height="46" rx="4" class="act"/>
+  <text class="t" x="1075" y="878">Notify HR human</text>
+
+  <!-- Feed observation back -->
+  <rect x="745" y="958" width="240" height="48" rx="4" class="proc"/>
+  <text class="tw" x="865" y="980">Feed observation back</text>
+  <text class="tw" x="865" y="997">(loop, max 5)</text>
+
+  <!-- ================= EDGES ================= -->
+  <path class="edge" d="M540,70 L540,108"/>
+  <path class="edge" d="M540,158 L540,196"/>
+
+  <path class="edge" d="M460,238 L300,238"/>
+  <text class="lbl" x="380" y="230">No</text>
+
+  <path class="edge" d="M540,280 L540,312"/>
+  <text class="lbl" x="548" y="300">Yes</text>
+
+  <path class="edge" d="M540,362 L540,398"/>
+
+  <path class="edge" d="M430,447 L305,447"/>
+  <text class="lbl" x="360" y="439">Yes</text>
+
+  <path class="edge" d="M540,496 L540,516"/>
+  <text class="lbl" x="548" y="512">No</text>
+
+  <path class="edge" d="M450,561 L300,561"/>
+  <text class="lbl" x="360" y="553">Yes</text>
+
+  <path class="edge" d="M540,606 L540,638"/>
+  <text class="lbl" x="548" y="628">No</text>
+
+  <path class="edge" d="M540,690 L540,724"/>
+
+  <!-- D4 Yes -> Execute tool -->
+  <path class="edge" d="M615,766 L720,752"/>
+  <text class="lbl" x="655" y="748">Yes</text>
+
+  <!-- D4 No -> grounding -->
+  <path class="edge" d="M540,808 L540,852"/>
+  <text class="lbl" x="548" y="835">No</text>
+
+  <path class="edge" d="M540,904 L540,938"/>
+
+  <!-- Execute -> D5 -->
+  <path class="edge" d="M865,782 L865,824"/>
+
+  <!-- D5 Yes -> Notify HR -->
+  <path class="edge" d="M985,873 L1000,873"/>
+  <text class="lbl" x="990" y="866">Yes</text>
+
+  <!-- D5 No -> feed back -->
+  <path class="edge" d="M865,922 L865,958"/>
+  <text class="lbl" x="873" y="944">No</text>
+
+  <!-- Notify HR -> feed back -->
+  <path class="edge" d="M1075,896 L1075,982 L985,982"/>
+
+  <!-- Feed back -> loop to ReAct -->
+  <path class="edge" d="M745,982 L200,982 L200,664 L410,664"/>
+  <text class="lbl" x="215" y="820">repeat</text>
+</svg>

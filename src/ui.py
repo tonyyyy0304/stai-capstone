@@ -28,6 +28,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src import config
+from src.schemas import ComplaintCategory, Severity
+
+_CATEGORY_OPTIONS = [c.value for c in ComplaintCategory]
+_SEVERITY_OPTIONS = [s.value for s in Severity]
 
 ACCENT = "#3B6FE0"
 
@@ -165,8 +169,56 @@ div[class*="st-key-pill_s_"] button, div[class*="st-key-pill_w_"] button {
   border: 1px solid oklch(88% 0.008 250) !important; background: oklch(99% 0.002 250) !important;
   color: oklch(28% 0.015 255) !important; font-size: 14px !important; font-weight: 500 !important;
 }
+
+/* Escalation intake form (rendered inline under a pending action label) */
+[data-testid="stForm"] {
+  border: 1px solid oklch(90% 0.006 250) !important;
+  border-radius: 12px !important;
+  background: oklch(97% 0.004 250) !important;
+  padding: 16px !important;
+}
+[data-testid="stFormSubmitButton"] button {
+  background: __ACCENT__ !important; color: white !important; border: none !important;
+  border-radius: 8px !important; font-weight: 500 !important;
+}
+
+/* Typing indicator -- rendered in-flow in the message list so a pending
+   reply looks like part of the conversation instead of a generic spinner
+   stuck at the page's left edge. */
+.st-key-typing_indicator { max-width: 680px; margin: 0 auto; padding: 0 24px 20px 24px; }
+@keyframes ezra-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+.ezra-typing-dot {
+  width: 6px; height: 6px; border-radius: 999px; background: oklch(55% 0.012 250);
+  display: inline-block; animation: ezra-typing-bounce 1.1s ease-in-out infinite;
+}
+.ezra-typing-dot:nth-child(2) { animation-delay: 0.12s; }
+.ezra-typing-dot:nth-child(3) { animation-delay: 0.24s; }
+
+/* Quick-start prompt chips shown before the user's first message */
+.st-key-quick_prompts { max-width: 680px; margin: 0 auto; padding: 0 24px 20px 62px; }
+div[class*="st-key-chip_"] button {
+  font-size: 13px !important; font-weight: 500 !important; text-align: left !important;
+  color: oklch(30% 0.015 255) !important; background: oklch(99% 0.002 250) !important;
+  border: 1px solid oklch(88% 0.008 250) !important; border-radius: 10px !important;
+  padding: 9px 12px !important; white-space: normal !important; line-height: 1.35 !important;
+  width: 100% !important;
+}
+div[class*="st-key-chip_"] button:hover {
+  background: color-mix(in oklab, __ACCENT__ 8%, white) !important;
+  border-color: color-mix(in oklab, __ACCENT__ 30%, white) !important;
+}
 </style>
 """.replace("__ACCENT__", ACCENT)
+
+QUICK_PROMPTS = [
+    "Is 13th month pay required?",
+    "Who can I file a complaint to?",
+    "How many vacation leave credits do I get?",
+    "What's the process for reporting harassment?",
+]
 
 
 def _greeting_message() -> dict:
@@ -193,6 +245,8 @@ def _init_state() -> None:
     if "expanded_panels" not in st.session_state:
         st.session_state.expanded_panels = {}
     st.session_state.setdefault("api_url", config.API_URL)
+    st.session_state.setdefault("awaiting_response", False)
+    st.session_state.setdefault("pending_request", None)
 
 
 def _toggle_sidebar() -> None:
@@ -203,6 +257,8 @@ def _start_new_chat() -> None:
     st.session_state.session_id = str(uuid4())
     st.session_state.messages = [_greeting_message()]
     st.session_state.expanded_panels = {}
+    st.session_state.awaiting_response = False
+    st.session_state.pending_request = None
 
 
 def _accept_privacy() -> None:
@@ -386,11 +442,22 @@ def _render_header() -> None:
                 st.button("+  New chat", key="new_chat_btn", on_click=_start_new_chat)
 
 
-def _render_actions(actions: list[dict]) -> None:
+def _render_actions(actions: list[dict], is_latest: bool = False) -> None:
     for action in actions:
         label = html.escape(action.get("label", ""))
         status = action.get("status", "completed")
         ticket_id = action.get("ticket_id")
+        if action.get("type") == "escalation_form_required":
+            # Only the most recent message ever gets the *interactive* form --
+            # once a newer message exists, this request is no longer active.
+            if is_latest:
+                _render_escalation_form()
+            else:
+                st.markdown(
+                    f'<div style="font-size:13px;color:oklch(45% 0.012 250);margin-top:8px;">{label}</div>',
+                    unsafe_allow_html=True,
+                )
+            continue
         if status == "completed" and ticket_id:
             ticket_html = (
                 '<span style="font-family:\'IBM Plex Mono\',monospace;font-size:12px;'
@@ -426,6 +493,140 @@ def _render_actions(actions: list[dict]) -> None:
                 f'<div style="font-size:13px;color:oklch(45% 0.012 250);margin-top:8px;">{label}</div>',
                 unsafe_allow_html=True,
             )
+
+
+def _queue_message(prompt: str, escalation_form: dict | None = None) -> None:
+    """Appends the user's turn and queues the API call for the next script
+    run. Shared by the composer, the quick-start chips, and the escalation
+    form's submit button so there's exactly one code path that talks to the
+    API. Split from the actual request (see `_fetch_pending_response`) so a
+    typing indicator can render in-flow *before* the blocking network call,
+    instead of a spinner appearing outside the message list."""
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": prompt,
+            "citations": [],
+            "sources": [],
+            "web_citations": [],
+            "actions": [],
+            "token_usage": {},
+        }
+    )
+    st.session_state.pending_request = {"message": prompt, "escalation_form": escalation_form}
+    st.session_state.awaiting_response = True
+
+
+def _fetch_pending_response() -> None:
+    """Performs the queued API call and appends the assistant's reply. Must
+    only be called after the typing indicator has already been rendered."""
+    pending = st.session_state.pending_request or {}
+    payload: dict = {
+        "session_id": st.session_state.session_id,
+        "message": pending.get("message", ""),
+    }
+    if pending.get("escalation_form") is not None:
+        payload["escalation_form"] = pending["escalation_form"]
+
+    try:
+        response = requests.post(
+            f"{st.session_state.api_url.rstrip('/')}/chat", json=payload, timeout=90
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as exc:
+        data = {
+            "reply": f"I could not reach the API: {exc}",
+            "citations": [],
+            "sources": [],
+            "web_citations": [],
+            "actions": [],
+            "token_usage": {},
+        }
+
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": data["reply"],
+            "citations": data.get("citations", []),
+            "sources": data.get("sources", []),
+            "web_citations": data.get("web_citations", []),
+            "actions": data.get("actions", []),
+            "token_usage": data.get("token_usage", {}),
+        }
+    )
+    st.session_state.pending_request = None
+    st.session_state.awaiting_response = False
+
+
+def _render_typing_indicator(accent: str) -> None:
+    with st.container(key="typing_indicator"):
+        st.markdown(
+            '<div style="display:flex;gap:10px;align-items:center;">'
+            f'<div style="width:26px;height:26px;border-radius:7px;background:{accent};'
+            'flex-shrink:0;display:flex;align-items:center;justify-content:center;">'
+            '<div style="width:8px;height:8px;border-radius:2px;background:oklch(99% 0 0);"></div>'
+            "</div>"
+            '<div style="display:flex;gap:4px;align-items:center;padding:9px 2px;">'
+            '<span class="ezra-typing-dot"></span>'
+            '<span class="ezra-typing-dot"></span>'
+            '<span class="ezra-typing-dot"></span>'
+            "</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_quick_prompts() -> None:
+    """Suggested starter prompts shown only before the conversation has
+    actually started, so returning users mid-conversation aren't shown
+    stale suggestions above the composer."""
+    if len(st.session_state.messages) != 1 or st.session_state.awaiting_response:
+        return
+    with st.container(key="quick_prompts"):
+        cols = st.columns(2)
+        for idx, prompt in enumerate(QUICK_PROMPTS):
+            with cols[idx % 2]:
+                if st.button(prompt, key=f"chip_{idx}", use_container_width=True):
+                    _queue_message(prompt)
+                    st.rerun()
+
+
+def _render_escalation_form() -> None:
+    """The rendered intake form itself (PLAN.md Sec 6.1, Step B). Submitting
+    sends a structured escalation_form payload rather than free chat text --
+    see src/agent/orchestrator.py::_file_from_form_submission."""
+    with st.container(key="escalation_form_wrap"):
+        with st.form(key="escalation_intake_form", clear_on_submit=True):
+            st.markdown(
+                '<div style="font-size:13.5px;font-weight:600;color:oklch(24% 0.015 255);'
+                'margin-bottom:6px;">Complaint intake form</div>',
+                unsafe_allow_html=True,
+            )
+            category = st.selectbox("Category", _CATEGORY_OPTIONS)
+            severity = st.selectbox("Severity", _SEVERITY_OPTIONS)
+            description = st.text_area("What happened? (at least 10 characters)")
+            parties_raw = st.text_input("Anyone else involved? (comma-separated, optional)")
+            incident_date = st.text_input("When did this happen? (optional)")
+            desired_outcome = st.text_input("What outcome are you hoping for? (optional)")
+            submitted = st.form_submit_button("Submit complaint")
+
+    if not submitted:
+        return
+    if len(description.strip()) < 10:
+        st.error("Please add a bit more detail (at least 10 characters) before submitting.")
+        return
+
+    escalation_form = {
+        "category": category,
+        "severity": severity,
+        "description": description.strip(),
+        "parties_involved": [p.strip() for p in parties_raw.split(",") if p.strip()],
+        "incident_date": incident_date.strip() or None,
+        "desired_outcome": desired_outcome.strip() or None,
+    }
+    _queue_message("[submitted the complaint intake form]", escalation_form=escalation_form)
+    st.rerun()
 
 
 def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
@@ -520,7 +721,7 @@ def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
         )
 
 
-def _render_message(i: int, msg: dict, accent: str) -> None:
+def _render_message(i: int, msg: dict, accent: str, is_latest: bool = False) -> None:
     with st.container(key=f"msg_{i}"):
         content = html.escape(msg["content"])
         if msg["role"] == "assistant":
@@ -535,7 +736,7 @@ def _render_message(i: int, msg: dict, accent: str) -> None:
                 "</div>",
                 unsafe_allow_html=True,
             )
-            _render_actions(msg.get("actions") or [])
+            _render_actions(msg.get("actions") or [], is_latest=is_latest)
             _render_pills_and_panels(i, msg, accent)
         else:
             st.markdown(
@@ -550,8 +751,9 @@ def _render_message(i: int, msg: dict, accent: str) -> None:
 
 def _render_messages(accent: str) -> None:
     with st.container(key="message_list"):
+        n = len(st.session_state.messages)
         for i, message in enumerate(st.session_state.messages):
-            _render_message(i, message, accent)
+            _render_message(i, message, accent, is_latest=(i == n - 1))
 
 
 st.set_page_config(page_title="E.Z.R.A.", page_icon="💬", layout="wide")
@@ -576,46 +778,18 @@ _render_sidebar(_accent, _dev_mode)
 _render_header()
 _render_messages(_accent)
 
+if st.session_state.awaiting_response:
+    # Render the typing indicator first so it's flushed to the browser
+    # in-flow (matching the assistant-message layout) before the blocking
+    # network call below, rather than a spinner floating outside the
+    # message list.
+    _render_typing_indicator(_accent)
+    _fetch_pending_response()
+    st.rerun()
+
+_render_quick_prompts()
+
 _prompt = st.chat_input("Ask an HR policy question…")
 if _prompt:
-    user_message = {
-        "role": "user",
-        "content": _prompt,
-        "citations": [],
-        "sources": [],
-        "web_citations": [],
-        "actions": [],
-        "token_usage": {},
-    }
-    st.session_state.messages.append(user_message)
-    _render_message(len(st.session_state.messages) - 1, user_message, _accent)
-
-    payload = {"session_id": st.session_state.session_id, "message": _prompt}
-    with st.spinner("Checking the HR knowledge base..."):
-        try:
-            response = requests.post(
-                f"{st.session_state.api_url.rstrip('/')}/chat", json=payload, timeout=90
-            )
-            response.raise_for_status()
-            data = response.json()
-        except requests.RequestException as exc:
-            data = {
-                "reply": f"I could not reach the API: {exc}",
-                "citations": [],
-                "sources": [],
-                "web_citations": [],
-                "actions": [],
-                "token_usage": {},
-            }
-
-    assistant_message = {
-        "role": "assistant",
-        "content": data["reply"],
-        "citations": data.get("citations", []),
-        "sources": data.get("sources", []),
-        "web_citations": data.get("web_citations", []),
-        "actions": data.get("actions", []),
-        "token_usage": data.get("token_usage", {}),
-    }
-    st.session_state.messages.append(assistant_message)
-    _render_message(len(st.session_state.messages) - 1, assistant_message, _accent)
+    _queue_message(_prompt)
+    st.rerun()

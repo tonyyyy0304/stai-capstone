@@ -91,6 +91,23 @@ TOXIC_WORDLIST = (
     "retard",
     "retarded",
 )
+# --- LLM-as-Judge input guardrail (Module 6) ---
+# Second, defense-in-depth input guardrail that always runs after the cheap
+# deterministic checks: one structured Gemini call classifies each incoming
+# message for toxicity / PII / prompt-injection / off-topic / jailbreak at once,
+# catching nuanced adversarial phrasing the deterministic wordlist+regex layer
+# (toxicity.py, input_checks.py) misses. The deterministic checks run first and
+# short-circuit blatant cases for free (PLAN.md §2.1/§8 — Gemini quota is the #1
+# constraint), so the judge only spends a call on messages that got past them.
+# Below this confidence, the judge's flags are treated as too weak to block
+# (fail-open toward the employee rather than blocking a legitimate question).
+LLM_JUDGE_CONFIDENCE_FLOOR = 0.6
+# Which detected violations actually block entry. PII is intentionally excluded —
+# it's detected for redaction/observability, not rejection (see pii.py); off_topic
+# stays authoritative at the router (input_checks.py), the judge just catches it
+# one call earlier.
+LLM_JUDGE_BLOCKING_VIOLATIONS = ("toxicity", "injection", "off_topic", "jailbreak")
+
 # Employee-ID format assumed for the PII guardrail — no convention exists
 # elsewhere in this repo's data/schemas, so this is a documented invention:
 # "EMP-" followed by 4-6 digits (e.g. EMP-00123).
