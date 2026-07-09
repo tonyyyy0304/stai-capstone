@@ -17,10 +17,19 @@ Gemini picks a tool, tools.py executes it, the result is fed back as an
 observation, and the model repeats until it answers in plain text or
 MAX_REACT_ITERATIONS is hit.
 
-Guardrails (Module 6, src/guardrails/) run at both ends of run_turn(): input
-checks (prompt-injection heuristics, toxicity) gate entry before the router
-even runs; an output grounding check re-verifies citations before the final
-AgentResponse is returned.
+Guardrails (Module 6, src/guardrails/) run in three stages of run_turn():
+1. Pre-router (_check_input): free, deterministic prompt-injection regex —
+   runs before classify_intent() so obvious attacks never reach an LLM call.
+2. Post-classification (_check_semantic_guardrails): reads the is_toxic/
+   is_injection_attempt fields classify_intent() already filled in, as a
+   semantic backstop for whatever the deterministic layer missed, plus a
+   complaint-aware toxicity check that only trusts the semantic signal for
+   Intent.COMPLAINT (a harassment complaint quoting abusive language isn't
+   itself abusive — see check_toxicity_with_context's docstring). Runs after
+   classification because both of these need it, at zero incremental LLM
+   cost since the router call already happened.
+3. Output (check_grounding): re-verifies citations before the final
+   AgentResponse is returned.
 """
 
 import json
@@ -35,8 +44,8 @@ from src import config
 from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
 from src.guardrails.grounding import check_grounding
-from src.guardrails.input_checks import check_topic_and_injection
-from src.guardrails.toxicity import check_toxicity
+from src.guardrails.input_checks import check_injection_semantic, check_topic_and_injection
+from src.guardrails.toxicity import check_toxicity_with_context
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
     Citation,
@@ -103,16 +112,28 @@ class _RunState:
 
 
 def _check_input(message: str) -> GuardrailResult:
-    """Deterministic, no-LLM-call input guardrails: prompt-injection
-    heuristics and a small toxicity wordlist. Topic restriction's
-    authoritative enforcement is the intent router's out_of_scope
-    classification further down in run_turn() (already a hard block) — see
-    src/guardrails/input_checks.py's docstring for why this doesn't
-    duplicate that with keyword topic-matching."""
-    result = check_topic_and_injection(message)
+    """Deterministic, no-LLM-call, pre-router guardrail: prompt-injection
+    heuristics only. Topic restriction's authoritative enforcement is the
+    intent router's out_of_scope classification further down in run_turn()
+    (already a hard block) — see src/guardrails/input_checks.py's docstring
+    for why this doesn't duplicate that with keyword topic-matching.
+
+    Toxicity is deliberately NOT checked here — it needs the classification
+    result to distinguish an employee's own hostile language from a
+    complaint quoting abuse said TO them (see check_toxicity_with_context's
+    docstring), so it runs after classify_intent() below instead."""
+    return check_topic_and_injection(message)
+
+
+def _check_semantic_guardrails(message: str, classification: IntentClassification) -> GuardrailResult:
+    """Runs after classify_intent() returns — reads the router's is_toxic/
+    is_injection_attempt fields (filled in by that same already-mandatory
+    call, so this costs no extra LLM request) as a backstop for whatever the
+    deterministic pre-router checks missed."""
+    result = check_injection_semantic(classification)
     if not result.allowed:
         return result
-    return check_toxicity(message)
+    return check_toxicity_with_context(message, classification)
 
 
 def run_turn(
@@ -146,6 +167,14 @@ def run_turn(
                 observation=classification.model_dump_json(),
             )
         )
+
+        semantic_result = _check_semantic_guardrails(message, classification)
+        if not semantic_result.allowed:
+            return AgentResponse(
+                reply=semantic_result.reason,
+                steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
+            )
 
         if needs_clarification(classification):
             return AgentResponse(

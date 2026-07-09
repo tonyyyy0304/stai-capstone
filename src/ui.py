@@ -29,6 +29,7 @@ if "messages" not in st.session_state:
             "sources": [],
             "web_citations": [],
             "actions": [],
+            "token_usage": {},
         }
     ]
 
@@ -51,6 +52,21 @@ with st.sidebar:
         st.session_state.session_id = str(uuid4())
         st.session_state.messages = st.session_state.messages[:1]
         st.rerun()
+
+    st.header("Token usage")
+    if st.button("Refresh usage", use_container_width=True):
+        try:
+            usage_resp = requests.get(f"{api_url.rstrip('/')}/usage", timeout=10)
+            usage_resp.raise_for_status()
+            usage_data = usage_resp.json()
+            today, all_time = usage_data["today"], usage_data["all_time"]
+            col1, col2 = st.columns(2)
+            col1.metric("Requests today", today.get("request_count", 0))
+            col2.metric("Tokens today", today.get("total_tokens", 0))
+            col1.metric("Requests all-time", all_time.get("request_count", 0))
+            col2.metric("Tokens all-time", all_time.get("total_tokens", 0))
+        except requests.RequestException as exc:
+            st.error(f"Could not fetch usage: {exc}")
 
 
 def _render_assistant_details(message: dict) -> None:
@@ -87,6 +103,14 @@ def _render_assistant_details(message: dict) -> None:
             for citation in web_citations:
                 st.markdown(f"- [{citation['title']}]({citation['url']})")
 
+    token_usage = message.get("token_usage") or {}
+    if token_usage.get("total_tokens"):
+        st.caption(
+            f"Tokens this turn: {token_usage['total_tokens']} "
+            f"(prompt {token_usage.get('prompt_tokens', 0)}, "
+            f"completion {token_usage.get('completion_tokens', 0)})"
+        )
+
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -114,6 +138,7 @@ if prompt:
                     "sources": [],
                     "web_citations": [],
                     "actions": [],
+                    "token_usage": {},
                 }
         st.markdown(data["reply"])
         assistant_message = {
@@ -123,6 +148,7 @@ if prompt:
             "sources": data.get("sources", []),
             "web_citations": data.get("web_citations", []),
             "actions": data.get("actions", []),
+            "token_usage": data.get("token_usage", {}),
         }
         _render_assistant_details(assistant_message)
         st.session_state.messages.append(assistant_message)

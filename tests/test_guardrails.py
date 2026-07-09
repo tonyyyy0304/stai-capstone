@@ -1,9 +1,13 @@
 from src.guardrails.grounding import check_grounding, verify_response_citations
-from src.guardrails.input_checks import check_topic_and_injection
+from src.guardrails.input_checks import check_injection_semantic, check_topic_and_injection
 from src.guardrails.pii import detect_pii, redact_pii
-from src.guardrails.toxicity import check_toxicity
+from src.guardrails.toxicity import (
+    check_toxicity,
+    check_toxicity_semantic,
+    check_toxicity_with_context,
+)
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation
+from src.schemas import Citation, Intent, IntentClassification
 
 
 def make_chunk(chunk_id="leave-policy#001"):
@@ -122,3 +126,72 @@ def test_check_toxicity_blocks_wordlist_match():
     result = check_toxicity("This is fucking ridiculous, fix it now.")
     assert result.allowed is False
     assert result.reason
+
+
+# --- semantic guardrail backstop (router piggyback) -------------------------
+
+def make_classification(
+    intent=Intent.FAQ, is_toxic=False, is_injection_attempt=False
+) -> IntentClassification:
+    return IntentClassification(
+        intent=intent,
+        confidence=0.9,
+        is_toxic=is_toxic,
+        is_injection_attempt=is_injection_attempt,
+    )
+
+
+def test_check_injection_semantic_allows_when_flag_false():
+    result = check_injection_semantic(make_classification(is_injection_attempt=False))
+    assert result.allowed is True
+
+
+def test_check_injection_semantic_blocks_when_flag_true():
+    result = check_injection_semantic(make_classification(is_injection_attempt=True))
+    assert result.allowed is False
+    assert result.reason
+
+
+def test_check_toxicity_semantic_blocks_when_flag_true():
+    result = check_toxicity_semantic(make_classification(is_toxic=True))
+    assert result.allowed is False
+    assert result.reason
+
+
+def test_check_toxicity_semantic_allows_when_flag_false():
+    result = check_toxicity_semantic(make_classification(is_toxic=False))
+    assert result.allowed is True
+
+
+def test_check_toxicity_with_context_blocks_wordlist_hit_for_non_complaint():
+    classification = make_classification(intent=Intent.FAQ, is_toxic=False)
+    result = check_toxicity_with_context("This is fucking ridiculous.", classification)
+    assert result.allowed is False
+
+
+def test_check_toxicity_with_context_allows_complaint_quoting_abuse():
+    # Regression guard: a harassment complaint quoting what was said TO the
+    # employee must not be blocked by the wordlist just because it contains
+    # a toxic word - the router is expected to set is_toxic=false here.
+    classification = make_classification(intent=Intent.COMPLAINT, is_toxic=False)
+    result = check_toxicity_with_context(
+        "My coworker called me a bitch in front of the whole team.", classification
+    )
+    assert result.allowed is True
+
+
+def test_check_toxicity_with_context_blocks_complaint_when_employee_is_abusive():
+    # Even for COMPLAINT intent, actual hostility from the employee (as
+    # judged by the router's semantic signal) still blocks.
+    classification = make_classification(intent=Intent.COMPLAINT, is_toxic=True)
+    result = check_toxicity_with_context(
+        "This HR bot is useless and I hate dealing with you idiots.", classification
+    )
+    assert result.allowed is False
+
+
+def test_check_toxicity_with_context_blocks_non_complaint_on_semantic_signal_alone():
+    # No wordlist hit, but the router flagged it toxic (e.g. paraphrased abuse).
+    classification = make_classification(intent=Intent.FAQ, is_toxic=True)
+    result = check_toxicity_with_context("You are a worthless piece of garbage.", classification)
+    assert result.allowed is False
