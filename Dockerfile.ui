@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-ui.txt .
+RUN pip install -r requirements-ui.txt
+
+COPY src src
+COPY scripts/render_ui_start.sh scripts/render_ui_start.sh
+
+EXPOSE 8501
+
+CMD ["sh", "scripts/render_ui_start.sh"]
