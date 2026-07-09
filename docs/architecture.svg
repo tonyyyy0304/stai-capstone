@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="660" viewBox="0 0 820 660" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowStart" markerWidth="9" markerHeight="9" refX="1" refY="4" orient="auto">
+      <path d="M8,0 L0,4 L8,8 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <style>
+    .lbl  { font-size:16px; font-weight:600; fill:#0f172a; }
+    .sub  { font-size:11px; fill:#475569; }
+    .edge { stroke:#475569; stroke-width:1.6; fill:none; }
+    .dash { stroke:#94a3b8; stroke-width:1.4; fill:none; stroke-dasharray:5 4; }
+  </style>
+
+  <!-- UI -->
+  <rect x="200" y="24" width="420" height="52" rx="8" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.6"/>
+  <text class="lbl" x="410" y="55" text-anchor="middle">Streamlit UI</text>
+
+  <!-- API -->
+  <rect x="200" y="108" width="420" height="52" rx="8" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.6"/>
+  <text class="lbl" x="410" y="139" text-anchor="middle">FastAPI</text>
+
+  <!-- Orchestrator -->
+  <rect x="140" y="192" width="540" height="72" rx="8" fill="#ffedd5" stroke="#fb923c" stroke-width="1.6"/>
+  <text class="lbl" x="410" y="223" text-anchor="middle">Agent Orchestrator</text>
+  <text class="sub" x="410" y="245" text-anchor="middle">guardrails · router · ReAct loop · escalation</text>
+
+  <!-- Tools row -->
+  <rect x="52"  y="332" width="150" height="70" rx="8" fill="#dcfce7" stroke="#4ade80" stroke-width="1.6"/>
+  <text class="lbl" x="127" y="364" text-anchor="middle">RAG</text>
+  <text class="sub" x="127" y="384" text-anchor="middle">ChromaDB</text>
+
+  <rect x="238" y="332" width="150" height="70" rx="8" fill="#dcfce7" stroke="#4ade80" stroke-width="1.6"/>
+  <text class="lbl" x="313" y="364" text-anchor="middle">Complaints</text>
+  <text class="sub" x="313" y="384" text-anchor="middle">SQLite</text>
+
+  <rect x="424" y="332" width="150" height="70" rx="8" fill="#dcfce7" stroke="#4ade80" stroke-width="1.6"/>
+  <text class="lbl" x="499" y="364" text-anchor="middle">Escalation</text>
+  <text class="sub" x="499" y="384" text-anchor="middle">deterministic</text>
+
+  <rect x="610" y="332" width="150" height="70" rx="8" fill="#dcfce7" stroke="#4ade80" stroke-width="1.6"/>
+  <text class="lbl" x="685" y="364" text-anchor="middle">Memory</text>
+  <text class="sub" x="685" y="384" text-anchor="middle">SQLite</text>
+
+  <!-- LLM layer -->
+  <rect x="140" y="472" width="540" height="52" rx="8" fill="#f3e8ff" stroke="#c084fc" stroke-width="1.6"/>
+  <text class="lbl" x="410" y="503" text-anchor="middle">LLM layer</text>
+  <text class="sub" x="620" y="503" text-anchor="end">Gemini ⇄ Ollama</text>
+
+  <!-- MLflow -->
+  <rect x="140" y="568" width="540" height="46" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text class="lbl" x="410" y="596" text-anchor="middle">MLflow tracing</text>
+
+  <!-- ===== edges ===== -->
+  <!-- vertical stack, bidirectional -->
+  <path class="edge" d="M410,76 L410,108"  marker-end="url(#arrow)" marker-start="url(#arrowStart)"/>
+  <path class="edge" d="M410,160 L410,192" marker-end="url(#arrow)" marker-start="url(#arrowStart)"/>
+
+  <!-- orchestrator -> tools : distribution bus -->
+  <path class="edge" d="M410,264 L410,300"/>
+  <path class="edge" d="M127,300 L685,300"/>
+  <path class="edge" d="M127,300 L127,332" marker-end="url(#arrow)"/>
+  <path class="edge" d="M313,300 L313,332" marker-end="url(#arrow)"/>
+  <path class="edge" d="M499,300 L499,332" marker-end="url(#arrow)"/>
+  <path class="edge" d="M685,300 L685,332" marker-end="url(#arrow)"/>
+
+  <!-- tools -> LLM layer : collection bus (dashed) -->
+  <path class="dash" d="M127,402 L127,440"/>
+  <path class="dash" d="M313,402 L313,440"/>
+  <path class="dash" d="M499,402 L499,440"/>
+  <path class="dash" d="M685,402 L685,440"/>
+  <path class="dash" d="M127,440 L685,440"/>
+  <path class="dash" d="M410,440 L410,472" marker-end="url(#arrow)"/>
+
+  <!-- MLflow observes -->
+  <path class="dash" d="M410,524 L410,568" marker-end="url(#arrow)"/>
+</svg>

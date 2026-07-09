@@ -43,6 +43,7 @@ from src.guardrails.escalation import fail_safe_decision, should_escalate
 from src.guardrails.form_pii import to_escalation_event
 from src.guardrails.grounding import check_grounding
 from src.guardrails.input_checks import check_topic_and_injection
+from src.guardrails.llm_judge import check_input_llm
 from src.guardrails.toxicity import check_toxicity
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
@@ -111,17 +112,22 @@ class _RunState:
     insufficient_context: bool = False
 
 
-def _check_input(message: str) -> GuardrailResult:
-    """Deterministic, no-LLM-call input guardrails: prompt-injection
-    heuristics and a small toxicity wordlist. Topic restriction's
-    authoritative enforcement is the intent router's out_of_scope
-    classification further down in run_turn() (already a hard block) — see
-    src/guardrails/input_checks.py's docstring for why this doesn't
-    duplicate that with keyword topic-matching."""
+def _check_input(message: str, client=None, session_id: str | None = None) -> GuardrailResult:
+    """Layered input guardrails. First the deterministic, no-LLM-call checks —
+    prompt-injection heuristics and a small toxicity wordlist — which
+    short-circuit blatant cases for free (Gemini quota is the #1 constraint,
+    PLAN.md §2.1/§8). Anything that gets past those goes to the LLM-as-judge
+    (src/guardrails/llm_judge.py), one structured call classifying toxicity /
+    PII / injection / off-topic / jailbreak to catch the nuanced phrasing the
+    wordlist/regex layer misses. The judge fails open, so a failed call never
+    breaks the turn — the deterministic layer above is the backstop."""
     result = check_topic_and_injection(message)
     if not result.allowed:
         return result
-    return check_toxicity(message)
+    result = check_toxicity(message)
+    if not result.allowed:
+        return result
+    return check_input_llm(message, client=client, session_id=session_id)
 
 
 def run_turn(
@@ -140,7 +146,7 @@ def run_turn(
     turn_started_at = datetime.now(timezone.utc)
 
     logger.info("session=%s turn_start", session_id)
-    guardrail_result = _check_input(message)
+    guardrail_result = _check_input(message, client=client, session_id=session_id)
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
 

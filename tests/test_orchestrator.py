@@ -2,7 +2,7 @@ import pytest
 
 from src import config
 from src.agent import orchestrator, tools
-from src.schemas import AnswerSource, GroundedAnswer, Intent, IntentClassification
+from src.schemas import AnswerSource, GroundedAnswer, GuardrailResult, Intent, IntentClassification
 
 
 class FakeFunctionCall:
@@ -69,6 +69,15 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.delenv("SMTP_HOST", raising=False)
     monkeypatch.delenv("HR_ESCALATION_EMAIL_TO", raising=False)
+    # No-op the LLM-as-judge input guardrail: it now makes a real generate_content
+    # call at the start of every turn, which would consume a fake response these
+    # ReAct-loop tests set up for the tool loop. The judge is covered on its own
+    # in tests/test_guardrails.py.
+    monkeypatch.setattr(
+        orchestrator,
+        "check_input_llm",
+        lambda message, client=None, session_id=None: GuardrailResult(allowed=True),
+    )
 
 
 def mock_classification(monkeypatch, intent, confidence=0.9, category=None, clarifying_question=None):
