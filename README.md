@@ -15,7 +15,7 @@ An agentic system that answers HR policy questions via RAG (with verified citati
                                             │
         ┌───────────────────────────────────▼───────────────────────────────────┐
         │                          Agent Orchestrator (ReAct loop)              │
-        │  1. Input guardrails (topic filter, PII scan, injection check)        │
+        │  1. Input guardrails: deterministic + LLM-judge (5 dimensions)        │
         │  2. Intent router: FAQ | Complaint | Ambiguous → disambiguate         │
         │  3. Tool selection & execution                                        │
         │  4. Output guardrails (grounding check, PII redaction, tone)          │
