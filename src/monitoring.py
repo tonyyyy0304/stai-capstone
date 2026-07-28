@@ -1,7 +1,7 @@
 """MLflow instrumentation helpers for the API layer.
 
 The monitoring module deliberately avoids logging raw employee messages or model
-answers. Complaint text can contain PII, so traces store request shape, latency,
+answers, since request text can contain PII. Traces store request shape, latency,
 tool/action names, source counts, and error metadata only.
 """
 
@@ -17,12 +17,8 @@ from src import config
 #
 # Rather than trying to detect and strip PII/free-text after the fact, only
 # these exact keys are ever allowed into an MLflow tag or metric. Anything
-# else passed via trace_state["tags"]/["metrics"] -- e.g. a future caller
-# accidentally including a complaint description or form field -- is
-# silently dropped here rather than logged. escalated/trigger_rule are
-# intentionally on this list: both come from EscalationEvent/ActionResponse,
-# which never carry free-text or identity fields in the first place (see
-# src/guardrails/form_pii.py).
+# else passed via trace_state["tags"]/["metrics"] is silently dropped here
+# rather than logged.
 _ALLOWED_TAG_KEYS = frozenset(
     {
         "component",
@@ -31,8 +27,6 @@ _ALLOWED_TAG_KEYS = frozenset(
         "embedding_model",
         "route",
         "insufficient_context",
-        "escalated",
-        "trigger_rule",
         "status",
         "error_type",
     }

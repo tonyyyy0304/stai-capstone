@@ -28,10 +28,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src import config
-from src.schemas import ComplaintCategory, Severity
-
-_CATEGORY_OPTIONS = [c.value for c in ComplaintCategory]
-_SEVERITY_OPTIONS = [s.value for s in Severity]
 
 ACCENT = "#3B6FE0"
 
@@ -170,18 +166,6 @@ div[class*="st-key-pill_s_"] button, div[class*="st-key-pill_w_"] button {
   color: oklch(28% 0.015 255) !important; font-size: 14px !important; font-weight: 500 !important;
 }
 
-/* Escalation intake form (rendered inline under a pending action label) */
-[data-testid="stForm"] {
-  border: 1px solid oklch(90% 0.006 250) !important;
-  border-radius: 12px !important;
-  background: oklch(97% 0.004 250) !important;
-  padding: 16px !important;
-}
-[data-testid="stFormSubmitButton"] button {
-  background: __ACCENT__ !important; color: white !important; border: none !important;
-  border-radius: 8px !important; font-weight: 500 !important;
-}
-
 /* Typing indicator -- rendered in-flow in the message list so a pending
    reply looks like part of the conversation instead of a generic spinner
    stuck at the page's left edge. */
@@ -215,16 +199,16 @@ div[class*="st-key-chip_"] button:hover {
 
 QUICK_PROMPTS = [
     "Is 13th month pay required?",
-    "Who can I file a complaint to?",
     "How many vacation leave credits do I get?",
-    "What's the process for reporting harassment?",
+    "What's the company's Code of Conduct policy?",
+    "What benefits am I entitled to?",
 ]
 
 
 def _greeting_message() -> dict:
     return {
         "role": "assistant",
-        "content": "Hi. Ask me about HR policies, or tell me if you need to start a complaint.",
+        "content": "Hi. Ask me about HR policy or DOLE labor law questions.",
         "citations": [],
         "sources": [],
         "web_citations": [],
@@ -322,16 +306,13 @@ def _render_privacy_gate(accent: str) -> None:
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(38% 0.014 250);">'
-            "E.Z.R.A. can help with HR policy questions and complaint intake. If you file a "
-            "complaint, details you share — including personal information about you or "
-            "others — are stored so HR can follow up and, where required, escalated to a "
-            "human reviewer.</div>",
+            "E.Z.R.A. can help with HR policy and DOLE labor law questions. Your messages "
+            "are stored to maintain conversation context.</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(38% 0.014 250);'
-            'font-weight:500;">Do you consent to that information being stored for '
-            "complaint handling?</div>",
+            'font-weight:500;">Do you consent to that information being stored?</div>',
             unsafe_allow_html=True,
         )
         col1, col2 = st.columns(2)
@@ -360,8 +341,8 @@ def _render_declined_screen() -> None:
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(45% 0.012 250);">'
-            "E.Z.R.A. can't take complaint details or store your messages without your "
-            "consent. You can review the notice again if you'd like to proceed.</div>",
+            "E.Z.R.A. can't store your messages without your consent. You can review the "
+            "notice again if you'd like to proceed.</div>",
             unsafe_allow_html=True,
         )
         st.button("Review the notice again", key="privacy_review_btn", on_click=_reconsider_privacy)
@@ -442,40 +423,11 @@ def _render_header() -> None:
                 st.button("+  New chat", key="new_chat_btn", on_click=_start_new_chat)
 
 
-def _render_actions(actions: list[dict], is_latest: bool = False) -> None:
+def _render_actions(actions: list[dict]) -> None:
     for action in actions:
         label = html.escape(action.get("label", ""))
         status = action.get("status", "completed")
-        ticket_id = action.get("ticket_id")
-        if action.get("type") == "escalation_form_required":
-            # Only the most recent message ever gets the *interactive* form --
-            # once a newer message exists, this request is no longer active.
-            if is_latest:
-                _render_escalation_form()
-            else:
-                st.markdown(
-                    f'<div style="font-size:13px;color:oklch(45% 0.012 250);margin-top:8px;">{label}</div>',
-                    unsafe_allow_html=True,
-                )
-            continue
-        if status == "completed" and ticket_id:
-            ticket_html = (
-                '<span style="font-family:\'IBM Plex Mono\',monospace;font-size:12px;'
-                f'color:oklch(38% 0.06 155);">{html.escape(ticket_id)}</span>'
-            )
-            st.markdown(
-                '<div style="display:flex;align-items:center;gap:8px;padding:9px 12px;'
-                "border-radius:9px;background:oklch(94% 0.03 155);"
-                'border:1px solid oklch(85% 0.05 155);margin-top:8px;">'
-                '<div style="width:16px;height:16px;border-radius:999px;background:oklch(52% 0.13 155);'
-                'flex-shrink:0;display:flex;align-items:center;justify-content:center;">'
-                '<div style="width:6px;height:6px;border-radius:999px;background:oklch(99% 0 0);"></div>'
-                "</div>"
-                f'<div style="font-size:13px;color:oklch(28% 0.04 155);">{label} {ticket_html}</div>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
-        elif status == "pending":
+        if status == "pending":
             st.markdown(
                 '<div style="display:flex;align-items:center;gap:8px;padding:9px 12px;'
                 "border-radius:9px;background:oklch(96% 0.03 85);"
@@ -495,13 +447,13 @@ def _render_actions(actions: list[dict], is_latest: bool = False) -> None:
             )
 
 
-def _queue_message(prompt: str, escalation_form: dict | None = None) -> None:
+def _queue_message(prompt: str) -> None:
     """Appends the user's turn and queues the API call for the next script
-    run. Shared by the composer, the quick-start chips, and the escalation
-    form's submit button so there's exactly one code path that talks to the
-    API. Split from the actual request (see `_fetch_pending_response`) so a
-    typing indicator can render in-flow *before* the blocking network call,
-    instead of a spinner appearing outside the message list."""
+    run. Shared by the composer and the quick-start chips so there's exactly
+    one code path that talks to the API. Split from the actual request (see
+    `_fetch_pending_response`) so a typing indicator can render in-flow
+    *before* the blocking network call, instead of a spinner appearing
+    outside the message list."""
     st.session_state.messages.append(
         {
             "role": "user",
@@ -513,7 +465,7 @@ def _queue_message(prompt: str, escalation_form: dict | None = None) -> None:
             "token_usage": {},
         }
     )
-    st.session_state.pending_request = {"message": prompt, "escalation_form": escalation_form}
+    st.session_state.pending_request = {"message": prompt}
     st.session_state.awaiting_response = True
 
 
@@ -525,8 +477,6 @@ def _fetch_pending_response() -> None:
         "session_id": st.session_state.session_id,
         "message": pending.get("message", ""),
     }
-    if pending.get("escalation_form") is not None:
-        payload["escalation_form"] = pending["escalation_form"]
 
     try:
         response = requests.post(
@@ -590,43 +540,6 @@ def _render_quick_prompts() -> None:
                 if st.button(prompt, key=f"chip_{idx}", use_container_width=True):
                     _queue_message(prompt)
                     st.rerun()
-
-
-def _render_escalation_form() -> None:
-    """The rendered intake form itself (PLAN.md Sec 6.1, Step B). Submitting
-    sends a structured escalation_form payload rather than free chat text --
-    see src/agent/orchestrator.py::_file_from_form_submission."""
-    with st.container(key="escalation_form_wrap"):
-        with st.form(key="escalation_intake_form", clear_on_submit=True):
-            st.markdown(
-                '<div style="font-size:13.5px;font-weight:600;color:oklch(24% 0.015 255);'
-                'margin-bottom:6px;">Complaint intake form</div>',
-                unsafe_allow_html=True,
-            )
-            category = st.selectbox("Category", _CATEGORY_OPTIONS)
-            severity = st.selectbox("Severity", _SEVERITY_OPTIONS)
-            description = st.text_area("What happened? (at least 10 characters)")
-            parties_raw = st.text_input("Anyone else involved? (comma-separated, optional)")
-            incident_date = st.text_input("When did this happen? (optional)")
-            desired_outcome = st.text_input("What outcome are you hoping for? (optional)")
-            submitted = st.form_submit_button("Submit complaint")
-
-    if not submitted:
-        return
-    if len(description.strip()) < 10:
-        st.error("Please add a bit more detail (at least 10 characters) before submitting.")
-        return
-
-    escalation_form = {
-        "category": category,
-        "severity": severity,
-        "description": description.strip(),
-        "parties_involved": [p.strip() for p in parties_raw.split(",") if p.strip()],
-        "incident_date": incident_date.strip() or None,
-        "desired_outcome": desired_outcome.strip() or None,
-    }
-    _queue_message("[submitted the complaint intake form]", escalation_form=escalation_form)
-    st.rerun()
 
 
 def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
@@ -721,7 +634,7 @@ def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
         )
 
 
-def _render_message(i: int, msg: dict, accent: str, is_latest: bool = False) -> None:
+def _render_message(i: int, msg: dict, accent: str) -> None:
     with st.container(key=f"msg_{i}"):
         content = html.escape(msg["content"])
         if msg["role"] == "assistant":
@@ -736,7 +649,7 @@ def _render_message(i: int, msg: dict, accent: str, is_latest: bool = False) -> 
                 "</div>",
                 unsafe_allow_html=True,
             )
-            _render_actions(msg.get("actions") or [], is_latest=is_latest)
+            _render_actions(msg.get("actions") or [])
             _render_pills_and_panels(i, msg, accent)
         else:
             st.markdown(
@@ -751,9 +664,8 @@ def _render_message(i: int, msg: dict, accent: str, is_latest: bool = False) -> 
 
 def _render_messages(accent: str) -> None:
     with st.container(key="message_list"):
-        n = len(st.session_state.messages)
         for i, message in enumerate(st.session_state.messages):
-            _render_message(i, message, accent, is_latest=(i == n - 1))
+            _render_message(i, message, accent)
 
 
 st.set_page_config(page_title="E.Z.R.A.", page_icon="💬", layout="wide")

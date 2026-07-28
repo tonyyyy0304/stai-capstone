@@ -3,7 +3,7 @@
 **Course:** Introduction to Agentic AI (STAI100) — Final Capstone (Week 14)
 **Use case type:** Vector DB RAG + CV/OCR Document Understanding (HR/Onboarding domain)
 **LLM provider:** Google Gemini API (chat + embeddings), with a self-hosted Ollama server as a fully switchable fallback for both, independently, via `LLM_PROVIDER` / `EMBEDDING_PROVIDER` — see §2.1. OCR/document extraction (new, Final-only) is Gemini-multimodal specifically; see §5 RRL.
-**Builds on:** the Midterm project ("HR FAQ & Complaint Chatbot"). Reused as-is: the RAG pipeline, the full agent orchestrator (ReAct loop + tools), two-tier memory, guardrails (deterministic checks + LLM-judge), the LLM/embedding provider abstraction, and the API/UI/MLflow/Docker scaffolding — all of this is already built and tested (§2.1, §4). Complaint intake & escalation are also fully built (including the form-driven consent-gate design, `src/guardrails/escalation.py`, `danger_scan.py`, `form_pii.py`) but are **descoped from the Final's graded product story** — not deleted or disabled, just not the demo/eval focus (see §1.3).
+**Builds on:** the Midterm project ("HR FAQ & Complaint Chatbot"). Reused as-is: the RAG pipeline, the agent orchestrator (ReAct loop + tools), two-tier memory, guardrails (deterministic checks + LLM-judge), the LLM/embedding provider abstraction, and the API/UI/MLflow/Docker scaffolding — all of this is already built and tested (§2.1, §4). Complaint intake & escalation (the form-driven consent-gate design, `src/guardrails/escalation.py`, `danger_scan.py`, `form_pii.py`, `escalation_state.py`, and the `ComplaintTicket`/`Severity`/`TriggerRule`/`Escalation*` schemas) have been **removed from the codebase** — not just descoped — in favor of the onboarding-document-verification direction (see §1.3).
 **Governing spec:** `[Stratpoint x DLSU] Final Capstone - Project Specification.txt` (repo root) — supersedes the Midterm spec ([specs.md](specs.md), kept for reference; do not edit either spec file).
 
 ---
@@ -22,11 +22,11 @@ New hires don't just have policy questions — they also have to *produce paperw
 
 ### 1.3 What's explicitly out of scope for the Final's graded story
 
-- **Complaint intake, harassment/safety escalation, human-in-the-loop ticket routing.** This is the Midterm's product and it is genuinely built — `src/guardrails/escalation.py` (Rules 1–7 including `fail_safe_decision`), `danger_scan.py`, `form_pii.py`, `escalation_state.py`, the consent-gate flow in `orchestrator.py`/`ui.py`/`schemas.py`, and `evals/run_escalation_eval.py` all exist and are tested. It is **not removed from the codebase** — it's simply not what the team demos, claims components against, or reports Final eval numbers for. Rationale: the spec explicitly pushes toward a narrower PoC (§5), and one team doing two full products dilutes both the demo and the RRL/value-proposition story.
+- **Complaint intake, harassment/safety escalation, human-in-the-loop ticket routing.** This was the Midterm's product — the form-driven consent-gate design (`src/guardrails/escalation.py`, `danger_scan.py`, `form_pii.py`, `escalation_state.py`), the `ComplaintTicket`/`Severity`/`TriggerRule`/`Escalation*` schemas, the consent-gate flow in `orchestrator.py`/`ui.py`, the `/tickets/{id}` endpoint, and `evals/run_escalation_eval.py` were built and tested at one point, but have since been **removed from the codebase entirely** (not just descoped from the demo). Rationale: the spec explicitly pushes toward a narrower PoC (§5), and one team maintaining two full products dilutes both the demo and the RRL/value-proposition story. The old design is preserved in git history if any of it needs to be revisited.
 - Any HR topic outside onboarding (leave, payroll, benefits) stays in the corpus for grounding continuity but is **not** the eval/demo focus.
 - Real employee PII or real government-ID images — all OCR training/eval documents are synthetic mockups (see §3.3).
 
-Because so much of the underlying infrastructure (orchestrator, memory, guardrail patterns, eval harness patterns) is shared between the complaint flow and the document-validation flow, most of the Final's component work is **repurposing existing, working code** rather than building from zero — see §4.
+The underlying infrastructure that *is* still reused (orchestrator skeleton, memory, guardrail patterns, eval harness conventions) means most of the Final's component work is **extending or repurposing working code**, not building from zero — see §4. The document-validation-specific rules (§4.1) are new code, though modeled on the same fail-toward-safety design philosophy the removed escalation rules used.
 
 ---
 
@@ -59,8 +59,6 @@ Because so much of the underlying infrastructure (orchestrator, memory, guardrai
         Observability: MLflow tracing on every request (latency, tokens, tool calls, OCR confidence, errors)
 ```
 
-The complaint-filing/escalation tools (`file_complaint`, `escalate_to_hr`, `get_ticket_status`) remain registered in `src/agent/tools.py` and functional — they're just not exercised in the Final's demo path or component claims.
-
 ### Technology stack
 
 | Layer | Choice | Rationale |
@@ -69,8 +67,8 @@ The complaint-filing/escalation tools (`file_complaint`, `escalate_to_hr`, `get_
 | **CV/DS domain model (★ mandatory, Component 14)** | Gemini 2.5 Flash multimodal document extraction, `response_schema`-typed | See RRL, §5, for why this beats a standalone OCR engine for this task. Not currently exercised through the Ollama path — see §5. |
 | Embeddings | `EMBEDDING_PROVIDER` switchable: `gemini-embedding-001` (768-dim via `output_dimensionality`, default) or Ollama's `nomic-embed-text` (native 768-dim) | Independent of the chat provider. Switching requires re-running `scripts/ingest.py` against a cleared index — the two embedding spaces aren't compatible despite both being 768-dim. |
 | Vector store | ChromaDB (persistent, local) | Unchanged from Midterm; corpus reused as-is. |
-| Structured data | SQLite | Existing complaint tickets/memory tables stay; add employee onboarding-status records alongside them. |
-| API | FastAPI | Add `POST /upload-doc` alongside existing `/chat`, `/tickets/{id}`, `/usage`, `/health`. |
+| Structured data | SQLite | Memory tables stay; add employee onboarding-status records alongside them. |
+| API | FastAPI | Add `POST /upload-doc` alongside existing `/chat`, `/usage`, `/health`. |
 | UI | Streamlit | Add a file-upload widget to the existing chat UI. |
 | Monitoring | MLflow | Reused; add OCR-specific trace fields (doc type, confidence, validation result). |
 | Packaging | Docker | Reused; `docker compose up --build` already verified working end-to-end with both Gemini and Ollama backends. |
@@ -121,20 +119,20 @@ The complaint-filing/escalation tools (`file_complaint`, `escalate_to_hr`, `get_
 
 ## 4. Component Breakdown & Ownership
 
-Maps to the Final spec's 14-component checklist. Each member owns ≥2 components (6 total for a 3-person team, 8 for a 4-person team); **Component 14 is mandatory for the team**, not per-member. Because the underlying agent/guardrail/memory infrastructure already exists (built for the Midterm's complaint flow), most rows below are **repurposing working code**, not new builds — the only ground-up new piece is Component 14.
+Maps to the Final spec's 14-component checklist. Each member owns ≥2 components (6 total for a 3-person team, 8 for a 4-person team); **Component 14 is mandatory for the team**, not per-member. The RAG/agent/memory infrastructure is reused from the Midterm; the complaint-specific guardrail rules and tools were removed (§1.3) and document-validation is new code built on the same design philosophy.
 
 | # | Component | Implementation for the Final | Status |
 | --- | --- | --- | --- |
 | 3 | **RAG** | Reused unchanged: ChromaDB + switchable Gemini/Ollama embeddings (§2.1), cited grounded answers (`src/rag/answerer.py` verifies citations against retrieved `chunk_id`s). Final eval slice narrows to onboarding-scoped queries. | ✅ built, reused |
-| 2 | **Disambiguation** | Reused router (`src/agent/router.py`); re-target `IntentClassification.intent` from `faq`/`complaint`/`ambiguous`/`out_of_scope` to `faq`/`document_upload`/`ambiguous`/`out_of_scope`. Same confidence-gated clarifying-question mechanism. | 🔄 repurpose |
+| 2 | **Disambiguation** | Reused router (`src/agent/router.py`); `IntentClassification.intent` is currently `faq`/`ambiguous`/`out_of_scope` (complaint removed). Re-target to add `document_upload` for the Final. Same confidence-gated clarifying-question mechanism. | 🔄 repurpose |
 | 4 | **Memory** | Reused two-tier memory (`src/memory/session.py` short-term, `persistent.py` rolling summary, cross-session recall by `employee_id`). Add a per-employee onboarding-status record (docs received/valid/missing) alongside the existing tables. | 🔄 extend |
-| 5 | **Guardrails** | Input-safety layers reused unchanged (`input_checks.py`, `toxicity.py`, `pii.py`, `llm_judge.py` five-dimension check — see note below). NEW: `doc_validation.py` adapts the existing `escalation.py`/`danger_scan.py` fail-toward-safety pattern (Rules 1–7, `fail_safe_decision`) for OCR checklist validation instead of harassment/safety routing (§4.1). | 🔄 repurpose |
+| 5 | **Guardrails** | Input-safety layers reused unchanged (`input_checks.py`, `toxicity.py`, `pii.py`, `llm_judge.py` five-dimension check — see note below). NEW: `doc_validation.py`, a fail-toward-safety document-validation module (Rules 1–5, §4.1) built fresh — the escalation-specific rule engine it's modeled on was removed. | 🔄 new (input layers reused) |
 | 6 | **Simple Chat UI** | Reused Streamlit app (`src/ui.py`); add a file-upload widget for document submission and a checklist-status display. | 🔄 extend |
-| 7 | **API Endpoint Deployment** | Reused FastAPI app (`src/api.py`: `/chat`, `/tickets/{id}`, `/usage`, `/health`); add `POST /upload-doc`. | 🔄 extend |
+| 7 | **API Endpoint Deployment** | Reused FastAPI app (`src/api.py`: `/chat`, `/usage`, `/health`); add `POST /upload-doc`. | 🔄 extend |
 | 8 | **LLMOps (monitoring/tracing)** | Reused MLflow wiring (`src/monitoring.py`); add OCR-specific trace fields (doc type, confidence, validation outcome). Tool-call sequence/guardrail triggers still aren't in MLflow yet — carried over as a known gap. | 🔄 extend |
-| 9 | **ReAct / Tool Use** | Reused orchestrator loop (`src/agent/orchestrator.py`, `MAX_REACT_ITERATIONS`=5, fail-closed on backend errors). Swap `file_complaint`/`escalate_to_hr`/`get_ticket_status` for `extract_document`/`validate_checklist`/`get_onboarding_status` in the tool set exposed to the router for the onboarding persona; `search_kb`/`search_web` unchanged. | 🔄 repurpose |
+| 9 | **ReAct / Tool Use** | Reused orchestrator loop (`src/agent/orchestrator.py`, `MAX_REACT_ITERATIONS`=5, fail-closed on backend errors). Currently exposes `search_kb`/`search_web` only (complaint tools removed). Add `extract_document`, `validate_checklist`, `get_onboarding_status` for the onboarding persona. | 🔄 extend |
 | **14** | **CV/DS Domain Integration ★ mandatory** | OCR/document-field-extraction tool wrapping Gemini multimodal input + `response_schema` (§5 RRL). | 🆕 new — the one ground-up build |
-| 13 | **Evals** | Reused retrieval hit-rate@k harness; the guardrail/escalation red-team eval *pattern* (`run_guardrail_eval.py`, `run_escalation_eval.py` — deterministic-rule-correctness harnesses against a labeled adversarial/scenario set) is adapted into `run_ocr_eval.py` / `run_validation_eval.py` for document checks. Add an LLM-as-judge pass on FAQ answer quality. | 🔄 extend |
+| 13 | **Evals** | Reused retrieval hit-rate@k harness and the guardrail red-team eval (`run_guardrail_eval.py`, input-safety only now — the complaint-exempt/escalation eval cases were removed with the feature). Add `run_ocr_eval.py` / `run_validation_eval.py` for document checks and an LLM-as-judge pass on FAQ answer quality. | 🔄 extend |
 
 **Note on Guardrails (`llm_judge.py`):** an earlier version of this table (and of `main`, from an unresolved merge) described a simpler design where toxicity/injection signals were piggybacked onto the intent router's `IntentClassification` output. That was superseded — the shipped design is a separate `llm_judge.py` module (`response_schema=LLMJudgeVerdict`) classifying five dimensions (toxicity, PII, injection, off-topic, jailbreak) in one structured call, wired into `orchestrator._check_input()` after the deterministic checks. This is the version actually in `src/guardrails/llm_judge.py` — verified against the file, not assumed.
 
@@ -150,13 +148,13 @@ Maps to the Final spec's 14-component checklist. Each member owns ≥2 component
 
 ### 4.1 Document Validation Rules (Guardrails detail)
 
-Adapts the existing, shipped `src/guardrails/escalation.py` pattern (`should_escalate`, `fail_safe_decision` = Rule 7) for document validation — **fail toward "needs human review,"** never silently accept, same philosophy as the complaint-escalation rules it's modeled on:
+New module (`src/guardrails/doc_validation.py`, not yet built) applying the same **fail toward "needs human review," never silently accept** philosophy the Midterm's (now-removed) escalation rule engine used:
 
 - **Rule 1 — Type match.** Extracted `doc_type` must match what the checklist is currently expecting; mismatches are rejected with a re-upload prompt, not guessed at.
 - **Rule 2 — Identity match.** Extracted name must match the employee's on-file name (fuzzy match with a confirmed threshold); non-matches flag for human review, never auto-reject or auto-accept.
-- **Rule 3 — Validity window.** Document-specific expiry rules (e.g., NBI clearance conventionally treated as stale beyond a fixed window) checked in code, not left to the LLM. Mirrors `danger_scan.py`'s role in the complaint flow: a deterministic pre-check that changes downstream routing.
+- **Rule 3 — Validity window.** Document-specific expiry rules (e.g., NBI clearance conventionally treated as stale beyond a fixed window) checked in code, not left to the LLM.
 - **Rule 4 — Extraction confidence floor.** Below a configured OCR-confidence threshold, the result is never auto-validated — always routed to human review.
-- **Rule 5 — Fail-safe.** Any schema-validation failure on the extracted fields escalates to human review by default — same role as `fail_safe_decision` (Rule 7) in `escalation.py`.
+- **Rule 5 — Fail-safe.** Any schema-validation failure on the extracted fields escalates to human review by default.
 
 New code: `src/guardrails/doc_validation.py` (`validate_document(extracted, employee_record) -> ValidationResult`), `OnboardingDocument` / `ValidationResult` schemas in `src/schemas.py`, thresholds/expiry windows in `src/config.py`.
 
@@ -221,7 +219,7 @@ stai-capstone/
 │   ├── ocr/                     # NEW
 │   │   └── extractor.py         # Gemini multimodal extraction + response_schema
 │   ├── guardrails/               # reused (input_checks.py, toxicity.py, pii.py, llm_judge.py, grounding.py)
-│   │   └── doc_validation.py    # NEW: Rules 1–5, §4.1 (adapted from escalation.py)
+│   │   └── doc_validation.py    # NEW: Rules 1–5, §4.1
 │   ├── memory/                   # reused (session.py, persistent.py)
 │   │   └── onboarding_status.py # NEW: per-employee doc checklist state (SQLite)
 │   ├── schemas.py                # + OnboardingDocument, ValidationResult
@@ -233,7 +231,7 @@ stai-capstone/
 │   ├── guardrail_redteam.jsonl   # reused unchanged (input-safety layer untouched by this pivot)
 │   ├── run_guardrail_eval.py     # reused unchanged
 │   ├── run_ocr_eval.py           # NEW: field-extraction accuracy vs data/onboarding_docs labels
-│   ├── run_validation_eval.py    # NEW: doc_validation precision/recall (pattern adapted from run_escalation_eval.py)
+│   ├── run_validation_eval.py    # NEW: doc_validation precision/recall
 │   └── run_answer_eval.py        # NEW: LLM-as-judge on FAQ answers
 └── tests/                        # existing suite (chunking, guardrails, schemas, agent, api) + new OCR/validation tests
 ```
@@ -245,8 +243,8 @@ stai-capstone/
 Most of the stack is already built (§2.1, §4); the Final's build order is short because it's mostly repurposing, not greenfield work.
 
 1. **OCR extraction tool** — `src/ocr/extractor.py`, Gemini multimodal + `OnboardingDocument` schema; test against a handful of `data/onboarding_docs/` mockups. The one genuinely new component (14).
-2. **Document validation guardrail** — `src/guardrails/doc_validation.py`, Rules 1–5 (§4.1), adapted from the shipped `escalation.py`/`danger_scan.py` pattern; unit tests per rule.
-3. **Retarget the agent loop** — swap the router's intent enum and the orchestrator's exposed tool set (§4) from complaint-flow tools to document-flow tools; the ReAct loop machinery itself needs no changes.
+2. **Document validation guardrail** — `src/guardrails/doc_validation.py`, Rules 1–5 (§4.1); unit tests per rule.
+3. **Extend the agent loop** — add `document_upload` to the router's intent enum and add the document tools to the orchestrator's exposed tool set (§4); the ReAct loop machinery itself needs no changes.
 4. **Extend memory** — add the per-employee onboarding-status SQLite record alongside the existing session/summary tables.
 5. **Extend interfaces** — `POST /upload-doc` on the existing FastAPI app; upload widget + status display in the existing Streamlit UI.
 6. **Extend ops** — add OCR confidence/validation outcome fields to the existing MLflow tracing.
@@ -261,9 +259,9 @@ Spec requires ≥3 quantitative eval metrics, at least one full reasoning-trace 
 | Experiment | Metric | Notes | Status |
 | --- | --- | --- | --- |
 | OCR field extraction | Per-field accuracy / character error rate vs. `data/onboarding_docs/*.expected.json` | Break out by document type and by image-quality variant (clean vs. skewed/low-res). | 🆕 new |
-| Document validation | Precision/recall on "needs human review" vs. "auto-passes" | Pattern adapted from `run_escalation_eval.py`'s deterministic-correctness harness; false auto-passes are the costly failure mode. | 🆕 new |
+| Document validation | Precision/recall on "needs human review" vs. "auto-passes" | Deterministic-correctness harness, same shape as the eval the removed escalation rules used; false auto-passes are the costly failure mode. | 🆕 new |
 | Onboarding FAQ retrieval | Hit-rate@5, MRR on onboarding-scoped golden-set slice | Reuses `run_retrieval_eval.py` unchanged. | 🔄 reused |
-| Guardrail red-team (inherited) | Block rate (injection/toxicity), detection rate (PII), complaint-exempt carve-out correctness | Already measured: 100%/100%/100% on 23 adversarial prompts (`run_guardrail_eval.py` + `guardrail_redteam.jsonl`). Reused unchanged — the input-safety layer isn't touched by this pivot. Off-topic block rate needs `--with-router` (costs LLM calls, off by default). | ✅ passing, reused |
+| Guardrail red-team (inherited) | Block rate (injection/toxicity), detection rate (PII) | Already measured: 100%/100% on 20 adversarial prompts (`run_guardrail_eval.py` + `guardrail_redteam.jsonl`). Reused unchanged — the input-safety layer isn't touched by this pivot. Off-topic block rate needs `--with-router` (costs LLM calls, off by default). | ✅ passing, reused |
 | FAQ answer quality | LLM-as-judge faithfulness/citation accuracy | New `run_answer_eval.py`. | 🆕 new |
 | Agent trajectory | Manual walkthrough of ≥1 full decision chain (ask → route → extract → validate → respond) | For the required reasoning-trace slide. | 🆕 new |
 | Latency & cost | p50/p95 latency, tokens per request, from MLflow | Chat-only vs. chat+OCR request comparison; also Gemini vs. Ollama given §2.1's quota pressure. | 🔄 extend |
@@ -275,7 +273,7 @@ Document failure modes (e.g., low-quality photo submissions, name-match false ne
 ## 10. Key Risks & Mitigations
 
 - **OCR accuracy on poor-quality phone photos** → confidence floor + mandatory human-review fallback (Rule 4); measured explicitly in evals, not assumed.
-- **Scope creep back toward the Midterm's complaint/escalation flow** → out of scope for the Final's graded story (§1.3); the code stays in the repo and functional, but resist re-adding it to the demo/component claims mid-build.
+- **Scope creep back toward the Midterm's complaint/escalation flow** → the feature is fully removed (§1.3), not just deprioritized; resist re-building it mid-Final unless the team explicitly decides to reverse that call (it's recoverable from git history).
 - **Gemini rate limits/outage during demo** → **materialized during development**, not just theoretical: the free tier's 20 `generate_content`/day cap on `gemini-2.5-flash` was exhausted mid-testing repeatedly. Mitigations: fail-closed error handling instead of crashing; `GET /usage` for consumption visibility; `LLM_PROVIDER=ollama` + `EMBEDDING_PROVIDER=ollama` give real headroom for chat/RAG — but **not for OCR** (§2.1, §5), which stays on Gemini regardless, so quota planning must budget for it separately.
 - **Ollama backend quality/availability for a live demo** → small local models are less reliable at strict tool-calling/schema conformance than Gemini, and the verification VM has no managed-service reliability guarantees or auth. Treat it as a development escape valve, not the default presentation path, unless dry-run tested beforehand — and lock down the VM's auth regardless.
 - **Mixed local/Docker ingestion corrupts the index** → hit three times during development: running `scripts/ingest.py` on the host and `docker compose up` against the same bind-mounted `data/chroma/` causes a Rust panic on open (chromadb cross-platform incompatibility). Not data-destructive, just wastes time. Pick one environment per index.

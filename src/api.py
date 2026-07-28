@@ -8,13 +8,11 @@ until then the endpoint serves grounded FAQ answers through the RAG module.
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -22,7 +20,7 @@ from src import config
 from src.monitoring import chat_trace, configure_mlflow
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, EscalationFormSubmission, TokenUsage, WebCitation
+from src.schemas import Citation, TokenUsage, WebCitation
 
 
 @asynccontextmanager
@@ -38,15 +36,6 @@ class ChatRequest(BaseModel):
     category: str | None = Field(
         default=None,
         description="Optional retrieval filter: leave|benefits|payroll|conduct|complaints|onboarding",
-    )
-    escalation_form: EscalationFormSubmission | None = Field(
-        default=None,
-        description=(
-            "Structured intake-form submission (PLAN.md Sec 6.1, Step B). Only "
-            "meaningful when the session is already awaiting a form; ignored otherwise. "
-            "`message` must still be non-empty even when this is set -- send a short "
-            "placeholder like 'submitted the complaint form'."
-        ),
     )
 
 
@@ -64,9 +53,6 @@ class ActionResponse(BaseModel):
     type: str
     label: str
     status: Literal["completed", "pending", "unavailable"] = "completed"
-    ticket_id: str | None = None
-    escalated: bool = False
-    trigger_rule: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -102,9 +88,9 @@ class UsageResponse(BaseModel):
 
 
 app = FastAPI(
-    title="HR FAQ & Complaint Chatbot API",
+    title="E.Z.R.A. API",
     version="0.1.0",
-    description="REST API for grounded HR policy answers and complaint workflow actions.",
+    description="REST API for grounded HR policy answers.",
     lifespan=lifespan,
 )
 
@@ -132,21 +118,15 @@ def _source_from_chunk(chunk: RetrievedChunk) -> SourceResponse:
     )
 
 
-def _complaint_intake_pending(message: str) -> bool:
-    lowered = message.lower()
-    complaint_terms = ("complaint", "report", "harassment", "discrimination", "unsafe", "grievance")
-    return any(term in lowered for term in complaint_terms)
-
-
 def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatResponse | None:
-    """Use Member 2's orchestrator when it exists.
+    """Use the agent orchestrator when it exists.
 
-    Supported future shape: handle_message(message=..., session_id=...,
-    employee_id=...) returning either ChatResponse, dict, or object with
-    response-like attributes. `history` is deliberately not passed — leaving
-    it unset tells handle_message() to manage session/long-term memory
-    itself via src/memory/ (SQLite-backed, survives a restart), rather than
-    api.py maintaining its own in-process copy.
+    Supported shape: handle_message(message=..., session_id=..., employee_id=...)
+    returning either ChatResponse, dict, or object with response-like
+    attributes. `history` is deliberately not passed — leaving it unset tells
+    handle_message() to manage session/long-term memory itself via
+    src/memory/ (SQLite-backed, survives a restart), rather than api.py
+    maintaining its own in-process copy.
     """
     try:
         from src.agent.orchestrator import handle_message
@@ -157,7 +137,6 @@ def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatRespon
         message=request.message,
         session_id=session_id,
         employee_id=request.employee_id,
-        escalation_form=request.escalation_form,
     )
     if isinstance(result, ChatResponse):
         return result
@@ -181,34 +160,18 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "completion_tokens": agent_response.token_usage.completion_tokens,
                 "total_tokens": agent_response.token_usage.total_tokens,
             }
-            complaint_action = next(
-                (a for a in agent_response.actions if a.type == "complaint_filed"), None
-            )
             trace["tags"] = {
                 "route": "agent",
                 "insufficient_context": agent_response.insufficient_context,
-                "escalated": complaint_action.escalated if complaint_action else False,
-                "trigger_rule": (complaint_action.trigger_rule or "") if complaint_action else "",
             }
             return agent_response
 
         answer, chunks = answer_question(request.message, category=request.category)
-        actions: list[ActionResponse] = []
-        if _complaint_intake_pending(request.message):
-            actions.append(
-                ActionResponse(
-                    type="complaint_intake",
-                    label="Complaint intake requires the agent/tool-use module.",
-                    status="pending",
-                )
-            )
-
         response = ChatResponse(
             session_id=session_id,
             reply=answer.answer,
             citations=answer.citations,
             sources=[_source_from_chunk(chunk) for chunk in chunks],
-            actions=actions,
             insufficient_context=answer.insufficient_context,
         )
         trace["metrics"] = {
@@ -218,38 +181,6 @@ def chat(request: ChatRequest) -> ChatResponse:
         }
         trace["tags"] = {"route": "rag", "insufficient_context": response.insufficient_context}
         return response
-
-
-def _fetch_ticket(ticket_id: str, db_path: Path = config.SQLITE_PATH) -> dict[str, Any] | None:
-    if not db_path.exists():
-        return None
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        table_rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tickets', 'complaint_tickets')"
-        ).fetchall()
-        for row in table_rows:
-            table = row["name"]
-            columns = {
-                column["name"]
-                for column in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            id_columns = [column for column in ("ticket_id", "id") if column in columns]
-            for id_column in id_columns:
-                result = conn.execute(
-                    f"SELECT * FROM {table} WHERE {id_column} = ?", (ticket_id,)
-                ).fetchone()
-                if result:
-                    return dict(result)
-    return None
-
-
-@app.get("/tickets/{ticket_id}")
-def get_ticket(ticket_id: str) -> dict[str, Any]:
-    ticket = _fetch_ticket(ticket_id)
-    if ticket is None:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    return ticket
 
 
 @app.get("/usage", response_model=UsageResponse)

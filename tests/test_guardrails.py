@@ -1,49 +1,12 @@
 import pytest
 
-from src import config
-from src.guardrails import escalation, escalation_state, form_pii
-from src.guardrails.danger_scan import danger_scan
 from src.guardrails.grounding import check_grounding, verify_response_citations
-<<<<<<< HEAD
 from src.guardrails.input_checks import check_injection_semantic, check_topic_and_injection
-=======
-from src.guardrails.input_checks import check_topic_and_injection
 from src.guardrails.llm_judge import check_input_llm, judge_input, to_guardrail_result
->>>>>>> b7c2dd7cf556602469856761c4fb585be98c7952
 from src.guardrails.pii import detect_pii, redact_pii
-from src.guardrails.toxicity import (
-    check_toxicity,
-    check_toxicity_semantic,
-    check_toxicity_with_context,
-)
+from src.guardrails.toxicity import check_toxicity, check_toxicity_semantic, check_toxicity_with_context
 from src.rag.retriever import RetrievedChunk
-from src.schemas import (
-    Citation,
-    ComplaintCategory,
-    ComplaintTicket,
-<<<<<<< HEAD
-    Intent,
-    IntentClassification,
-    Severity,
-    TriggerRule,
-)
-=======
-    LLMJudgeVerdict,
-    Severity,
-    TriggerRule,
-    EscalationFlowState,
-    Severity,
-    TriggerRule,
-)
-
-
-@pytest.fixture(autouse=True)
-def isolated_sqlite(tmp_path, monkeypatch):
-    # Only escalation_state's tests below actually touch SQLite; harmless for
-    # every other test in this file, and keeps them from touching the real
-    # repo's data/ directory.
-    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
->>>>>>> b7c2dd7cf556602469856761c4fb585be98c7952
+from src.schemas import Citation, Intent, IntentClassification, LLMJudgeVerdict
 
 
 def make_chunk(chunk_id="leave-policy#001"):
@@ -164,8 +127,7 @@ def test_check_toxicity_blocks_wordlist_match():
     assert result.reason
 
 
-<<<<<<< HEAD
-# --- semantic guardrail backstop (router piggyback) -------------------------
+# --- semantic guardrail backstop (post-router, orchestrator._check_semantic_guardrails) -----
 
 def make_classification(
     intent=Intent.FAQ, is_toxic=False, is_injection_attempt=False
@@ -185,7 +147,40 @@ def test_check_injection_semantic_allows_when_flag_false():
 
 def test_check_injection_semantic_blocks_when_flag_true():
     result = check_injection_semantic(make_classification(is_injection_attempt=True))
-=======
+    assert result.allowed is False
+    assert result.reason
+
+
+def test_check_toxicity_semantic_blocks_when_flag_true():
+    result = check_toxicity_semantic(make_classification(is_toxic=True))
+    assert result.allowed is False
+    assert result.reason
+
+
+def test_check_toxicity_semantic_allows_when_flag_false():
+    result = check_toxicity_semantic(make_classification(is_toxic=False))
+    assert result.allowed is True
+
+
+def test_check_toxicity_with_context_blocks_on_wordlist_hit():
+    classification = make_classification(is_toxic=False)
+    result = check_toxicity_with_context("This is fucking ridiculous.", classification)
+    assert result.allowed is False
+
+
+def test_check_toxicity_with_context_blocks_on_semantic_signal_alone():
+    # No wordlist hit, but the router flagged it toxic (e.g. paraphrased abuse).
+    classification = make_classification(is_toxic=True)
+    result = check_toxicity_with_context("You are a worthless piece of garbage.", classification)
+    assert result.allowed is False
+
+
+def test_check_toxicity_with_context_allows_clean_message():
+    classification = make_classification(is_toxic=False)
+    result = check_toxicity_with_context("Can you explain the leave policy?", classification)
+    assert result.allowed is True
+
+
 # --- llm_judge: LLM-as-judge input guardrail --------------------------------
 
 
@@ -225,56 +220,10 @@ def test_to_guardrail_result_allows_clean_verdict():
 @pytest.mark.parametrize("violation", ["toxicity", "injection", "off_topic", "jailbreak"])
 def test_to_guardrail_result_blocks_each_blocking_violation(violation):
     result = to_guardrail_result(_verdict(**{violation: True}))
->>>>>>> b7c2dd7cf556602469856761c4fb585be98c7952
     assert result.allowed is False
     assert result.reason
 
 
-<<<<<<< HEAD
-def test_check_toxicity_semantic_blocks_when_flag_true():
-    result = check_toxicity_semantic(make_classification(is_toxic=True))
-    assert result.allowed is False
-    assert result.reason
-
-
-def test_check_toxicity_semantic_allows_when_flag_false():
-    result = check_toxicity_semantic(make_classification(is_toxic=False))
-    assert result.allowed is True
-
-
-def test_check_toxicity_with_context_blocks_wordlist_hit_for_non_complaint():
-    classification = make_classification(intent=Intent.FAQ, is_toxic=False)
-    result = check_toxicity_with_context("This is fucking ridiculous.", classification)
-    assert result.allowed is False
-
-
-def test_check_toxicity_with_context_allows_complaint_quoting_abuse():
-    # Regression guard: a harassment complaint quoting what was said TO the
-    # employee must not be blocked by the wordlist just because it contains
-    # a toxic word - the router is expected to set is_toxic=false here.
-    classification = make_classification(intent=Intent.COMPLAINT, is_toxic=False)
-    result = check_toxicity_with_context(
-        "My coworker called me a bitch in front of the whole team.", classification
-    )
-    assert result.allowed is True
-
-
-def test_check_toxicity_with_context_blocks_complaint_when_employee_is_abusive():
-    # Even for COMPLAINT intent, actual hostility from the employee (as
-    # judged by the router's semantic signal) still blocks.
-    classification = make_classification(intent=Intent.COMPLAINT, is_toxic=True)
-    result = check_toxicity_with_context(
-        "This HR bot is useless and I hate dealing with you idiots.", classification
-    )
-    assert result.allowed is False
-
-
-def test_check_toxicity_with_context_blocks_non_complaint_on_semantic_signal_alone():
-    # No wordlist hit, but the router flagged it toxic (e.g. paraphrased abuse).
-    classification = make_classification(intent=Intent.FAQ, is_toxic=True)
-    result = check_toxicity_with_context("You are a worthless piece of garbage.", classification)
-    assert result.allowed is False
-=======
 def test_to_guardrail_result_does_not_block_on_pii_alone():
     # PII is detected but is never a blocking violation (see pii.py rationale).
     result = to_guardrail_result(_verdict(pii=True))
@@ -310,176 +259,3 @@ def test_judge_input_fails_open_on_backend_error():
     client = _JudgeClient(exc=LLMBackendError("judge down", code=503))
     assert judge_input("anything", client=client) is None
     assert check_input_llm("anything", client=client).allowed is True
->>>>>>> b7c2dd7cf556602469856761c4fb585be98c7952
-
-
-# --- escalation: deterministic rule matrix (Rules 1, 2, 4, 7) ---------------
-
-
-def make_ticket(category=ComplaintCategory.PAYROLL, severity=Severity.LOW):
-    return ComplaintTicket(
-        category=category,
-        severity=severity,
-        description="My last paycheck was short by two days of overtime pay.",
-    )
-
-
-@pytest.mark.parametrize(
-    "category",
-    [
-        ComplaintCategory.HARASSMENT,
-        ComplaintCategory.DISCRIMINATION,
-        ComplaintCategory.SAFETY,
-        ComplaintCategory.LEGAL,
-    ],
-)
-def test_mandatory_categories_always_escalate(category):
-    ticket = make_ticket(category=category, severity=Severity.LOW)
-    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
-    assert decision.should_escalate is True
-    assert decision.trigger_rule == TriggerRule.MANDATORY_CATEGORY
-    # severity is floored to at least HIGH even if the model under-called it
-    assert decision.effective_severity == Severity.HIGH
-
-
-@pytest.mark.parametrize(
-    "category",
-    [ComplaintCategory.PAYROLL, ComplaintCategory.BENEFITS, ComplaintCategory.OTHER],
-)
-def test_non_mandatory_low_severity_does_not_escalate(category):
-    ticket = make_ticket(category=category, severity=Severity.LOW)
-    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
-    assert decision.should_escalate is False
-    assert decision.trigger_rule is None
-
-
-@pytest.mark.parametrize("severity", [Severity.HIGH, Severity.CRITICAL])
-def test_high_or_critical_severity_escalates_regardless_of_category(severity):
-    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=severity)
-    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
-    assert decision.should_escalate is True
-    assert decision.trigger_rule == TriggerRule.SEVERITY_ESCALATION
-    assert decision.effective_severity == severity
-
-
-def test_danger_language_escalates_even_for_a_low_severity_non_mandatory_category():
-    ticket = make_ticket(category=ComplaintCategory.OTHER, severity=Severity.LOW)
-    decision = escalation.should_escalate(
-        ticket, raw_text="he brought a knife to the office and I'm afraid for my safety"
-    )
-    assert decision.should_escalate is True
-    assert decision.trigger_rule == TriggerRule.DANGER_SCAN
-    assert decision.effective_severity == Severity.CRITICAL
-    assert decision.danger_flag is True
-
-
-def test_retaliation_language_floors_severity_to_high():
-    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=Severity.LOW)
-    decision = escalation.should_escalate(
-        ticket, raw_text="I'm afraid I'll lose my job if I report this"
-    )
-    assert decision.should_escalate is True
-    assert decision.trigger_rule == TriggerRule.RETALIATION_FLOOR
-    assert decision.effective_severity == Severity.HIGH
-
-
-def test_retaliation_floor_never_lowers_an_already_critical_severity():
-    ticket = make_ticket(category=ComplaintCategory.WORKPLACE_CONFLICT, severity=Severity.CRITICAL)
-    decision = escalation.should_escalate(
-        ticket, raw_text="I'm afraid I'll lose my job if I report this"
-    )
-    assert decision.effective_severity == Severity.CRITICAL
-
-
-def test_fail_safe_decision_always_escalates_at_high_severity():
-    decision = escalation.fail_safe_decision("max_react_iterations_reached")
-    assert decision.should_escalate is True
-    assert decision.trigger_rule == TriggerRule.PARSE_FAILURE
-    assert decision.effective_severity == Severity.HIGH
-
-
-# --- danger_scan: keyword/heuristic severity floor --------------------------
-
-
-def test_danger_scan_ignores_benign_text():
-    result = danger_scan("I just wanted to ask about my leave balance, nothing urgent.")
-    assert result.is_dangerous is False
-    assert result.is_retaliation is False
-
-
-def test_danger_scan_flags_weapon_language():
-    result = danger_scan("he brought a knife to the office and I'm afraid for my safety")
-    assert result.is_dangerous is True
-    assert result.matched_signal == "danger_lexicon"  # category tag only, never the raw match
-
-
-# --- form_pii: the PII/observability boundary --------------------------------
-
-
-def test_to_escalation_event_builds_a_non_pii_summary():
-    ticket = ComplaintTicket(
-        category=ComplaintCategory.HARASSMENT,
-        severity=Severity.HIGH,
-        description="Extremely sensitive first-person account naming a specific coworker.",
-        parties_involved=["Jane Doe", "John Smith"],
-    )
-    decision = escalation.should_escalate(ticket, raw_text="a normal description")
-    event = form_pii.to_escalation_event(ticket, "ticket-123", decision)
-
-    assert event.ticket_id == "ticket-123"
-    assert event.trigger_rule == TriggerRule.MANDATORY_CATEGORY
-    # the redacted summary must never contain the free-text description or names
-    assert "Jane Doe" not in event.redacted_summary
-    assert "John Smith" not in event.redacted_summary
-    assert "coworker" not in event.redacted_summary
-    assert "category=harassment" in event.redacted_summary
-
-
-def test_to_escalation_event_rejects_a_non_escalating_decision():
-    ticket = make_ticket(category=ComplaintCategory.OTHER, severity=Severity.LOW)
-    decision = escalation.should_escalate(ticket, raw_text="a normal, non-alarming description")
-    assert decision.should_escalate is False
-    with pytest.raises(ValueError):
-        form_pii.to_escalation_event(ticket, "ticket-123", decision)
-
-
-# --- escalation_state: per-session consent-gate/form state (PLAN.md Sec 6.1) -
-
-
-def test_escalation_state_defaults_to_normal_for_unknown_session():
-    assert escalation_state.get_state("brand-new-session") == EscalationFlowState.NORMAL
-
-
-def test_escalation_state_set_and_get_roundtrip():
-    escalation_state.set_state("s1", EscalationFlowState.AWAITING_CONSENT)
-    assert escalation_state.get_state("s1") == EscalationFlowState.AWAITING_CONSENT
-
-    escalation_state.set_state("s1", EscalationFlowState.AWAITING_FORM)
-    assert escalation_state.get_state("s1") == EscalationFlowState.AWAITING_FORM
-
-
-def test_escalation_state_clear_returns_to_normal():
-    escalation_state.set_state("s2", EscalationFlowState.AWAITING_CONSENT)
-    escalation_state.clear_state("s2")
-    assert escalation_state.get_state("s2") == EscalationFlowState.NORMAL
-
-
-def test_escalation_state_set_normal_is_equivalent_to_clear():
-    escalation_state.set_state("s3", EscalationFlowState.AWAITING_FORM)
-    escalation_state.set_state("s3", EscalationFlowState.NORMAL)
-    assert escalation_state.get_state("s3") == EscalationFlowState.NORMAL
-
-
-def test_escalation_state_transitions_do_not_leak_across_sessions():
-    escalation_state.set_state("s4", EscalationFlowState.AWAITING_CONSENT)
-    assert escalation_state.get_state("s5-different-session") == EscalationFlowState.NORMAL
-
-
-def test_record_form_miss_increments_and_resets_on_new_transition():
-    escalation_state.set_state("s6", EscalationFlowState.AWAITING_FORM)
-    assert escalation_state.record_form_miss("s6") == 1
-    assert escalation_state.record_form_miss("s6") == 2
-
-    # A fresh transition into the same or a different state resets the count.
-    escalation_state.set_state("s6", EscalationFlowState.AWAITING_FORM)
-    assert escalation_state.record_form_miss("s6") == 1

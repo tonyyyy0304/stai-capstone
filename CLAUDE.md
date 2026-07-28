@@ -2,7 +2,7 @@
 
 ## Project
 
-**Onboarding Concierge — STAI100 Final Capstone** (pivoted from the Midterm's "HR FAQ & Complaint Chatbot"). An agentic system that answers onboarding FAQs via RAG (with citations) and verifies onboarding documents (NBI clearance, SSS, Pag-IBIG, BIR, PhilHealth, APE) via an OCR/CV tool, validated against deterministic checklist rules. Complaint intake/escalation was the Midterm's focus and is now descoped — see PLAN.md §1.3.
+**Onboarding Concierge — STAI100 Final Capstone** (pivoted from the Midterm's "HR FAQ & Complaint Chatbot"). An agentic system that answers onboarding FAQs via RAG (with citations) and verifies onboarding documents (NBI clearance, SSS, Pag-IBIG, BIR, PhilHealth, APE) via an OCR/CV tool, validated against deterministic checklist rules. Complaint intake/escalation was the Midterm's focus and has been **removed** from the codebase (not just descoped) — see PLAN.md §1.3.
 
 - **Full plan:** [PLAN.md](PLAN.md) — architecture, data pipeline, component ownership, RRL, build order. Read it before implementing anything.
 - **Governing spec:** `[Stratpoint x DLSU] Final Capstone - Project Specification.txt` (repo root) — do not edit. [specs.md](specs.md) is the superseded Midterm spec, kept for reference; also do not edit.

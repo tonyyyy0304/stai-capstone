@@ -17,10 +17,7 @@ without spending a request on them.
 check_injection_semantic() is the backstop for phrasings the regex patterns
 don't cover — it reads IntentClassification.is_injection_attempt, a field the
 router's already-mandatory LLM call fills in, so it costs nothing beyond that
-call. Unlike toxicity, injection detection has no "legitimate quoting" false-
-positive risk (nobody has a real reason to say "ignore all previous
-instructions" as part of an HR complaint), so the combined check is a
-straightforward OR of both layers, no complaint-intent carve-out needed.
+call.
 """
 
 import re

@@ -1,15 +1,14 @@
 # Onboarding Concierge — STAI100 Final Capstone
 
-An agentic system that answers new-hire onboarding FAQs via RAG (with verified citations) and, for the Final, verifies onboarding documents (NBI clearance, SSS, Pag-IBIG, BIR, PhilHealth, APE) through an OCR/CV extraction tool validated against deterministic checklist rules. Pivoted from the Midterm's "HR FAQ & Complaint Chatbot" — the RAG pipeline, agent orchestrator, guardrails, memory, and API/UI/MLflow/Docker scaffolding are all reused. Complaint intake and escalation are also fully built but descoped from the Final's graded story, not removed (see [PLAN.md](PLAN.md) §1.3).
+An agentic system that answers new-hire onboarding FAQs via RAG (with verified citations) and, for the Final, verifies onboarding documents (NBI clearance, SSS, Pag-IBIG, BIR, PhilHealth, APE) through an OCR/CV extraction tool validated against deterministic checklist rules. Pivoted from the Midterm's "HR FAQ & Complaint Chatbot" — the RAG pipeline, agent orchestrator, guardrails, memory, and API/UI/MLflow/Docker scaffolding are all reused. Complaint intake and escalation have been **removed** from the codebase (see [PLAN.md](PLAN.md) §1.3) in favor of the onboarding-document-verification direction.
 
 See [PLAN.md](PLAN.md) for the full architecture, RRL, and component ownership, and the `[Stratpoint x DLSU] Final Capstone - Project Specification.txt` in the repo root for the course requirements (supersedes [specs.md](specs.md), the Midterm spec, kept for reference).
 
 ## Project Overview
 
-The system supports two workflows today, with a third planned for the Final:
+The system supports one workflow today, with a second planned for the Final:
 
-- **Onboarding/HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB and answers only when the response can be grounded with citations.
-- **Complaint intake** (built; not the Final's focus): collects complaint details, validates them with structured schemas, files a SQLite-backed ticket, and escalates sensitive cases to HR using deterministic guardrail rules.
+- **Onboarding/HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB and answers only when the response can be grounded with citations, with a DOLE/labor-law web-search fallback.
 - **Onboarding document verification** (new for the Final, planned): OCR-extracts fields from uploaded onboarding documents and validates them against a deterministic checklist — see PLAN.md §4, §5.
 
 Core technologies:
@@ -29,15 +28,14 @@ Core technologies:
 flowchart TD
     UI["Streamlit Chat UI<br/>src/ui.py"] --> API["FastAPI Backend<br/>src/api.py"]
     API --> Agent["Agent Orchestrator<br/>src/agent/orchestrator.py"]
-    Agent --> Router["Intent Router<br/>FAQ / Complaint / Ambiguous / Out of Scope"]
+    Agent --> Router["Intent Router<br/>FAQ / Ambiguous / Out of Scope"]
     Agent --> RAG["RAG Tool<br/>ChromaDB + HR Policy Chunks"]
-    Agent --> Tickets["Complaint Tools<br/>SQLite Tickets"]
-    Agent --> Guardrails["Guardrails<br/>Injection, Toxicity, PII, Grounding, Escalation"]
+    Agent --> Web["Web Search Tool<br/>Tavily, DOLE-restricted"]
+    Agent --> Guardrails["Guardrails<br/>Injection, Toxicity, PII, Grounding"]
     Agent --> Memory["Memory<br/>SQLite Session History"]
     API --> MLflow["MLflow Monitoring<br/>Latency, Tokens, Citations, Actions"]
     RAG --> Chroma["data/chroma"]
-    Tickets --> SQLite["data/hr_agent.db"]
-    Memory --> SQLite
+    Memory --> SQLite["data/hr_agent.db"]
 ```
 
 *OCR/document-verification tools planned for the Final (Component 14, mandatory) aren't in this diagram yet — see PLAN.md §2 for the target architecture once `src/ocr/` lands.*
@@ -116,7 +114,6 @@ streamlit run src/ui.py
 `src/api.py` exposes:
 
 - `POST /chat` — `session_id` + `message` → `reply`, verified `citations`, retrieved `sources`, workflow `actions`, `token_usage`.
-- `GET /tickets/{ticket_id}` — complaint-ticket lookup (Midterm flow, still functional, not the Final's focus).
 - `GET /usage` — today's + all-time agent token/request usage per model.
 - `GET /health` — demo readiness check: Chroma index, manifest, API key config, MLflow URI.
 - `POST /upload-doc` — **planned, not yet implemented**: OCR document submission for the Final (see PLAN.md §7/§8).
@@ -141,12 +138,6 @@ Run guardrail evaluation:
 
 ```bash
 python evals/run_guardrail_eval.py
-```
-
-Run escalation evaluation:
-
-```bash
-python evals/run_escalation_eval.py
 ```
 
 *(OCR/document-validation evals are planned for the Final — `run_ocr_eval.py` / `run_validation_eval.py` don't exist yet; see PLAN.md §7, §9.)*
