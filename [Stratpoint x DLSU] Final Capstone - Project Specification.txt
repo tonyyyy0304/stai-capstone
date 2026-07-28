@@ -1,0 +1,329 @@
+﻿Final Capstone
+Introduction to Agentic AI (STAI100)
+
+
+Project Specification
+
+
+Due: Week 14 · Teams of 3–4 students
+
+
+Key Changes & Reminders from the Midterm Capstone
+* Pivot to Proof-of-Concept (PoC) mode: narrow your scope, make your agent smarter, and do a Review of Related Literature (RRL) on available CV/DS models
+* CV or DS domain model integration is now mandatory as the core use case (Component #14 below)
+* Component ownership: same per-member model as the Midterm — each member owns at least 2 of the 14 components (6 for a 3-person team, 8 for a 4-person team); Component #14 (CV/DS Domain Integration) is mandatory for the team
+* Slide deck format changes: LLM (+ parameter size) in the title slide, agent name/tagline in the footer, navigation tabs/breadcrumbs, and the live demo moves to the end of the deck
+* New presentation MUST HAVEs: 
+   * team member contributions
+   * Unit of Measurement (UoM) discipline
+   * a clear value proposition
+   * RRL / model-selection reasoning (RRL isn't a separate deliverable, but must be presented – we want to see that you did the research on both the business use case and options for the model/algorithm used, along with tradeoffs)
+* Presentation length: 12–15 min per team + 3 min Q&A
+* Grading rubric weights are unchanged (30/25/20/15/10), but what each criterion looks for has shifted toward CV/DS integration, business use case, and deeper agent evals
+	
+
+1. Overview
+The Final Capstone is the culminating project of the course. Where the Midterm Capstone asked you to integrate agentic components from Weeks 1–7 into a coherent, deployable application, the Final Capstone asks you to take that system further: refine it into a focused proof of concept, and integrate a Computer Vision (CV) or Data Science (DS) model as a core part of the solution — not a decorative add-on.
+
+
+Building on your Midterm project is encouraged but not required; teams may start fresh for the Final. Either way, the Final Capstone should reflect a narrower, sharper business use case than the Midterm, backed by a short review of the state-of-the-art CV/DS options available for your task (see Section 5).
+
+
+What you will build
+* A refined agentic AI application solving a real business problem, with a CV or DS model as a core, non-decorative component
+* Integrating at least 2 components per team member from across the course (6 for a 3-person team, 8 for a 4-person team) — Component #14, CV/DS Domain Integration, is mandatory
+* Accessible via a web UI and an API endpoint
+* Deployed with basic LLMOps monitoring
+* Documented with a technical write-up and a clean code repository
+* Backed by a more rigorous evaluation suite than the Midterm
+	2. Learning Objectives
+By completing this capstone, students will be able to:
+
+
+* Integrate a computer vision or data science model as a first-class component of an agentic system, not just a text-only pipeline
+* Conduct an appropriate Review of Related Literature (RRL) to select an appropriate CV/DS approach for a given task
+* Refine a business use case to a narrow, defensible scope, and articulate why an agentic (rather than a single-prompt) approach is warranted
+* Design and run a more rigorous evaluation suite, building on the unit/trajectory/end-to-end/LLM-as-judge techniques from Week 11
+* Communicate a clear, quantified value proposition to a non-specialist audience, with disciplined units of measurement
+* Present technical work with full team accountability for each integrated component
+3. Project Requirements
+3.1 Technical Requirements
+(Carried over from the Midterm Capstone — unchanged, plus the CV/DS requirement below)
+
+
+* Working, end-to-end agentic AI application
+* Accessible via a web UI (e.g., Streamlit, Gradio)
+* Exposes an API endpoint (REST)
+* Deployed with basic LLMOps monitoring (e.g., MLflow)
+* Containerized with a Dockerfile and documented build/run instructions
+
+
+New for the Final:
+
+
+* Must integrate a CV or DS model as a core use case (see Component #14, Section 4)
+* Must integrate at least 2 of the 14 components listed in Section 4 per team member (6 for a 3-person team, 8 for a 4-person team), including the mandatory CV/DS integration
+* Should reflect a narrowed/refined scope relative to a typical Midterm project (see Section 5)
+3.2 Team Requirements
+Same team structure and size as the Midterm Capstone: 3–4 students per team.
+
+
+* Teams self-formed by Week 6
+* Each member must own and be able to explain at least 2 of the components they contributed
+* All members participate in the live presentation
+3.3 Deliverables
+(Same deliverable types as the Midterm Capstone — carried over below)
+
+
+Deliverable
+	Details
+	Live Presentation
+	12–15 minutes + 3 min Q&A per team; slides required
+	Technical Write-up
+	Covering business case, RRL/model selection, methodology, architecture, experiments, and retrospective
+	Source Code Repository
+	GitHub (or equivalent .zip) repo with README, Dockerfile, and inline documentation
+	Working Demo
+	Live, accessible demo during presentation (no pre-recorded video substitutes – except as backups during presentation)
+	4. Component Checklist
+Each team member must own and demonstrate at least 2 of the 14 components below — so a 3-person team integrates at least 6, and a 4-person team at least 8. Component #14 (CV or DS Domain Integration) is mandatory for the team.
+
+
+#
+	Component
+	Description
+	Primary Week
+	1
+	Prompt Engineering
+	Design and iterate on system prompts; apply few-shot, chain-of-thought, and structured prompt patterns
+	Week 1
+	2
+	Disambiguation
+	Detect ambiguous inputs, classify intent, and clarify before acting
+	Week 2
+	3
+	RAG
+	Retrieve relevant context from a vector, SQL, or graph store and ground responses in retrieved data
+	Week 3
+	4
+	Memory
+	Maintain short-term and/or long-term memory across conversations
+	Week 4
+	5
+	Guardrails
+	Input/output validation, topic filtering, PII redaction, and safety checks
+	Week 4
+	6
+	Simple Chat UI
+	Functional conversational interface (e.g., Streamlit, Gradio)
+	Week 5
+	7
+	API Endpoint Deployment
+	Expose the agent via a REST API endpoint
+	Week 5
+	8
+	LLMOps (monitoring/tracing)
+	Log traces, latency, token usage, and errors using an observability tool
+	Weeks 5, 13
+	9
+	ReAct / Tool Use
+	Reasoning + acting loop where the agent plans and executes steps iteratively, calling external tools
+	Week 6
+	10
+	SQL Agent / Planning-Critique
+	Natural-language-to-SQL querying and/or a plan → execute → self-critique loop
+	Week 7
+	11
+	Multi-Agent Orchestration
+	Multiple specialized agents collaborating via sequential, parallel, or hierarchical patterns (e.g., LangGraph, CrewAI)
+	Week 10
+	12
+	Advanced RAG
+	Hybrid search, reranking, query rewriting/decomposition, or agentic retrieval
+	Week 13
+	13
+	Evals
+	Unit, trajectory, and end-to-end evaluations, including an LLM-as-judge component
+	Week 11
+	14
+	CV or DS Domain Integration ★ mandatory
+	A computer vision or data science model wrapped as a callable tool inside the agent (e.g., object detection/OCR, EDA, forecasting, classification)
+	Week 12
+	5. Refining Your Use Case: PoC Pivot & Review of Related Literature
+This is new territory relative to the Midterm — use it to sharpen your project before you start building.
+
+
+Pivot to Proof-of-Concept (PoC) mode. Make your agent smarter, and narrow your scope. A good Final Capstone does one thing well rather than many things adequately.
+
+
+Do your Review of Related Literature (RRL). Identify the state-of-the-art data science / computer vision models available for your task. You don't need to understand the algorithm internals — but you should know the available options, when to use one over another, and their expected input/output.
+
+
+Refine the business use case. Pick a narrow scope that your agent does really well. Run the sanity check: could ChatGPT, Claude, or a Google search alone suffice for this? If the answer is yes, the use case is not strong enough to justify an agentic CV/DS solution — narrow it further or add a component that genuinely requires the agent (and the domain model) to be there.
+6. Presentation Structure & Slide Deck Requirements
+6.1 Presentation Content Requirements
+* Live demo of the working system (must run live, not recorded) — placed at the end of the presentation
+* Architecture diagram showing all integrated components
+* Eval results: at minimum 3 quantitative metrics with interpretation
+* Reasoning trace walkthrough: demonstrate at least one full agent decision chain
+* Design decisions: explain key architectural choices and trade-offs
+* Lessons learned and known limitations
+
+
+Note: A functional live demo is expected. A demo that fails to run during presentation will affect the "Presentation Quality and Live Demo" criterion. Prepare a fallback (e.g., screen recording) and disclose it upfront.
+6.2 Slide Deck Format Changes
+(New for the Final)
+
+
+* Title slide: include the LLM you used; mention parameter size if open-source (e.g., 3B, 7B). Examples: "Agent005: a research agent built on Gemini 3.1 Pro", "Agent006: a presales agent powered by Llama-3.2-3B"
+* Footer: add your agent name & tagline as the footer on every slide
+* Navigation: add tabs/breadcrumbs so the audience can track where you are in the deck
+* Demo placement: move the live demo to the end of your presentation (the Midterm structure placed it mid-deck)
+6.3 Presentation MUST HAVEs
+(New for the Final)
+
+
+* Team member contributions: include the team member contributions — who worked on which module
+* Unit of Measurement (UoM): review your UoM for any cost, savings, or effort figures. Example: if you say a human doing a task costs XX pesos, qualify the time period — is it per hour? Per week? How many hours in a month? This applies to costs, savings, and any measure of effort or work
+* Clear value proposition: are you proposing something new/novel, or an improvement by a specific factor? (If the answer to both is no, there's no clear value.) Present a measure for the "value" you estimated — e.g., it will save 20 hours a month, or ~₱40K/month; or a customer-experience improvement of 10x that, if it brings 5 new customers a month, is valued at ___ (cost of customer acquisition). You may ask an LLM for help articulating or measuring value, but be ready to defend it. You may add intangibles that aren't readily valuated (e.g., happier customer experience) — flag these explicitly as intangible
+* Review of Related Literature (RRL): RRL isn’t a separate written deliverable, but you must present it — briefly walk through the state-of-the-art options you considered and justify your CV/DS model choice
+7. Grading Rubric
+The five criteria and their weights are unchanged from the Midterm rubric. What changed is what each criterion is looking for:
+
+
+Criterion
+	Weight
+	What's different for the Final
+	Technical Depth and Correctness
+	30%
+	Now includes correct integration of your CV/DS model as a first-class technical component, alongside RAG/memory/guardrails/tool use
+	System Architecture and Design Quality
+	25%
+	Architecture must clearly show where and how the CV/DS model plugs into the agent pipeline
+	Eval Results and Reliability Demonstration
+	20%
+	Deeper evaluation expected. The Midterm was largely graded on your own sample outputs and test cases; the Final looks for a more rigorous eval suite, building on the Week 11 material
+	Presentation Quality and Live Demo
+	15%
+	Business use case is now explicitly graded here — value proposition, UoM discipline, and team contributions must be clearly presented (see Section 6.3)
+	Code Quality, Documentation, and README
+	10%
+	Unchanged
+	
+
+Note: A functional live demo is expected. A demo that fails to run during presentation will affect the "Presentation Quality and Live Demo" criterion. Prepare a fallback (e.g., screen recording) and disclose it upfront.
+8. Course Grading Context
+(Same as Midterm Capstone Section 7 — unchanged, reproduced here for reference)
+
+
+The Final Capstone contributes 40% of your final course grade.
+
+
+Assessment
+	Weight
+	Description
+	Weekly Homework
+	25%
+	Lab exercises submitted as Jupyter notebooks with documentation
+	Midterm Capstone (Week 9)
+	30%
+	Working agentic system demonstrating components from Weeks 1 to 7
+	Final Capstone Project (Week 14)
+	40%
+	End-to-end agentic solution with CV/DS model integration
+	Participation & Peer Review
+	5%
+	In-class engagement, capstone dry-run feedback, Week 14 peer evaluations
+	9. Choosing a Good Problem
+(Same criteria as Midterm Capstone Section 8 — unchanged; apply it now specifically to your CV/DS integration, and pair it with the sanity check in Section 5)
+
+
+✅ Good Fits for Agentic AI
+	❌ Poor Fits for Agentic AI
+	Multi-step reasoning over external tools or APIs
+	Single-call Q&A; a well-crafted prompt would suffice
+	Processes unstructured data (PDFs, audio, images, web pages)
+	Pure CRUD apps using an LLM as a thin wrapper
+	Needs memory or context across a conversation
+	Tasks where deterministic code already wins
+	Real users with measurable success criteria
+	Problems with no ground truth or evaluation framework
+	Workflow currently done manually and repeatedly
+	Safety-critical workflows without a human-in-the-loop
+	10. Project Ideas
+Final Capstone project ideas (from the Course Outline):
+
+
+* Smart Campus Assistant (CV): Students upload photos of notices/schedules; a CV agent extracts text via OCR; a RAG agent answers questions from the student handbook; memory retains conversation context; guardrails block off-topic queries
+* Product Review Analyzer (DS): An agent ingests a product reviews CSV, performs automated sentiment analysis and EDA, answers natural language questions via SQL agent, and generates a summary report — with a chat UI and evaluation suite
+* Study Buddy Bot (DS): An agent that accepts lecture notes (PDF), builds a RAG index, quizzes students with generated questions, tracks performance in memory, and adapts difficulty — deployed as a chat app with guardrails against off-topic use
+* Inventory Inspector (CV): Users upload shelf/warehouse images; a YOLO-based tool detects and counts items; a planning-critique agent verifies counts; results are stored in a database queryable via SQL agent
+
+
+CV / DS tracks (same tracks as introduced in Midterm Section 10, reproduced here):
+
+
+📷 Computer Vision Track
+	📊 Data Science Track
+	Object detection and OCR pipelines
+	RAG-driven NLP pipelines
+	Multimodal agents (image + text)
+	Analytics and report automation
+	Document understanding (forms, receipts)
+	Tool-using research agents
+	Example: LLM + CV for license plate retrieval, object detection timestamps
+	Example: LLM + DS for forecasting, segmentation, or financial modeling
+	
+
+If you're extending your Midterm project, examples of a good pivot include: 
+* a supply chain agent (Midterm) that incorporates a demand forecasting model (Final); 
+* a hospital triage assistant (Midterm) that adds medical image analysis (Final); 
+* a customer segmentation tool (Midterm) that plugs in a classification or clustering model (Final).
+11. Submission Checklist
+(Extends the Midterm checklist — carried-over items unchanged, ★ marks items new for the Final)
+
+
+✓
+	Item
+	☐
+	Working demo accessible via web UI and API endpoint
+	☐
+	★ CV or DS model integrated as a core component and demonstrable live
+	☐
+	★ At least 2 components per team member integrated and demonstrable (6 for a 3-person team, 8 for a 4-person team), including the mandatory CV/DS component
+	☐
+	★ RRL / model-selection reasoning documented in the write-up and presentation
+	☐
+	LLMOps monitoring configured (traces, latency, token usage visible)
+	☐
+	Dockerfile builds and runs cleanly with a single command
+	☐
+	README includes: project overview, setup instructions, architecture diagram, and component ownership table
+	☐
+	★ Slide deck follows the updated format: LLM (+ params) in title slide, agent name/tagline footer, nav tabs, demo at the end
+	☐
+	★ Value proposition and Unit of Measurement (UoM) clearly and defensibly stated
+	☐
+	★ Team member contributions slide included
+	☐
+	Technical write-up submitted as PDF or markdown
+	☐
+	Presentation slides finalized and submitted
+	☐
+	All team members prepared to answer questions on their contributed components
+	
+
+________________
+
+
+
+
+
+
+
+
+
+
+
+
+Introduction to Agentic AI (STAI100) ;  Midterm Capstone Specification  |  Page

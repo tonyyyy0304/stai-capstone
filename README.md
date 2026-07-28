@@ -1,18 +1,21 @@
-# HR FAQ & Complaint Chatbot
+# Onboarding Concierge — STAI100 Final Capstone
 
-STAI100 Midterm Capstone project: an agentic HR assistant that answers HR policy questions with grounded RAG citations and supports complaint intake through a ReAct tool-calling workflow.
+An agentic system that answers new-hire onboarding FAQs via RAG (with verified citations) and, for the Final, verifies onboarding documents (NBI clearance, SSS, Pag-IBIG, BIR, PhilHealth, APE) through an OCR/CV extraction tool validated against deterministic checklist rules. Pivoted from the Midterm's "HR FAQ & Complaint Chatbot" — the RAG pipeline, agent orchestrator, guardrails, memory, and API/UI/MLflow/Docker scaffolding are all reused. Complaint intake and escalation are also fully built but descoped from the Final's graded story, not removed (see [PLAN.md](PLAN.md) §1.3).
+
+See [PLAN.md](PLAN.md) for the full architecture, RRL, and component ownership, and the `[Stratpoint x DLSU] Final Capstone - Project Specification.txt` in the repo root for the course requirements (supersedes [specs.md](specs.md), the Midterm spec, kept for reference).
 
 ## Project Overview
 
-The system supports two main workflows:
+The system supports two workflows today, with a third planned for the Final:
 
-- **HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB and answers only when the response can be grounded with citations.
-- **Complaint intake:** collects complaint details, validates them with structured schemas, files a SQLite-backed ticket, and escalates sensitive cases to HR using deterministic guardrail rules.
+- **Onboarding/HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB and answers only when the response can be grounded with citations.
+- **Complaint intake** (built; not the Final's focus): collects complaint details, validates them with structured schemas, files a SQLite-backed ticket, and escalates sensitive cases to HR using deterministic guardrail rules.
+- **Onboarding document verification** (new for the Final, planned): OCR-extracts fields from uploaded onboarding documents and validates them against a deterministic checklist — see PLAN.md §4, §5.
 
 Core technologies:
 
-- **LLM:** Google Gemini via `google-genai` by default, with optional Ollama support.
-- **Embeddings:** Gemini embeddings by default, with optional Ollama embeddings.
+- **LLM:** Google Gemini via `google-genai` by default, with optional Ollama support (`LLM_PROVIDER`).
+- **Embeddings:** Gemini embeddings by default, with optional Ollama embeddings (`EMBEDDING_PROVIDER`).
 - **Vector store:** ChromaDB.
 - **Structured data:** SQLite.
 - **API:** FastAPI.
@@ -36,6 +39,8 @@ flowchart TD
     Tickets --> SQLite["data/hr_agent.db"]
     Memory --> SQLite
 ```
+
+*OCR/document-verification tools planned for the Final (Component 14, mandatory) aren't in this diagram yet — see PLAN.md §2 for the target architecture once `src/ocr/` lands.*
 
 ## Setup Instructions
 
@@ -106,7 +111,19 @@ In another terminal, start the UI:
 streamlit run src/ui.py
 ```
 
-### 4. Useful Checks
+## API Reference
+
+`src/api.py` exposes:
+
+- `POST /chat` — `session_id` + `message` → `reply`, verified `citations`, retrieved `sources`, workflow `actions`, `token_usage`.
+- `GET /tickets/{ticket_id}` — complaint-ticket lookup (Midterm flow, still functional, not the Final's focus).
+- `GET /usage` — today's + all-time agent token/request usage per model.
+- `GET /health` — demo readiness check: Chroma index, manifest, API key config, MLflow URI.
+- `POST /upload-doc` — **planned, not yet implemented**: OCR document submission for the Final (see PLAN.md §7/§8).
+
+`src.monitoring.chat_trace()` logs sanitized MLflow telemetry (latency, source/citation/action/token counts, route, request size) and never logs raw employee messages or model answers, since request text can contain PII.
+
+## Useful Checks
 
 Run tests:
 
@@ -132,11 +149,18 @@ Run escalation evaluation:
 python evals/run_escalation_eval.py
 ```
 
-## Module Ownership
+*(OCR/document-validation evals are planned for the Final — `run_ocr_eval.py` / `run_validation_eval.py` don't exist yet; see PLAN.md §7, §9.)*
 
-| Member | Modules | Code |
+## Component Ownership
+
+Maps to the Final spec's 14-component checklist (see [PLAN.md](PLAN.md) §4 for full detail, build status, and what's reused vs. new).
+
+| Member | Components | Code |
 | --- | --- | --- |
-| Baybayon | RAG + data pipeline, Structured Outputs | `scripts/ingest.py`, `src/rag/`, `src/schemas.py`, `data/raw/`, `evals/` |
-| Del Rosario | ReAct Agent, Tool Use, Disambiguation, LLM/embedding provider abstraction | `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/tools.py`, `src/agent/usage.py`, `src/agent/llm_client.py` |
-| Burayag | Guardrails, Memory, Prompt Engineering | `src/guardrails/`, `src/memory/`, `src/agent/prompts.py` |
-| Tamondong | Chat UI, API Endpoint, MLflow, Docker | `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
+| Baybayon | RAG, Evals | `scripts/ingest.py`, `src/rag/`, `data/raw/`, `evals/` |
+| Del Rosario | ReAct/Tool Use, Disambiguation, LLM/embedding provider abstraction | `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/tools.py`, `src/agent/usage.py`, `src/agent/llm_client.py` |
+| Burayag | Memory, Guardrails | `src/guardrails/`, `src/memory/` |
+| Tamondong | Chat UI, API Endpoint, LLMOps | `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
+| **Team (shared)** | **CV/DS Domain Integration (mandatory)** — OCR document extraction | `src/ocr/` (planned) |
+
+Pipeline, chunking, retrieval, and schema detail for the RAG/Evals components is documented in [PLAN.md](PLAN.md) §3 rather than duplicated here.
