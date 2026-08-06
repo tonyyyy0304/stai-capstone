@@ -20,7 +20,7 @@ Instructor feedback (post-Midterm review) framed the Final around two open quest
 
 ### 1.1 The narrowed problem
 
-New hires don't just have policy questions — they also have to *produce paperwork* (NBI clearance, SSS, Pag-IBIG, BIR 2316, PhilHealth, APE/medical certificate) before HR can clear them to start. Today this is two disconnected manual loops: an HR generalist answers the same "what do I need for Day 1?" questions over chat/email, and separately eyeballs scanned documents to check they're the right type, legible, not expired, and belong to the right person.
+New hires don't just have policy questions — they also have to *produce paperwork*. NBI Clearance, SSS, Pag-IBIG, BIR Form 2316, PhilHealth, and the APE/medical certificate are standard **pre-employment requirements** in the Philippines: documents a new hire must submit before HR can clear them to officially start work, not ongoing/post-employment paperwork. Today this is two disconnected manual loops: an HR generalist answers the same "what do I need for Day 1?" questions over chat/email, and separately eyeballs scanned documents to check they're the right type, legible, not expired, and belong to the right person.
 
 **Final Capstone scope — "Onboarding Concierge":** a single conversational agent that (a) answers onboarding FAQs grounded in the company handbook, and (b) accepts a photo/scan of a required onboarding document, extracts its fields via OCR, and validates it against a deterministic checklist — telling the employee in the same conversation what's missing, invalid, or needs human review.
 
@@ -171,7 +171,7 @@ score(chunk) = Σ_r 1 / (RRF_K + rank_r(chunk))
 
 ### 3.5 Onboarding document image set
 
-New data track `data/onboarding_docs/` — synthetic mockups of the six required onboarding documents (NBI clearance, SSS, Pag-IBIG MDF, BIR 2316, PhilHealth, APE/medical certificate), generated programmatically (§4.2) with paired ground truth. **No real government IDs or real employee data**, per §1.3.
+New data track `data/onboarding_docs/` — synthetic mockups of the six standard PH **pre-employment requirements** (NBI Clearance, SSS, Pag-IBIG MDF, BIR Form 2316, PhilHealth, APE/medical certificate — the documents a new hire must submit before HR clears them to start, per §1.1), generated programmatically (§4.2) with paired ground truth. **No real government IDs or real employee data**, per §1.3.
 
 ---
 
