@@ -8,8 +8,8 @@ See [PLAN.md](PLAN.md) for the full architecture, RRL, and component ownership, 
 
 The system supports one workflow today, with a second planned for the Final:
 
-- **Onboarding/HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB and answers only when the response can be grounded with citations, with a DOLE/labor-law web-search fallback.
-- **Onboarding document verification** (new for the Final, planned): OCR-extracts fields from uploaded onboarding documents and validates them against a deterministic checklist — see PLAN.md §4, §5.
+- **Onboarding/HR FAQ answering:** retrieves relevant HR policy chunks from ChromaDB (dense + BM25 hybrid, see PLAN.md §3.4) and answers only when the response can be grounded with citations, with a DOLE/labor-law web-search fallback.
+- **Onboarding document verification** (new for the Final, planned): a deterministic OpenCV quality gate, Gemini multimodal field extraction, and deterministic checklist validation — see PLAN.md §4.1–§4.4, §5.
 
 Core technologies:
 
@@ -28,17 +28,20 @@ Core technologies:
 flowchart TD
     UI["Streamlit Chat UI<br/>src/ui.py"] --> API["FastAPI Backend<br/>src/api.py"]
     API --> Agent["Agent Orchestrator<br/>src/agent/orchestrator.py"]
-    Agent --> Router["Intent Router<br/>FAQ / Ambiguous / Out of Scope"]
-    Agent --> RAG["RAG Tool<br/>ChromaDB + HR Policy Chunks"]
+    Agent --> Router["Intent Router<br/>FAQ / Document Upload / Status / Ambiguous"]
+    Agent --> RAG["RAG Tool<br/>ChromaDB dense + BM25 hybrid (RRF)"]
     Agent --> Web["Web Search Tool<br/>Tavily, DOLE-restricted"]
+    Agent --> CV["CV Quality Gate -> OCR Extract<br/>src/ocr/ (OpenCV + Gemini multimodal)"]
+    Agent --> Validate["Doc Validation<br/>src/guardrails/doc_validation.py"]
     Agent --> Guardrails["Guardrails<br/>Injection, Toxicity, PII, Grounding"]
-    Agent --> Memory["Memory<br/>SQLite Session History"]
-    API --> MLflow["MLflow Monitoring<br/>Latency, Tokens, Citations, Actions"]
-    RAG --> Chroma["data/chroma"]
+    Agent --> Memory["Memory<br/>SQLite Session + Onboarding Status"]
+    API --> MLflow["MLflow Monitoring<br/>Latency, Tokens, Citations, OCR/Validation Outcome"]
+    RAG --> Chroma["data/chroma + data/bm25.sqlite"]
+    CV --> OnboardingDocs["data/onboarding_docs"]
     Memory --> SQLite["data/hr_agent.db"]
 ```
 
-*OCR/document-verification tools planned for the Final (Component 14, mandatory) aren't in this diagram yet — see PLAN.md §2 for the target architecture once `src/ocr/` lands.*
+*Planned, not yet implemented — see [PLAN.md](PLAN.md) §2, §4.2–§4.4 for the target design: `src/ocr/`, `src/guardrails/doc_validation.py`, `src/rag/hybrid.py`, `POST /upload-doc`, `GET /onboarding-status/{id}`.*
 
 ## Setup Instructions
 
@@ -116,7 +119,8 @@ streamlit run src/ui.py
 - `POST /chat` — `session_id` + `message` → `reply`, verified `citations`, retrieved `sources`, workflow `actions`, `token_usage`.
 - `GET /usage` — today's + all-time agent token/request usage per model.
 - `GET /health` — demo readiness check: Chroma index, manifest, API key config, MLflow URI.
-- `POST /upload-doc` — **planned, not yet implemented**: OCR document submission for the Final (see PLAN.md §7/§8).
+- `POST /upload-doc` — **planned, not yet implemented**: OCR document submission for the Final (see PLAN.md §4.4, §7/§8).
+- `GET /onboarding-status/{employee_id}` — **planned, not yet implemented**: per-employee checklist state (see PLAN.md §4.3–§4.4).
 
 `src.monitoring.chat_trace()` logs sanitized MLflow telemetry (latency, source/citation/action/token counts, route, request size) and never logs raw employee messages or model answers, since request text can contain PII.
 
@@ -140,7 +144,7 @@ Run guardrail evaluation:
 python evals/run_guardrail_eval.py
 ```
 
-*(OCR/document-validation evals are planned for the Final — `run_ocr_eval.py` / `run_validation_eval.py` don't exist yet; see PLAN.md §7, §9.)*
+*(OCR/document-validation evals are planned for the Final — `run_ocr_eval.py` / `run_validation_eval.py` / `run_answer_eval.py` don't exist yet; see PLAN.md §7, §9.)*
 
 ## Component Ownership
 
@@ -148,9 +152,9 @@ Maps to the Final spec's 14-component checklist (see [PLAN.md](PLAN.md) §4 for 
 
 | Member | Components | Code |
 | --- | --- | --- |
-| Baybayon | RAG, Evals | `scripts/ingest.py`, `src/rag/`, `data/raw/`, `evals/` |
+| Baybayon | RAG, Advanced RAG, Evals | `scripts/ingest.py`, `src/rag/` (incl. planned `hybrid.py`), `data/raw/`, `evals/` |
 | Del Rosario | ReAct/Tool Use, Disambiguation, LLM/embedding provider abstraction | `src/agent/orchestrator.py`, `src/agent/router.py`, `src/agent/tools.py`, `src/agent/usage.py`, `src/agent/llm_client.py` |
-| Burayag | Memory, Guardrails | `src/guardrails/`, `src/memory/` |
+| Burayag | Memory, Guardrails | `src/guardrails/` (incl. planned `doc_validation.py`), `src/memory/` (incl. planned `onboarding_status.py`) |
 | Tamondong | Chat UI, API Endpoint, LLMOps | `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
 | **Team (shared)** | **CV/DS Domain Integration (mandatory)** — OCR document extraction | `src/ocr/` (planned) |
 
