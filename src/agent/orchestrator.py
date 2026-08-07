@@ -104,6 +104,9 @@ class _RunState:
     web_citations: list[WebCitation] = field(default_factory=list)
     chunks: list[RetrievedChunk] = field(default_factory=list)
     insufficient_context: bool = False
+    # Set when search_kb detects a faculty-class split it can't resolve — the
+    # loop short-circuits and returns this question verbatim (Phase 2).
+    clarification: str | None = None
 
 
 def _check_input(message: str, client=None, session_id: str | None = None) -> GuardrailResult:
@@ -279,6 +282,13 @@ def _run_tool_loop(
             response_parts.append(
                 types.Part.from_function_response(name=call.name, response=observation)
             )
+
+        # A faculty-class split the KB tool couldn't resolve is a stop condition:
+        # return the clarifying question directly rather than letting the model
+        # narrate around it or fall through to search_web.
+        if run_state.clarification:
+            return run_state.clarification, run_state
+
         contents.append(types.Content(role="user", parts=response_parts))
 
     return MAX_ITERATIONS_REPLY, run_state
@@ -348,9 +358,12 @@ def _execute_tool(name: str, args: dict, client, run_state: _RunState, session_i
         run_state.web_citations = answer.web_citations
         run_state.chunks = chunks
         run_state.insufficient_context = answer.insufficient_context
+        if answer.requires_clarification:
+            run_state.clarification = answer.clarifying_question or answer.answer
         return {
             "answer": answer.answer,
             "insufficient_context": answer.insufficient_context,
+            "requires_clarification": answer.requires_clarification,
             "chunks_found": len(chunks),
         }
 

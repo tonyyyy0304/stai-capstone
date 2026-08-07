@@ -41,6 +41,7 @@ def parse_frontmatter(markdown: str) -> tuple[dict, str]:
 class Section:
     path: list[str]  # heading stack below the document title, e.g. ["Sick Leave", "Documentation"]
     text: str = ""
+    faculty_class: str = ""  # positional class ownership; "" = class-agnostic
 
 
 @dataclass
@@ -54,6 +55,7 @@ class Chunk:
     token_count: int
     effective_date: str = ""
     version: str = ""
+    faculty_class: str = ""  # "" = applies to all classes (Phase 2)
 
     def metadata(self) -> dict:
         """Flat metadata for Chroma (str/int/float/bool values only)."""
@@ -65,18 +67,51 @@ class Chunk:
             "effective_date": self.effective_date,
             "version": self.version,
             "token_count": self.token_count,
+            "faculty_class": self.faculty_class,
         }
 
 
-def split_sections(body: str, doc_title: str) -> list[Section]:
+# --- Faculty-class detection (Phase 2) ---------------------------------------
+# The three parallel classes are large *contiguous regions* marked by top-level
+# headings, NOT nested section paths (the converter flattens everything to ###,
+# so the class is not an ancestor of "8. Leaves"). So class is inferred
+# positionally: a running state that switches when a class heading appears and
+# locks to "" (all-faculty) once the appendices begin — the dress code / table
+# of offenses apply to everyone, and the Appendix B/C hiring grids would
+# otherwise re-trigger a class.
+
+def detect_section_class(heading: str, current: str, appendix_locked: bool) -> tuple[str, bool]:
+    """Given a section heading, return the (faculty_class, appendix_locked) that
+    applies from this heading onward. Pure/deterministic for unit testing."""
+    h = heading.upper()
+    if appendix_locked:
+        return current, True
+    if h.startswith("APPENDIX"):
+        return "", True  # appendices apply to all faculty; stop class tracking
+    if "ACADEMIC SERVICE FACULTY" in h:
+        return "academic_service", False
+    if "PART-TIME ACADEMIC FACULTY" in h or "PART TIME ACADEMIC FACULTY" in h:
+        return "part_time_academic", False
+    if "FULL-TIME ACADEMIC FACULTY" in h or "FULL TIME ACADEMIC FACULTY" in h:
+        return "full_time_academic", False
+    return current, False
+
+
+def split_sections(body: str, doc_title: str, initial_class: str = "") -> list[Section]:
     """Split the body on headings, tracking the heading stack as the section path.
 
     A single leading `#` heading equal to the document title is treated as the
     title line and excluded from paths; all other headings are path components.
+
+    `initial_class` seeds the running faculty_class (frontmatter value for the
+    companion docs; "" for the Manual, whose class is detected positionally from
+    the class headings — see detect_section_class).
     """
     sections: list[Section] = []
     stack: list[tuple[int, str]] = []  # (level, heading text)
-    current = Section(path=[])
+    current_class = initial_class
+    appendix_locked = False
+    current = Section(path=[], faculty_class=current_class)
 
     def flush() -> None:
         if current.text.strip():
@@ -98,7 +133,10 @@ def split_sections(body: str, doc_title: str) -> list[Section]:
         while stack and stack[-1][0] >= level:
             stack.pop()
         stack.append((level, heading))
-        current = Section(path=level_path())
+        current_class, appendix_locked = detect_section_class(
+            heading, current_class, appendix_locked
+        )
+        current = Section(path=level_path(), faculty_class=current_class)
     flush()
     return sections
 
@@ -193,13 +231,19 @@ def chunk_document(markdown: str) -> list[Chunk]:
     """Full Stage 2–3: frontmatter → sections → merge tiny → split → context headers."""
     meta, body = parse_frontmatter(markdown)
     title = str(meta["title"])
-    sections = split_sections(body, title)
+    initial_class = str(meta.get("faculty_class", ""))
+    sections = split_sections(body, title, initial_class=initial_class)
     sections = merge_tiny_sections(sections, config.CHUNK_MIN_TOKENS)
 
     chunks: list[Chunk] = []
     for sec in sections:
         section_path = " > ".join(sec.path) if sec.path else "General"
-        header = f"{title} > {section_path}"
+        # Put the faculty class into the context header so it's in the embedded
+        # text and in citations: "DLSU Faculty Manual 2021 > Full-time Academic
+        # Faculty > 8. Leaves". This alone starts separating the three classes at
+        # retrieval time (the class term is now embedded), on top of the metadata.
+        class_label = config.FACULTY_CLASS_LABELS.get(sec.faculty_class)
+        header = f"{title} > {class_label} > {section_path}" if class_label else f"{title} > {section_path}"
         for piece in split_section_text(
             sec.text, config.CHUNK_TARGET_TOKENS, config.CHUNK_OVERLAP_TOKENS
         ):
@@ -215,6 +259,7 @@ def chunk_document(markdown: str) -> list[Chunk]:
                     token_count=estimate_tokens(text),
                     effective_date=str(meta.get("effective_date", "")),
                     version=str(meta.get("version", "")),
+                    faculty_class=sec.faculty_class,
                 )
             )
     return chunks

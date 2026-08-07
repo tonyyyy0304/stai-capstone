@@ -4,6 +4,7 @@ from src import config
 from src.rag.chunking import (
     Section,
     chunk_document,
+    detect_section_class,
     estimate_tokens,
     is_table,
     merge_tiny_sections,
@@ -11,6 +12,50 @@ from src.rag.chunking import (
     split_section_text,
     split_sections,
 )
+
+
+# --- Faculty-class positional detection (Phase 2) ---------------------------
+
+def test_detect_section_class_transitions_and_appendix_lock():
+    cls, locked = detect_section_class("FULL-TIME ACADEMIC FACULTY", "", False)
+    assert (cls, locked) == ("full_time_academic", False)
+    # a subsection heading inside the region keeps the class
+    cls, locked = detect_section_class("8. Leaves", cls, locked)
+    assert cls == "full_time_academic"
+    cls, locked = detect_section_class("PART-TIME ACADEMIC FACULTY", cls, locked)
+    assert cls == "part_time_academic"
+    cls, locked = detect_section_class("ACADEMIC SERVICE FACULTY", cls, locked)
+    assert cls == "academic_service"
+    # first appendix locks to class-agnostic and stays there
+    cls, locked = detect_section_class("Appendix D Dress Code", cls, locked)
+    assert (cls, locked) == ("", True)
+    cls, locked = detect_section_class("Rank for Academic Service Faculty", cls, locked)
+    assert (cls, locked) == ("", True)  # locked: appendix grids don't re-trigger
+
+
+def test_split_sections_tags_class_positionally():
+    body = (
+        "### FULL-TIME ACADEMIC FACULTY\n\nfull time intro\n\n"
+        "### 8. Leaves\n\nfull time leaves\n\n"
+        "### ACADEMIC SERVICE FACULTY\n\nasf intro\n\n"
+        "### 6. Leaves\n\nasf leaves\n\n"
+        "### Appendix D Dress Code\n\napplies to all\n"
+    )
+    secs = split_sections(body, "Faculty Manual 2021")
+    by_text = {s.text.split("\n")[0]: s.faculty_class for s in secs}
+    assert by_text["full time leaves"] == "full_time_academic"
+    assert by_text["asf leaves"] == "academic_service"
+    assert by_text["applies to all"] == ""  # appendix = class-agnostic
+
+
+def test_chunk_document_puts_class_in_header():
+    doc = (
+        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n---\n\n"
+        "### FULL-TIME ACADEMIC FACULTY\n\n" + ("full time leave detail. " * 40) + "\n"
+    )
+    chunks = chunk_document(doc)
+    assert chunks[0].faculty_class == "full_time_academic"
+    assert "Full-time Academic Faculty" in chunks[0].text.split("\n\n")[0]
 
 SAMPLE_DOC = """---
 doc_id: test-policy

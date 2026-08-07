@@ -8,9 +8,53 @@ we return the "I don't know" path without calling the model.
 Member 2's `search_kb` tool should call answer_question().
 """
 
+import re
+
 from src import config
-from src.rag.retriever import RetrievedChunk, Retriever, apply_floor, get_retriever
+from src.rag.retriever import (
+    RetrievedChunk,
+    Retriever,
+    apply_floor,
+    get_retriever,
+    rerank_by_faculty_class,
+)
 from src.schemas import Citation, GroundedAnswer
+
+# Canonical display order for the three classes in a clarifying question.
+_CLASS_ORDER = ("full_time_academic", "part_time_academic", "academic_service")
+
+
+def detect_stated_class(text: str) -> str | None:
+    """Extract the reader's faculty class from their message, or None if unstated
+    or contradictory (both 'full-time' and 'part-time' mentioned → None). Query-
+    side counterpart to the positional detection at ingest."""
+    t = text.lower()
+    hits = set()
+    if "part-time" in t or "part time" in t or "parttime" in t:
+        hits.add("part_time_academic")
+    if "full-time" in t or "full time" in t or "fulltime" in t:
+        hits.add("full_time_academic")
+    if "academic service" in t or re.search(r"\basf\b", t):
+        hits.add("academic_service")
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _clarification_answer(present: set[str]) -> GroundedAnswer:
+    """Build the class-disambiguation response for evidence that spans >1 class."""
+    labels = [config.FACULTY_CLASS_LABELS[c] for c in _CLASS_ORDER if c in present]
+    options = ", ".join(labels[:-1]) + f", or {labels[-1]}" if len(labels) > 1 else labels[0]
+    question = (
+        "Leave, benefit, and hiring rules differ by faculty class, and your answer "
+        f"depends on which you are. Which applies to you: {options}?"
+    )
+    return GroundedAnswer(
+        answer=question,
+        citations=[],
+        insufficient_context=False,
+        requires_clarification=True,
+        clarifying_question=question,
+    )
+
 
 IDK_ANSWER = (
     "I couldn't find this in the DLSU Faculty Manual or the onboarding documents I "
@@ -85,6 +129,11 @@ def generate_grounded_answer(
     if answer is None:  # model returned unparseable output — fail closed
         return no_answer()
     answer = verify_citations(answer, chunks)
+    # requires_clarification is a code-set signal (the disambiguation branch in
+    # answer_question), never the model's to raise — reset whatever it returned.
+    answer = answer.model_copy(
+        update={"requires_clarification": False, "clarifying_question": ""}
+    )
     if answer.insufficient_context and not answer.citations:
         return no_answer()
     return answer
@@ -108,6 +157,19 @@ def answer_question(
     chunks = apply_floor(retriever.retrieve(question, category=category))
     if not chunks:
         return no_answer(), []
+
+    # Faculty-class disambiguation (Phase 2, the corpus's biggest hazard): if the
+    # evidence spans more than one faculty class and the reader hasn't said which
+    # they are, ask instead of answering — a merged full-time/part-time answer is
+    # a confident wrong answer about someone's employment terms. If they did state
+    # a class, softly re-rank toward it.
+    stated = detect_stated_class(question)
+    present = {c.faculty_class for c in chunks if c.faculty_class}
+    if stated is None and len(present) >= 2:
+        return _clarification_answer(present), []
+    if stated:
+        chunks = rerank_by_faculty_class(chunks, stated)
+
     answer = generate_grounded_answer(question, chunks, client=client)
     if answer.insufficient_context:
         return answer, []

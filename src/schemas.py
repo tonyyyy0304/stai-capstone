@@ -92,6 +92,18 @@ class GroundedAnswer(BaseModel):
         default=False,
         description="True when the excerpts/research do not contain the answer",
     )
+    requires_clarification: bool = Field(
+        default=False,
+        description=(
+            "Set by code (never the model): the retrieved evidence spans more than "
+            "one faculty class and the reader didn't say which they are, so the "
+            "correct response is to ask rather than answer."
+        ),
+    )
+    clarifying_question: str = Field(
+        default="",
+        description="The class-disambiguation question to surface when requires_clarification is true",
+    )
 
 
 # --- Token usage (Module 11: LLMOps Monitoring) ---

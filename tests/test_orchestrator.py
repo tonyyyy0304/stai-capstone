@@ -158,6 +158,31 @@ def test_faq_uses_search_kb_then_answers(monkeypatch):
     assert [s.tool for s in result.steps] == [None, "search_kb"]
 
 
+def test_search_kb_clarification_short_circuits_loop(monkeypatch):
+    """A faculty-class split from search_kb returns the clarifying question
+    verbatim and stops the loop — no second model call (the FakeClient has only
+    one response, so continuing would raise StopIteration)."""
+    mock_classification(monkeypatch, Intent.FAQ, category="benefits")
+    clarify = "Which applies to you: Full-time Academic Faculty, or Academic Service Faculty?"
+    monkeypatch.setattr(
+        tools,
+        "search_kb",
+        lambda question, category=None: (
+            GroundedAnswer(
+                answer=clarify,
+                source=AnswerSource.INTERNAL_KB,
+                requires_clarification=True,
+                clarifying_question=clarify,
+            ),
+            [],
+        ),
+    )
+    client = FakeClient([tool_call_response("search_kb", {"question": "vacation leave days"})])
+    result = orchestrator.run_turn("s-clar", "how many vacation leave days?", client=client)
+    assert result.reply == clarify
+    assert [s.tool for s in result.steps] == [None, "search_kb"]
+
+
 def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
     mock_classification(monkeypatch, Intent.FAQ, category="labor_law")
     monkeypatch.setattr(

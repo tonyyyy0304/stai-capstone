@@ -89,6 +89,21 @@ CATEGORIES = (
 # way the old hard $eq filter did.
 CATEGORY_BOOST = 0.05
 
+# --- Faculty class (Phase 2: the corpus's biggest retrieval hazard) ---
+# The Manual has three parallel classes with near-duplicate text but different
+# numbers (full-time 8.x leaves vs ASF 6.x leaves, etc.). Chunks carry a
+# faculty_class slug; these are the canonical slugs and their display labels
+# (used in the chunk context header and the disambiguation prompt). "" means the
+# content is class-agnostic (preamble, dress code, table of offenses).
+FACULTY_CLASS_LABELS = {
+    "full_time_academic": "Full-time Academic Faculty",
+    "part_time_academic": "Part-time Academic Faculty",
+    "academic_service": "Academic Service Faculty",
+}
+# Soft re-rank weight when the reader's stated class matches a chunk's class —
+# same mechanism/rationale as CATEGORY_BOOST (ordering only, floor sees true cosine).
+FACULTY_CLASS_BOOST = 0.05
+
 # --- Agent (Module 7: ReAct Agent) ---
 MAX_REACT_ITERATIONS = 5
 ROUTER_CONFIDENCE_FLOOR = 0.6  # below this, treat as ambiguous and ask a clarifying question

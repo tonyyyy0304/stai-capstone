@@ -24,6 +24,7 @@ class RetrievedChunk:
     category: str
     effective_date: str = ""
     version: str = ""
+    faculty_class: str = ""  # "" = class-agnostic (Phase 2)
 
 
 def get_collection():
@@ -49,6 +50,7 @@ def _to_chunks(result: dict) -> list[RetrievedChunk]:
                 category=meta.get("category", ""),
                 effective_date=meta.get("effective_date", ""),
                 version=meta.get("version", ""),
+                faculty_class=meta.get("faculty_class", ""),
             )
         )
     return chunks
@@ -75,6 +77,25 @@ def rerank_by_category(
     return sorted(
         chunks,
         key=lambda c: c.similarity + (boost if c.category == category else 0.0),
+        reverse=True,
+    )
+
+
+def rerank_by_faculty_class(
+    chunks: list[RetrievedChunk],
+    faculty_class: str | None,
+    boost: float = config.FACULTY_CLASS_BOOST,
+) -> list[RetrievedChunk]:
+    """Soft re-rank toward the reader's stated faculty class (Phase 2). Same
+    ordering-only mechanism as rerank_by_category — the stored similarity (and
+    thus the floor) is untouched, and no chunk is dropped. Class-agnostic chunks
+    (faculty_class == "") are never boosted, so shared content (dress code, table
+    of offenses) still competes on pure relevance."""
+    if not faculty_class:
+        return chunks
+    return sorted(
+        chunks,
+        key=lambda c: c.similarity + (boost if c.faculty_class == faculty_class else 0.0),
         reverse=True,
     )
 
