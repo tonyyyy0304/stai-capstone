@@ -6,6 +6,9 @@ data/processed/
 data/chroma/
 data/index_manifest.json
 
+# Real consented NBI clearances — PII, never committed (SCOPE.md §8, PLAN.md §3.5)
+data/onboarding_docs/real/
+
 # Eval outputs
 evals/results/
 mlruns/
