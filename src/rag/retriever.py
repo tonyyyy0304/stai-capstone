@@ -60,6 +60,25 @@ def apply_floor(
     return [c for c in chunks if c.similarity >= floor]
 
 
+def rerank_by_category(
+    chunks: list[RetrievedChunk],
+    category: str | None,
+    boost: float = config.CATEGORY_BOOST,
+) -> list[RetrievedChunk]:
+    """Stable re-rank that nudges category-matching chunks up by `boost` on the
+    ordering score only. `similarity` on each chunk is left untouched (the floor
+    must still see true cosine). With no category the input order is preserved,
+    so plain similarity ordering is unchanged. Never drops a chunk — this is the
+    soft replacement for the old hard `$eq` category filter (PLAN.md §4.1)."""
+    if not category:
+        return chunks
+    return sorted(
+        chunks,
+        key=lambda c: c.similarity + (boost if c.category == category else 0.0),
+        reverse=True,
+    )
+
+
 def get_retriever(embedder: Embedder | None = None, collection=None):
     """Return the retriever selected by config.RETRIEVER_MODE.
 
@@ -87,14 +106,23 @@ class Retriever:
     def retrieve(
         self, query: str, top_k: int = config.TOP_K, category: str | None = None
     ) -> list[RetrievedChunk]:
-        """Top-k chunks by similarity, most similar first. No floor applied —
-        callers use apply_floor() so evals can sweep thresholds."""
+        """Top-k chunks, most relevant first. No floor applied — callers use
+        apply_floor() so evals can sweep thresholds.
+
+        `category` is a *soft* signal: retrieval spans all categories (so the
+        multi-topic Faculty Manual is always reachable), and a chunk whose
+        category matches gets CATEGORY_BOOST added to its ordering score only.
+        The stored `similarity` stays true cosine, so the floor is unaffected.
+        With no category, this is plain top-k by similarity.
+        """
         query_vector = self.embedder.embed_query(query)
-        where = {"category": {"$eq": category}} if category else None
+        # Pull a wider pool than top_k so a relevant chunk that a category boost
+        # would lift into the top_k isn't missed by an early cosine cutoff.
+        pool = max(top_k, config.RRF_CANDIDATE_POOL)
         result = self.collection.query(
             query_embeddings=[query_vector],
-            n_results=top_k,
-            where=where,
+            n_results=pool,
             include=["documents", "metadatas", "distances"],
         )
-        return _to_chunks(result)
+        chunks = _to_chunks(result)
+        return rerank_by_category(chunks, category)[:top_k]

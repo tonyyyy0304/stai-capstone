@@ -15,6 +15,11 @@ load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
+# The Faculty Manual is the primary corpus, but it's ingested as an *explicit*
+# source rather than from data/raw/ so the fast raw-corpus unit test doesn't
+# re-parse a 203-page PDF on every run. scripts/ingest.py globs data/raw/ AND
+# appends any of these that exist. Each still needs a sibling <name>.meta.yaml.
+MANUAL_SOURCES = (DATA_DIR / "faculty-manual-2021.pdf",)
 PROCESSED_DIR = DATA_DIR / "processed"
 CHROMA_DIR = DATA_DIR / "chroma"
 MANIFEST_PATH = DATA_DIR / "index_manifest.json"
@@ -60,10 +65,29 @@ RRF_K = int(os.environ.get("RRF_K", "60"))
 RRF_CANDIDATE_POOL = int(os.environ.get("RRF_CANDIDATE_POOL", "20"))
 BM25_SQLITE_PATH = DATA_DIR / "bm25.sqlite"
 
-# Valid document categories; used for metadata-filtered retrieval after intent routing.
-# "labor_law" has no internal chunks (no DOLE docs in data/raw/) — it's the signal
-# the router uses to route straight to the search_web fallback instead of search_kb.
-CATEGORIES = ("leave", "benefits", "payroll", "conduct", "complaints", "onboarding", "labor_law")
+# Valid document categories. Category is a *soft* retrieval signal (see
+# CATEGORY_BOOST below), not a hard filter — a query tagged with one category
+# still retrieves across all of them, so the multi-topic Faculty Manual stays
+# reachable for every topic. "faculty_manual" is the Manual's own doc-level
+# label; it's category-neutral in practice (never a query-side category), so the
+# Manual competes purely on similarity. "labor_law" has no internal chunks — it's
+# the signal the router uses to route straight to the search_web fallback.
+CATEGORIES = (
+    "leave",
+    "benefits",
+    "payroll",
+    "conduct",
+    "complaints",
+    "onboarding",
+    "labor_law",
+    "faculty_manual",
+)
+# Soft category re-rank: a retrieved chunk whose category matches the query's
+# category gets this added to its *ordering* score (not its stored similarity, so
+# the similarity floor still sees true cosine). Small, so it only breaks ties /
+# nudges near-equal chunks — it never excludes a relevant off-category chunk the
+# way the old hard $eq filter did.
+CATEGORY_BOOST = 0.05
 
 # --- Agent (Module 7: ReAct Agent) ---
 MAX_REACT_ITERATIONS = 5

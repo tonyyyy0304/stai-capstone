@@ -31,7 +31,7 @@ class IntentClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     category: str | None = Field(
         default=None,
-        description="Policy category if inferable: leave|benefits|payroll|conduct|complaints|onboarding",
+        description="Topic category if inferable: onboarding|conduct|leave|benefits",
     )
     clarifying_question: str | None = Field(
         default=None,
@@ -64,9 +64,9 @@ class AnswerSource(str, Enum):
 
 
 class WebCitation(BaseModel):
-    """Citation shape for search_web answers — DOLE/labor-law sources have no chunk_id."""
+    """Citation shape for search_web answers — official government sources have no chunk_id."""
 
-    url: str = Field(description="Source URL, restricted to the DOLE/official gov allowlist")
+    url: str = Field(description="Source URL, restricted to the official government allowlist")
     title: str = Field(description="Page title")
     snippet: str = Field(default="", description="Relevant excerpt supporting the answer")
 
@@ -147,7 +147,7 @@ class LLMJudgeVerdict(BaseModel):
     )
     off_topic: bool = Field(
         default=False,
-        description="Unrelated to HR policy, DOLE labor law, or complaint intake",
+        description="Unrelated to faculty onboarding, pre-employment requirements, or the Faculty Manual",
     )
     jailbreak: bool = Field(
         default=False,

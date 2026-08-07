@@ -23,7 +23,7 @@ from src.schemas import GuardrailResult, IntentClassification
 
 DECLINE_MESSAGE = (
     "I'm not able to continue this conversation given the language used. "
-    "Please reach out to HR directly if you need help."
+    "Please contact your college's HR office directly if you need help."
 )
 
 # Left word-boundary only (not \bword\b) so inflected forms match too -

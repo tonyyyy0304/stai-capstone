@@ -1,9 +1,10 @@
 """Tools the ReAct agent can call (Module 8: Tool Use).
 
 - search_kb    -> internal RAG, delegates to answer_question() in src/rag/answerer.py
-- search_web   -> fallback for DOLE/labor-law questions the internal KB doesn't cover;
-                  Tavily search (domain-restricted, provider-agnostic) + one structured
-                  Gemini call to shape results into a GroundedAnswer
+- search_web   -> fallback for national statutory pre-employment questions (NBI, SSS,
+                  PhilHealth, Pag-IBIG, BIR) the internal KB doesn't cover; Tavily search
+                  (domain-restricted, provider-agnostic) + one structured Gemini call to
+                  shape results into a GroundedAnswer
 """
 
 import logging
@@ -17,8 +18,9 @@ from src.schemas import AnswerSource, GroundedAnswer, WebCitation
 logger = logging.getLogger(__name__)
 
 NO_WEB_ANSWER = (
-    "I couldn't find a reliable DOLE/official source for this either, so I don't want "
-    "to guess. I can route your question to the HR team instead — would you like that?"
+    "I couldn't find a reliable official government source for this either, so I don't "
+    "want to guess. I can route your question to your college's HR office instead — "
+    "would you like that?"
 )
 
 
@@ -27,17 +29,19 @@ NO_WEB_ANSWER = (
 def search_kb(
     question: str, category: str | None = None
 ) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
-    """Internal HR-policy RAG tool. Thin wrapper so the orchestrator has a single
-    tool-call surface; all retrieval/grounding logic lives in src/rag/answerer.py."""
+    """Internal faculty onboarding & Faculty Manual RAG tool. Thin wrapper so the
+    orchestrator has a single tool-call surface; all retrieval/grounding logic lives
+    in src/rag/answerer.py."""
     return answer_question(question, category=category)
 
 
-# --- search_web (DOLE/labor-law fallback) -------------------------------------
+# --- search_web (statutory pre-employment fallback) ---------------------------
 
 def search_web(
     question: str, client=None, session_id: str | None = None, tavily_client=None
 ) -> GroundedAnswer:
-    """Fallback for questions the internal KB doesn't cover (e.g. DOLE labor law).
+    """Fallback for questions the internal KB doesn't cover (e.g. national statutory
+    pre-employment requirements from NBI/SSS/PhilHealth/Pag-IBIG/BIR).
 
     Tavily does the actual searching (domain-restricted, works the same regardless
     of which LLM serves chat), then one Gemini call with response_schema shapes the

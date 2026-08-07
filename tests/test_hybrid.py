@@ -99,15 +99,19 @@ def test_build_bm25_index_and_lexical_ranking(tmp_path):
     assert ranked[0] == "c2"  # the only lexical match for the exact form number
 
 
-def test_bm25_ranking_respects_category_filter(tmp_path):
+def test_bm25_ranking_is_category_agnostic(tmp_path):
+    """Category is a soft signal now (PLAN.md §4.1): BM25 must NOT hard-filter,
+    so a lexical match in a different category still surfaces — otherwise the
+    multi-topic Faculty Manual would be excluded by a mismatched query category."""
     db = tmp_path / "bm25.sqlite"
     col = FakeCollection(_rows())
     build_bm25_index(collection=col, db_path=db)
     hr = HybridRetriever(embedder=FakeEmbedder([0.0, 1.0]), collection=col, db_path=db)
 
-    # "leave" text exists only in the c3 (category=leave) chunk.
-    onboarding_only = hr._bm25_ranking("leave clearance", top_k=5, category="onboarding")
-    assert "c3" not in onboarding_only
+    # "leave" text exists only in the c3 (category=leave) chunk; passing a
+    # mismatched category must not filter it out.
+    ranked = hr._bm25_ranking("vacation leave", top_k=5, category="onboarding")
+    assert "c3" in ranked
 
 
 def test_hybrid_retrieve_fuses_dense_and_bm25(tmp_path, monkeypatch):

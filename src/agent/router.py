@@ -10,7 +10,9 @@ from src.agent import prompts, usage
 from src.schemas import Intent, IntentClassification
 
 DEFAULT_CLARIFYING_QUESTION = (
-    "Are you asking about a policy, or would you like to file a complaint?"
+    "Could you tell me a bit more? For example, which faculty class you belong to "
+    "(full-time, part-time, or academic service), or which onboarding or Faculty "
+    "Manual topic you mean."
 )
 FALLBACK_CLARIFYING_QUESTION = (
     "Could you rephrase that? I want to make sure I route this correctly."

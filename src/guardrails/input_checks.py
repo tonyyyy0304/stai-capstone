@@ -26,7 +26,8 @@ from src.schemas import GuardrailResult, IntentClassification
 
 DECLINE_MESSAGE = (
     "I can't follow instructions that try to change how I operate. "
-    "I can help with company policy questions, DOLE labor law questions, or filing a complaint."
+    "I can help with faculty onboarding, pre-employment requirements, and DLSU "
+    "Faculty Manual questions."
 )
 
 _INJECTION_PATTERNS = (

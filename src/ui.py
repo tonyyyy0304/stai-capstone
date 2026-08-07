@@ -130,7 +130,7 @@ div[class*="st-key-pill_s_"] button, div[class*="st-key-pill_w_"] button {
 }
 [data-testid="stChatInputInstructions"] { display: none; }
 [data-testid="stBottomBlockContainer"]::after {
-  content: "Responses are grounded in HR policy documents and may be reviewed by HR staff.";
+  content: "Responses are grounded in the DLSU Faculty Manual and official onboarding documents; always verify with your college's HR office.";
   display: block; max-width: 680px; margin: 6px auto 0 auto;
   font-size: 11.5px; color: oklch(60% 0.01 250); text-align: center;
 }
@@ -198,17 +198,17 @@ div[class*="st-key-chip_"] button:hover {
 """.replace("__ACCENT__", ACCENT)
 
 QUICK_PROMPTS = [
-    "Is 13th month pay required?",
-    "How many vacation leave credits do I get?",
-    "What's the company's Code of Conduct policy?",
-    "What benefits am I entitled to?",
+    "What are the stages of the DLSU faculty pre-boarding process?",
+    "Which documents do I submit after a conditional job offer?",
+    "What are the pre-employment requirements for new faculty?",
+    "Do I need an NBI clearance to start?",
 ]
 
 
 def _greeting_message() -> dict:
     return {
         "role": "assistant",
-        "content": "Hi. Ask me about HR policy or DOLE labor law questions.",
+        "content": "Hi. Ask me about faculty onboarding, pre-employment requirements, or the DLSU Faculty Manual.",
         "citations": [],
         "sources": [],
         "web_citations": [],
@@ -306,8 +306,9 @@ def _render_privacy_gate(accent: str) -> None:
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(38% 0.014 250);">'
-            "E.Z.R.A. can help with HR policy and DOLE labor law questions. Your messages "
-            "are stored to maintain conversation context.</div>",
+            "This assistant can help with faculty onboarding, pre-employment requirements, "
+            "and DLSU Faculty Manual questions. Your messages are stored to maintain "
+            "conversation context.</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -414,7 +415,7 @@ def _render_header() -> None:
             st.markdown(
                 '<div style="display:flex;flex-direction:column;gap:1px;">'
                 '<div style="font-size:15px;font-weight:600;color:oklch(24% 0.015 255);">E.Z.R.A.</div>'
-                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded HR policy answers, with citations</div>'
+                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded faculty onboarding &amp; Faculty Manual answers, with citations</div>'
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -701,7 +702,7 @@ if st.session_state.awaiting_response:
 
 _render_quick_prompts()
 
-_prompt = st.chat_input("Ask an HR policy question…")
+_prompt = st.chat_input("Ask about faculty onboarding or the Faculty Manual…")
 if _prompt:
     _queue_message(_prompt)
     st.rerun()

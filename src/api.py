@@ -1,4 +1,4 @@
-"""FastAPI interface for the HR assistant.
+"""FastAPI interface for the DLSU Faculty Onboarding Concierge.
 
 Member 4 owns this boundary: HTTP contracts, request validation, sanitized
 monitoring, and API-shaped responses for the Streamlit UI. When Member 2's
@@ -35,7 +35,7 @@ class ChatRequest(BaseModel):
     employee_id: str | None = Field(default=None, description="Optional stable employee ID")
     category: str | None = Field(
         default=None,
-        description="Optional retrieval filter: leave|benefits|payroll|conduct|complaints|onboarding",
+        description="Optional retrieval filter: onboarding|conduct|leave|benefits",
     )
 
 
@@ -90,7 +90,7 @@ class UsageResponse(BaseModel):
 app = FastAPI(
     title="E.Z.R.A. API",
     version="0.1.0",
-    description="REST API for grounded HR policy answers.",
+    description="REST API for grounded faculty onboarding & Faculty Manual answers.",
     lifespan=lifespan,
 )
 

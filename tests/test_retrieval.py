@@ -3,7 +3,7 @@ from pathlib import Path
 from src import config
 from src.rag.answerer import answer_question, no_answer, verify_citations
 from src.rag.chunking import chunk_document
-from src.rag.retriever import RetrievedChunk, apply_floor
+from src.rag.retriever import RetrievedChunk, apply_floor, rerank_by_category
 from src.schemas import AnswerSource, Citation, GroundedAnswer
 
 
@@ -26,6 +26,33 @@ def test_apply_floor_filters_below_threshold():
     chunks = [make_chunk(similarity=0.9), make_chunk("x#000", similarity=0.2)]
     kept = apply_floor(chunks, floor=0.5)
     assert [c.chunk_id for c in kept] == ["faculty-manual-2021#001"]
+
+
+def _cat_chunk(chunk_id, similarity, category):
+    return RetrievedChunk(
+        chunk_id=chunk_id, text="t", similarity=similarity, doc_id="d",
+        title="t", section_path="s", category=category,
+    )
+
+
+def test_rerank_by_category_lifts_match_without_dropping():
+    # off-category chunk is slightly more similar, but the category match wins the
+    # ordering — and neither chunk is dropped (soft signal, not a filter).
+    chunks = [
+        _cat_chunk("a", 0.80, "benefits"),
+        _cat_chunk("b", 0.78, "leave"),
+    ]
+    ranked = rerank_by_category(chunks, "leave", boost=0.05)
+    assert [c.chunk_id for c in ranked] == ["b", "a"]
+    assert {c.chunk_id for c in ranked} == {"a", "b"}
+
+
+def test_rerank_by_category_preserves_similarity_and_noop_without_category():
+    chunks = [_cat_chunk("a", 0.80, "benefits"), _cat_chunk("b", 0.78, "leave")]
+    # No category => untouched order; similarity values are never mutated.
+    assert rerank_by_category(chunks, None) == chunks
+    ranked = rerank_by_category(chunks, "leave", boost=0.05)
+    assert next(c for c in ranked if c.chunk_id == "b").similarity == 0.78
 
 
 def test_verify_citations_drops_hallucinated_ids():

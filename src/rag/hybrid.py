@@ -122,20 +122,22 @@ class HybridRetriever:
         self.db_path = db_path or config.BM25_SQLITE_PATH
         self.rrf_k = rrf_k
 
-    def _bm25_ranking(self, query: str, top_k: int, category: str | None) -> list[str]:
+    def _bm25_ranking(self, query: str, top_k: int, category: str | None = None) -> list[str]:
+        """Top BM25 chunk_ids for the query. Category is intentionally NOT a
+        filter here (it's a soft signal applied via the dense sub-retriever's
+        ordering, see retrieve()), so lexical matches from every category — the
+        multi-topic Faculty Manual included — stay eligible. The param is kept
+        for call-site compatibility."""
         match = _fts_match_query(query)
         if not match:
             return []
         conn = _connect(self.db_path)
         try:
-            sql = f"SELECT chunk_id FROM {_FTS_TABLE} WHERE {_FTS_TABLE} MATCH ?"
-            params: list = [match]
-            if category:
-                sql += " AND category = ?"
-                params.append(category)
-            sql += " ORDER BY bm25(%s) LIMIT ?" % _FTS_TABLE
-            params.append(top_k)
-            return [row[0] for row in conn.execute(sql, params).fetchall()]
+            sql = (
+                f"SELECT chunk_id FROM {_FTS_TABLE} WHERE {_FTS_TABLE} MATCH ? "
+                f"ORDER BY bm25({_FTS_TABLE}) LIMIT ?"
+            )
+            return [row[0] for row in conn.execute(sql, [match, top_k]).fetchall()]
         except sqlite3.OperationalError:
             # No BM25 table yet (index not built) — degrade to dense-only.
             return []

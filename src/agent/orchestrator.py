@@ -58,17 +58,18 @@ from src.schemas import (
 )
 
 OUT_OF_SCOPE_REPLY = (
-    "I can only help with company policy and DOLE labor law questions. For anything "
-    "else, please reach out to the right team directly."
+    "I can only help with faculty onboarding, pre-employment requirements, and DLSU "
+    "Faculty Manual questions. For anything else, please reach out to the right office "
+    "directly."
 )
 FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
 MAX_ITERATIONS_REPLY = (
     "I wasn't able to finish handling this in the usual number of steps. "
-    "Please try rephrasing, or reach out to HR directly if this is urgent."
+    "Please try rephrasing, or contact your college's HR office directly if this is urgent."
 )
 API_ERROR_REPLY = (
     "I'm having trouble reaching the assistant service right now. Please try again "
-    "in a moment, or reach out to HR directly if this is urgent."
+    "in a moment, or contact your college's HR office directly if this is urgent."
 )
 
 NON_LABOR_LAW_CATEGORIES = tuple(c for c in config.CATEGORIES if c != "labor_law")
@@ -303,13 +304,15 @@ def _function_declarations() -> list:
     return [
         types.FunctionDeclaration(
             name="search_kb",
-            description="Search the internal company policy knowledge base "
-            "(Code of Conduct, leave, benefits, payroll, onboarding, etc.).",
+            description="Search the faculty onboarding & Faculty Manual knowledge base "
+            "(DLSU Faculty Manual 2021 plus official onboarding companion documents: "
+            "pre-employment requirements, hiring, academic & grading obligations, "
+            "dress code, leaves).",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
                     "question": types.Schema(
-                        type="STRING", description="The employee's question"
+                        type="STRING", description="The faculty member's question"
                     ),
                     "category": types.Schema(
                         type="STRING",
@@ -322,12 +325,15 @@ def _function_declarations() -> list:
         ),
         types.FunctionDeclaration(
             name="search_web",
-            description="Search official Philippine government sources for DOLE/labor "
-            "law questions not covered by company policy.",
+            description="Search official Philippine government sources for national "
+            "statutory pre-employment requirements (e.g. NBI, SSS, PhilHealth, Pag-IBIG, "
+            "BIR) not covered by the internal knowledge base.",
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
-                    "question": types.Schema(type="STRING", description="The labor-law question")
+                    "question": types.Schema(
+                        type="STRING", description="The statutory pre-employment question"
+                    )
                 },
                 required=["question"],
             ),
