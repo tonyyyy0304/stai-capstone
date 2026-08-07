@@ -195,6 +195,14 @@ def run_ingestion(force: bool = False) -> dict:
         f"Done. Index has {new_manifest['total_chunks']} chunks across "
         f"{len(files_entry)} documents ({total_new_chunks} newly embedded)."
     )
+
+    # Rebuild the BM25 (FTS5) side-index from the just-updated Chroma collection
+    # so hybrid retrieval (PLAN.md §3.4) always mirrors the vector index. Cheap,
+    # no API calls, and keeping it here means the two indexes never drift.
+    from src.rag.hybrid import build_bm25_index
+
+    n_bm25 = build_bm25_index(collection=collection)
+    print(f"BM25 index rebuilt: {n_bm25} chunks -> {config.BM25_SQLITE_PATH.name}")
     return new_manifest
 
 

@@ -7,14 +7,17 @@ from src.rag.retriever import RetrievedChunk, apply_floor
 from src.schemas import AnswerSource, Citation, GroundedAnswer
 
 
-def make_chunk(chunk_id="leave-policy#001", similarity=0.8):
+def make_chunk(chunk_id="faculty-manual-2021#001", similarity=0.8):
     return RetrievedChunk(
         chunk_id=chunk_id,
-        text="Leave Policy > Vacation Leave\n\nEmployees accrue 15 days.",
+        text=(
+            "Faculty Manual 2021 > Full-time Academic Faculty > Benefits > Leaves (p.42)\n\n"
+            "Full-time academic faculty accrue 15 working days of vacation leave per year."
+        ),
         similarity=similarity,
-        doc_id="leave-policy",
-        title="Leave Policy",
-        section_path="Vacation Leave",
+        doc_id="faculty-manual-2021",
+        title="Faculty Manual 2021",
+        section_path="Full-time Academic Faculty > Benefits > Leaves (p.42)",
         category="leave",
     )
 
@@ -22,19 +25,23 @@ def make_chunk(chunk_id="leave-policy#001", similarity=0.8):
 def test_apply_floor_filters_below_threshold():
     chunks = [make_chunk(similarity=0.9), make_chunk("x#000", similarity=0.2)]
     kept = apply_floor(chunks, floor=0.5)
-    assert [c.chunk_id for c in kept] == ["leave-policy#001"]
+    assert [c.chunk_id for c in kept] == ["faculty-manual-2021#001"]
 
 
 def test_verify_citations_drops_hallucinated_ids():
     answer = GroundedAnswer(
         answer="15 days.",
         citations=[
-            Citation(chunk_id="leave-policy#001", title="Leave Policy", section_path="Vacation Leave"),
+            Citation(
+                chunk_id="faculty-manual-2021#001",
+                title="Faculty Manual 2021",
+                section_path="Full-time Academic Faculty > Benefits > Leaves (p.42)",
+            ),
             Citation(chunk_id="made-up#999", title="Fake", section_path="Nowhere"),
         ],
     )
     verified = verify_citations(answer, [make_chunk()])
-    assert [c.chunk_id for c in verified.citations] == ["leave-policy#001"]
+    assert [c.chunk_id for c in verified.citations] == ["faculty-manual-2021#001"]
     assert verified.answer == "15 days."
 
 
@@ -98,11 +105,19 @@ def test_answer_question_returns_chunks_when_answer_is_grounded():
 
 
 def test_entire_raw_corpus_chunks_cleanly():
-    """Every authored source doc parses, chunks, and carries valid metadata."""
-    raw_files = sorted(config.RAW_DIR.glob("*.md"))
-    assert len(raw_files) >= 8, "PLAN.md §3.1 calls for ~8-15 source documents"
+    """Every source doc in data/raw parses, chunks, and carries valid metadata.
+
+    Post-pivot the corpus is the pre-boarding PDFs (each with a sibling
+    <name>.meta.yaml), parsed through the same path scripts/ingest.py uses —
+    not the retired synthetic Markdown set.
+    """
+    from scripts.ingest import SUPPORTED_SUFFIXES, add_source_file, normalize_text, parse_raw_file
+
+    raw_files = sorted(p for p in config.RAW_DIR.glob("*") if p.suffix in SUPPORTED_SUFFIXES)
+    assert raw_files, "no source documents in data/raw"
     for path in raw_files:
-        chunks = chunk_document(Path(path).read_text(encoding="utf-8"))
+        markdown = add_source_file(normalize_text(parse_raw_file(path)), path.name)
+        chunks = chunk_document(markdown)
         assert chunks, f"{path.name} produced no chunks"
         for chunk in chunks:
             assert chunk.category in config.CATEGORIES

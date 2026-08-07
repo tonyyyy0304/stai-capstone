@@ -9,26 +9,38 @@ Member 2's `search_kb` tool should call answer_question().
 """
 
 from src import config
-from src.rag.retriever import RetrievedChunk, Retriever, apply_floor
+from src.rag.retriever import RetrievedChunk, Retriever, apply_floor, get_retriever
 from src.schemas import Citation, GroundedAnswer
 
 IDK_ANSWER = (
-    "I couldn't find this in our HR policy documents, so I don't want to guess. "
-    "I can route your question to the HR team instead — would you like that?"
+    "I couldn't find this in the DLSU Faculty Manual or the onboarding documents I "
+    "have, so I don't want to guess. You may want to consult the DLSU Faculty Manual "
+    "directly or your college's HR resources for this one."
 )
 
-ANSWER_PROMPT = """You are an HR policy assistant. Answer the employee's question using ONLY the policy excerpts below.
+ANSWER_PROMPT = """You are the DLSU Faculty Onboarding Concierge. You answer a faculty \
+member's onboarding and Faculty Manual questions using ONLY the excerpts below, which come \
+from the DLSU Faculty Manual 2021 and its official onboarding companion documents.
 
 Rules:
-- Base every claim on the excerpts; never use outside knowledge.
-- Cite every excerpt you used by its exact chunk_id, title, and section_path.
-- If the excerpts do not contain the answer, set insufficient_context to true and say you don't know.
-- Be concise and direct; quote specific numbers, durations, and amounts exactly as written.
+- Base every claim on the excerpts; never use outside knowledge or another university's \
+policy. A confident wrong answer about someone's employment terms is worse than no answer.
+- Cite every excerpt you used by its exact chunk_id, title, and section_path. When a \
+section_path names a page or appendix (e.g. "p.24", "Appendix F"), keep it in your answer \
+so the reader can check the source.
+- Quote specific numbers, durations, deadlines, form names, and rank codes exactly as \
+written (e.g. "15 working days", "BIR Form 1902", "Assistant Professor").
+- Requirements often differ by faculty class — Full-time Academic Faculty, Part-time \
+Academic Faculty, and Academic Service Faculty (ASF). If the excerpts give class-specific \
+answers and the question does not say which class the reader is, do NOT guess: set \
+insufficient_context to true and ask which faculty class they belong to.
+- If the excerpts do not contain the answer, set insufficient_context to true and say you \
+don't know rather than filling the gap from memory.
 
-Policy excerpts:
+Excerpts:
 {context}
 
-Employee question: {question}"""
+Faculty member's question: {question}"""
 
 
 def _format_context(chunks: list[RetrievedChunk]) -> str:
@@ -92,7 +104,7 @@ def answer_question(
     "I don't know" reply, which reads as contradictory even though those
     excerpts were exactly what the model just checked and rejected.
     """
-    retriever = retriever or Retriever()
+    retriever = retriever or get_retriever()
     chunks = apply_floor(retriever.retrieve(question, category=category))
     if not chunks:
         return no_answer(), []

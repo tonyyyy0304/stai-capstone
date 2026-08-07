@@ -47,12 +47,12 @@ def test_chat_routes_through_agent_when_available(monkeypatch):
         reply="You get 15 sick leave days per year.",
         chunks=[
             RetrievedChunk(
-                chunk_id="leave-policy#003",
-                text="Employees accrue 15 sick days per year.",
+                chunk_id="faculty-manual-2021#003",
+                text="Full-time academic faculty accrue 15 days of sick leave per year.",
                 similarity=0.82,
-                doc_id="leave-policy",
-                title="Leave Policy",
-                section_path="Sick Leave",
+                doc_id="faculty-manual-2021",
+                title="Faculty Manual 2021",
+                section_path="Full-time Academic Faculty > Benefits > Leaves > Sick Leave (p.44)",
                 category="leave",
             )
         ],
@@ -65,7 +65,7 @@ def test_chat_routes_through_agent_when_available(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["reply"] == "You get 15 sick leave days per year."
-    assert body["sources"][0]["chunk_id"] == "leave-policy#003"
+    assert body["sources"][0]["chunk_id"] == "faculty-manual-2021#003"
     assert body["actions"] == []
 
 

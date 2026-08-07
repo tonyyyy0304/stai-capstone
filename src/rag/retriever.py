@@ -60,6 +60,25 @@ def apply_floor(
     return [c for c in chunks if c.similarity >= floor]
 
 
+def get_retriever(embedder: Embedder | None = None, collection=None):
+    """Return the retriever selected by config.RETRIEVER_MODE.
+
+    "dense" (default) -> Retriever; "hybrid" -> HybridRetriever (dense + BM25
+    RRF, PLAN.md §3.4). Both expose the same .retrieve(query, top_k, category)
+    surface, so callers (answerer.py, the eval harness) are agnostic. Hybrid is
+    imported lazily to avoid a circular import (hybrid.py imports from here).
+    """
+    if config.RETRIEVER_MODE == "hybrid":
+        from src.rag.hybrid import HybridRetriever
+
+        return HybridRetriever(embedder=embedder, collection=collection)
+    if config.RETRIEVER_MODE == "dense":
+        return Retriever(embedder=embedder, collection=collection)
+    raise RuntimeError(
+        f"Unknown RETRIEVER_MODE={config.RETRIEVER_MODE!r}; expected 'dense' or 'hybrid'."
+    )
+
+
 class Retriever:
     def __init__(self, embedder: Embedder | None = None, collection=None):
         self.embedder = embedder or config.get_embedder()

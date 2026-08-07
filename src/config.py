@@ -45,6 +45,21 @@ CHUNK_MIN_TOKENS = 80  # sections smaller than this are merged into their parent
 TOP_K = 8
 SIMILARITY_FLOOR = 0.5  # below this the agent must say "I don't know" (tuned in evals)
 
+# --- Advanced RAG: hybrid retrieval (PLAN.md §3.4) ---
+# "dense" = cosine-only over Chroma (default, unchanged behavior).
+# "hybrid" = dense + BM25 (SQLite FTS5) fused with Reciprocal Rank Fusion. Dense
+# embeddings blur the exact identifiers this corpus is full of ("BIR Form 1902",
+# "Assistant Professor", "p.24"); BM25 catches those at zero extra LLM cost.
+RETRIEVER_MODE = os.environ.get("RETRIEVER_MODE", "dense")
+# RRF constant: score(chunk) = Σ_r 1 / (RRF_K + rank_r(chunk)). Larger K flattens
+# the contribution of top ranks; 60 is the value from the original RRF paper.
+RRF_K = int(os.environ.get("RRF_K", "60"))
+# How many candidates each retriever contributes to the fusion pool before the
+# top-k cut. Wider than TOP_K so a chunk ranked well by one retriever but missed
+# by the other still enters the fusion.
+RRF_CANDIDATE_POOL = int(os.environ.get("RRF_CANDIDATE_POOL", "20"))
+BM25_SQLITE_PATH = DATA_DIR / "bm25.sqlite"
+
 # Valid document categories; used for metadata-filtered retrieval after intent routing.
 # "labor_law" has no internal chunks (no DOLE docs in data/raw/) — it's the signal
 # the router uses to route straight to the search_web fallback instead of search_kb.

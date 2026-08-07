@@ -9,20 +9,24 @@ from src.rag.retriever import RetrievedChunk
 from src.schemas import Citation, Intent, IntentClassification, LLMJudgeVerdict
 
 
-def make_chunk(chunk_id="leave-policy#001"):
+def make_chunk(chunk_id="faculty-manual-2021#001"):
     return RetrievedChunk(
         chunk_id=chunk_id,
-        text="Employees accrue 15 days.",
+        text="Full-time academic faculty accrue 15 working days of vacation leave per year.",
         similarity=0.8,
-        doc_id="leave-policy",
-        title="Leave Policy",
-        section_path="Vacation Leave",
+        doc_id="faculty-manual-2021",
+        title="Faculty Manual 2021",
+        section_path="Full-time Academic Faculty > Benefits > Leaves (p.42)",
         category="leave",
     )
 
 
-def make_citation(chunk_id="leave-policy#001"):
-    return Citation(chunk_id=chunk_id, title="Leave Policy", section_path="Vacation Leave")
+def make_citation(chunk_id="faculty-manual-2021#001"):
+    return Citation(
+        chunk_id=chunk_id,
+        title="Faculty Manual 2021",
+        section_path="Full-time Academic Faculty > Benefits > Leaves (p.42)",
+    )
 
 
 # --- input_checks: topic restriction / prompt injection ------------------
@@ -78,7 +82,7 @@ def test_verify_response_citations_keeps_grounded_citation():
 
 
 def test_verify_response_citations_strips_ungrounded_citation():
-    chunk = make_chunk("leave-policy#001")
+    chunk = make_chunk("faculty-manual-2021#001")
     hallucinated = make_citation("made-up#999")
     verified = verify_response_citations([hallucinated], [chunk])
     assert verified == []
@@ -99,7 +103,7 @@ def test_check_grounding_forces_idk_when_insufficient_context():
 
 
 def test_check_grounding_forces_idk_when_all_citations_unverifiable():
-    chunk = make_chunk("leave-policy#001")
+    chunk = make_chunk("faculty-manual-2021#001")
     hallucinated = make_citation("made-up#999")
     citations, insufficient = check_grounding([hallucinated], [chunk], insufficient_context=False)
     assert citations == []

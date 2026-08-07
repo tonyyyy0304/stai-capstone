@@ -30,6 +30,11 @@ MAX_HEADING_LEVEL = 3
 PARAGRAPH_GAP_MIN = 4.0       # vertical gap (pt) that forces a paragraph break
 
 PAGE_NUMBER_RE = re.compile(r"^(page\s+)?\d+(\s+of\s+\d+)?$", re.IGNORECASE)
+# A running head/footer often carries the page number on the same extracted line
+# (e.g. "Faculty Requirements -- 2025   3"), so the raw text differs per page and
+# never trips the repeat detector. Strip a leading/trailing page-number token
+# before comparing so those collapse to one repeated key.
+_EDGE_PAGE_NUMBER_RE = re.compile(r"^(?:\d+\s+)?(.*?)(?:\s+\d+)?$", re.DOTALL)
 
 
 @dataclass
@@ -84,22 +89,29 @@ def _in_margin(line: _Line, page_height: float) -> bool:
     return line.bottom <= zone or line.top >= page_height - zone
 
 
+def _chrome_key(text: str) -> str:
+    """Normalize a margin line for repeat detection: drop a leading/trailing page
+    number so a running head that embeds the page number collapses across pages."""
+    match = _EDGE_PAGE_NUMBER_RE.match(text.strip())
+    return (match.group(1) if match else text).strip().casefold()
+
+
 def _drop_page_chrome(pages: list[dict]) -> None:
     """Remove headers/footers repeated across pages, and bare page numbers."""
     counts: Counter[str] = Counter()
     for page in pages:
         for line in page["lines"]:
             if _in_margin(line, page["height"]):
-                counts[line.text.casefold()] += 1
+                counts[_chrome_key(line.text)] += 1
     threshold = max(2, REPEAT_FRACTION * len(pages))
-    repeated = {text for text, n in counts.items() if n >= threshold}
+    repeated = {text for text, n in counts.items() if text and n >= threshold}
     for page in pages:
         page["lines"] = [
             line
             for line in page["lines"]
             if not (
                 _in_margin(line, page["height"])
-                and (line.text.casefold() in repeated or PAGE_NUMBER_RE.match(line.text))
+                and (_chrome_key(line.text) in repeated or PAGE_NUMBER_RE.match(line.text))
             )
         ]
 
