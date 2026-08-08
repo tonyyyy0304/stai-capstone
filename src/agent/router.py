@@ -9,11 +9,20 @@ from src import config
 from src.agent import prompts, usage
 from src.schemas import Intent, IntentClassification
 
-DEFAULT_CLARIFYING_QUESTION = (
-    "Could you tell me a bit more? For example, which faculty class you belong to "
-    "(full-time, part-time, or academic service), or which onboarding or Faculty "
-    "Manual topic you mean."
-)
+def _default_clarifying_question() -> str:
+    """Config-driven clarifier: mention the audience segments when the deployment
+    defines them, otherwise just ask for more detail. Kept as a function so it
+    reflects config at call time (and stays easy to test)."""
+    if config.AUDIENCE_CLASSES:
+        labels = ", ".join(config.AUDIENCE_LABELS[s] for s in config.AUDIENCE_ORDER)
+        return (
+            f"Could you tell me a bit more? For example, which {config.AUDIENCE_NOUN} you "
+            f"belong to ({labels}), or which topic you mean."
+        )
+    return "Could you tell me a bit more about what you need help with?"
+
+
+DEFAULT_CLARIFYING_QUESTION = _default_clarifying_question()
 FALLBACK_CLARIFYING_QUESTION = (
     "Could you rephrase that? I want to make sure I route this correctly."
 )

@@ -36,9 +36,8 @@ from src.schemas import GuardrailResult, LLMJudgeVerdict
 logger = logging.getLogger(__name__)
 
 OFF_TOPIC_DECLINE_MESSAGE = (
-    "I can only help with faculty onboarding, pre-employment requirements, and DLSU "
-    "Faculty Manual questions. For anything else, please reach out to the right office "
-    "directly."
+    f"I can only help with {config.SCOPE_PHRASE}. For anything else, please reach out to "
+    f"{config.HELP_CONTACT} directly."
 )
 
 # User-facing decline copy per blocking violation. Jailbreak reuses the

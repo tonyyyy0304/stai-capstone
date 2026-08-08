@@ -44,7 +44,7 @@ def parse_frontmatter(markdown: str) -> tuple[dict, str]:
 class Section:
     path: list[str]  # heading stack below the document title, e.g. ["Sick Leave", "Documentation"]
     text: str = ""
-    faculty_class: str = ""  # positional class ownership; "" = class-agnostic
+    audience_class: str = ""  # positional class ownership; "" = class-agnostic
     page_start: int = 0  # printed page the section begins on; 0 = unknown
 
 
@@ -59,7 +59,7 @@ class Chunk:
     token_count: int
     effective_date: str = ""
     version: str = ""
-    faculty_class: str = ""  # "" = applies to all classes (Phase 2)
+    audience_class: str = ""  # "" = applies to all classes (Phase 2)
     page_start: int = 0  # printed page the chunk's section begins on; 0 = unknown
 
     def metadata(self) -> dict:
@@ -72,34 +72,33 @@ class Chunk:
             "effective_date": self.effective_date,
             "version": self.version,
             "token_count": self.token_count,
-            "faculty_class": self.faculty_class,
+            "audience_class": self.audience_class,
             "page_start": self.page_start,
         }
 
 
-# --- Faculty-class detection (Phase 2) ---------------------------------------
-# The three parallel classes are large *contiguous regions* marked by top-level
-# headings, NOT nested section paths (the converter flattens everything to ###,
-# so the class is not an ancestor of "8. Leaves"). So class is inferred
-# positionally: a running state that switches when a class heading appears and
-# locks to "" (all-faculty) once the appendices begin — the dress code / table
-# of offenses apply to everyone, and the Appendix B/C hiring grids would
-# otherwise re-trigger a class.
+# --- Audience-class detection (the corpus's biggest retrieval hazard) ---------
+# Audience segments (config.AUDIENCE_CLASSES) are large *contiguous regions*
+# marked by top-level headings, NOT nested section paths (the converter flattens
+# everything to ###, so the segment is not an ancestor of "8. Leaves"). So the
+# segment is inferred positionally: a running state that switches when a segment's
+# marker heading appears and locks to "" (all-audience) once a reset marker (e.g.
+# an appendix) begins — shared content like a dress code / table of offenses
+# applies to everyone. The markers/segments are entirely config-driven, so
+# retargeting to another corpus is a config change, not a code change.
 
-def detect_section_class(heading: str, current: str, appendix_locked: bool) -> tuple[str, bool]:
-    """Given a section heading, return the (faculty_class, appendix_locked) that
-    applies from this heading onward. Pure/deterministic for unit testing."""
+def detect_section_audience(heading: str, current: str, reset_locked: bool) -> tuple[str, bool]:
+    """Given a section heading, return the (audience_class slug, reset_locked)
+    that applies from this heading onward. Pure/deterministic; driven by
+    config.AUDIENCE_CLASSES and config.AUDIENCE_RESET_MARKERS."""
     h = heading.upper()
-    if appendix_locked:
+    if reset_locked:
         return current, True
-    if h.startswith("APPENDIX"):
-        return "", True  # appendices apply to all faculty; stop class tracking
-    if "ACADEMIC SERVICE FACULTY" in h:
-        return "academic_service", False
-    if "PART-TIME ACADEMIC FACULTY" in h or "PART TIME ACADEMIC FACULTY" in h:
-        return "part_time_academic", False
-    if "FULL-TIME ACADEMIC FACULTY" in h or "FULL TIME ACADEMIC FACULTY" in h:
-        return "full_time_academic", False
+    if any(h.startswith(m.upper()) for m in config.AUDIENCE_RESET_MARKERS):
+        return "", True  # shared/annex content; stop segment tracking
+    for segment in config.AUDIENCE_CLASSES:
+        if any(marker.upper() in h for marker in segment["markers"]):
+            return segment["slug"], False
     return current, False
 
 
@@ -111,7 +110,7 @@ def split_sections(
     A single leading `#` heading equal to the document title is treated as the
     title line and excluded from paths; all other headings are path components.
 
-    `initial_class` seeds the running faculty_class. `detect_class` enables
+    `initial_class` seeds the running audience_class. `detect_class` enables
     positional class detection from headings — correct ONLY for the Manual, whose
     three classes are large contiguous regions. The companion docs instead list
     all three classes in a short comparison subsection ("3.1 Full-time / 3.2
@@ -122,9 +121,9 @@ def split_sections(
     sections: list[Section] = []
     stack: list[tuple[int, str]] = []  # (level, heading text)
     current_class = initial_class
-    appendix_locked = False
+    reset_locked = False
     current_page = 0
-    current = Section(path=[], faculty_class=current_class, page_start=current_page)
+    current = Section(path=[], audience_class=current_class, page_start=current_page)
 
     def flush() -> None:
         if current.text.strip():
@@ -155,10 +154,10 @@ def split_sections(
             stack.pop()
         stack.append((level, heading))
         if detect_class:
-            current_class, appendix_locked = detect_section_class(
-                heading, current_class, appendix_locked
+            current_class, reset_locked = detect_section_audience(
+                heading, current_class, reset_locked
             )
-        current = Section(path=level_path(), faculty_class=current_class, page_start=current_page)
+        current = Section(path=level_path(), audience_class=current_class, page_start=current_page)
     flush()
     return sections
 
@@ -253,10 +252,10 @@ def chunk_document(markdown: str) -> list[Chunk]:
     """Full Stage 2–3: frontmatter → sections → merge tiny → split → context headers."""
     meta, body = parse_frontmatter(markdown)
     title = str(meta["title"])
-    initial_class = str(meta.get("faculty_class", ""))
+    initial_class = str(meta.get("audience_class", ""))
     # Positional class detection is opt-in (Manual only). Companion docs list all
     # three classes in a comparison subsection and must not be positionally tagged.
-    detect_class = bool(meta.get("detect_faculty_class", False))
+    detect_class = bool(meta.get("detect_audience_class", False))
     sections = split_sections(
         body, title, initial_class=initial_class, detect_class=detect_class
     )
@@ -269,7 +268,7 @@ def chunk_document(markdown: str) -> list[Chunk]:
         # text and in citations: "DLSU Faculty Manual 2021 > Full-time Academic
         # Faculty > 8. Leaves". This alone starts separating the three classes at
         # retrieval time (the class term is now embedded), on top of the metadata.
-        class_label = config.FACULTY_CLASS_LABELS.get(sec.faculty_class)
+        class_label = config.AUDIENCE_LABELS.get(sec.audience_class)
         header = f"{title} > {class_label} > {section_path}" if class_label else f"{title} > {section_path}"
         for piece in split_section_text(
             sec.text, config.CHUNK_TARGET_TOKENS, config.CHUNK_OVERLAP_TOKENS
@@ -286,7 +285,7 @@ def chunk_document(markdown: str) -> list[Chunk]:
                     token_count=estimate_tokens(text),
                     effective_date=str(meta.get("effective_date", "")),
                     version=str(meta.get("version", "")),
-                    faculty_class=sec.faculty_class,
+                    audience_class=sec.audience_class,
                     page_start=sec.page_start,
                 )
             )

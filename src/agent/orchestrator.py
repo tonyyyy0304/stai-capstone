@@ -58,18 +58,17 @@ from src.schemas import (
 )
 
 OUT_OF_SCOPE_REPLY = (
-    "I can only help with faculty onboarding, pre-employment requirements, and DLSU "
-    "Faculty Manual questions. For anything else, please reach out to the right office "
-    "directly."
+    f"I can only help with {config.SCOPE_PHRASE}. For anything else, please reach out to "
+    f"{config.HELP_CONTACT} directly."
 )
 FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
 MAX_ITERATIONS_REPLY = (
     "I wasn't able to finish handling this in the usual number of steps. "
-    "Please try rephrasing, or contact your college's HR office directly if this is urgent."
+    f"Please try rephrasing, or contact {config.HELP_CONTACT} directly if this is urgent."
 )
 API_ERROR_REPLY = (
     "I'm having trouble reaching the assistant service right now. Please try again "
-    "in a moment, or contact your college's HR office directly if this is urgent."
+    f"in a moment, or contact {config.HELP_CONTACT} directly if this is urgent."
 )
 
 
@@ -310,18 +309,18 @@ def _build_initial_contents(
 def _function_declarations() -> list:
     from google.genai import types
 
-    return [
+    declarations = [
         types.FunctionDeclaration(
             name="search_kb",
-            description="Search the faculty onboarding & Faculty Manual knowledge base "
-            "(DLSU Faculty Manual 2021 plus official onboarding companion documents: "
-            "pre-employment requirements, hiring, academic & grading obligations, "
-            "dress code, leaves).",
+            description=(
+                f"Search the knowledge base ({config.CORPUS_TITLE} plus its official "
+                f"companion documents) for questions about {config.SCOPE_PHRASE}."
+            ),
             parameters=types.Schema(
                 type="OBJECT",
                 properties={
                     "question": types.Schema(
-                        type="STRING", description="The faculty member's question"
+                        type="STRING", description=f"The {config.READER_NOUN}'s question"
                     ),
                     "category": types.Schema(
                         type="STRING",
@@ -332,22 +331,28 @@ def _function_declarations() -> list:
                 required=["question"],
             ),
         ),
-        types.FunctionDeclaration(
-            name="search_web",
-            description="Search official Philippine government sources for national "
-            "statutory pre-employment requirements (e.g. NBI, SSS, PhilHealth, Pag-IBIG, "
-            "BIR) not covered by the internal knowledge base.",
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "question": types.Schema(
-                        type="STRING", description="The statutory pre-employment question"
-                    )
-                },
-                required=["question"],
-            ),
-        ),
     ]
+    # The statutory web fallback is PH/university-specific — only offered when the
+    # deployment enables it (config.ENABLE_WEB_FALLBACK).
+    if config.ENABLE_WEB_FALLBACK:
+        declarations.append(
+            types.FunctionDeclaration(
+                name="search_web",
+                description="Search official Philippine government sources for national "
+                "statutory pre-employment requirements (e.g. NBI, SSS, PhilHealth, "
+                "Pag-IBIG, BIR) not covered by the internal knowledge base.",
+                parameters=types.Schema(
+                    type="OBJECT",
+                    properties={
+                        "question": types.Schema(
+                            type="STRING", description="The statutory pre-employment question"
+                        )
+                    },
+                    required=["question"],
+                ),
+            )
+        )
+    return declarations
 
 
 def _execute_tool(name: str, args: dict, client, run_state: _RunState, session_id: str) -> dict:

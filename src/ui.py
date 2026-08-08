@@ -1,4 +1,4 @@
-"""Streamlit chat UI for the HR assistant — E.Z.R.A.
+"""Streamlit chat UI for the assistant (branding from config.ASSISTANT_NAME).
 
 Recreates the design in docs/ui-design-revision-request/ (collapsible sidebar,
 header "New chat", inline citation/source/web pills, privacy consent gate)
@@ -342,7 +342,7 @@ def _render_declined_screen() -> None:
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(45% 0.012 250);">'
-            "E.Z.R.A. can't store your messages without your consent. You can review the "
+            f"{config.ASSISTANT_NAME} can't store your messages without your consent. You can review the "
             "notice again if you'd like to proceed.</div>",
             unsafe_allow_html=True,
         )
@@ -355,7 +355,7 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
             f'''<div style="display:flex;flex-direction:column;min-width:260px;">
   <div style="display:flex;align-items:center;gap:8px;padding:6px 8px 18px 8px;">
     <div style="width:22px;height:22px;border-radius:6px;background:{accent};flex-shrink:0;"></div>
-    <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">E.Z.R.A.</div>
+    <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">{config.ASSISTANT_NAME}</div>
   </div>
   <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:oklch(55% 0.012 250);padding:4px 8px 8px 8px;">Recent</div>
   <div style="display:flex;flex-direction:column;gap:1px;padding:9px 8px;border-radius:8px;background:oklch(92% 0.012 250);">
@@ -414,8 +414,8 @@ def _render_header() -> None:
         with col2:
             st.markdown(
                 '<div style="display:flex;flex-direction:column;gap:1px;">'
-                '<div style="font-size:15px;font-weight:600;color:oklch(24% 0.015 255);">E.Z.R.A.</div>'
-                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded faculty onboarding &amp; Faculty Manual answers, with citations</div>'
+                f'<div style="font-size:15px;font-weight:600;color:oklch(24% 0.015 255);">{config.ASSISTANT_NAME}</div>'
+                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded answers, with citations</div>'
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -669,7 +669,7 @@ def _render_messages(accent: str) -> None:
             _render_message(i, message, accent)
 
 
-st.set_page_config(page_title="E.Z.R.A.", page_icon="💬", layout="wide")
+st.set_page_config(page_title=config.ASSISTANT_NAME, page_icon="💬", layout="wide")
 _init_state()
 
 _dev_mode = st.query_params.get("dev") == "1"

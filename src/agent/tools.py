@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 NO_WEB_ANSWER = (
     "I couldn't find a reliable official government source for this either, so I don't "
-    "want to guess. I can route your question to your college's HR office instead — "
+    f"want to guess. I can route your question to {config.HELP_CONTACT} instead — "
     "would you like that?"
 )
 

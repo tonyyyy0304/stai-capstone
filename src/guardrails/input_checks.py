@@ -24,10 +24,11 @@ import re
 
 from src.schemas import GuardrailResult, IntentClassification
 
+from src import config
+
 DECLINE_MESSAGE = (
     "I can't follow instructions that try to change how I operate. "
-    "I can help with faculty onboarding, pre-employment requirements, and DLSU "
-    "Faculty Manual questions."
+    f"I can help with {config.SCOPE_PHRASE}."
 )
 
 _INJECTION_PATTERNS = (

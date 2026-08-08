@@ -25,6 +25,23 @@ CHROMA_DIR = DATA_DIR / "chroma"
 MANIFEST_PATH = DATA_DIR / "index_manifest.json"
 SQLITE_PATH = DATA_DIR / "hr_agent.db"
 
+# --- Deployment profile (GENERALIZATION) ---
+# Everything org/corpus-specific is centralized here so retargeting to another
+# university or a company is a config + data change, not a code change. Prompts,
+# decline messages, and the UI/API branding are all built from these.
+ORG_NAME = os.environ.get("ORG_NAME", "De La Salle University")
+ASSISTANT_NAME = os.environ.get("ASSISTANT_NAME", "Faculty Onboarding Concierge")
+CORPUS_TITLE = os.environ.get("CORPUS_TITLE", "DLSU Faculty Manual 2021")
+# Who to route to when the assistant can't help (decline/abstain/error copy).
+HELP_CONTACT = os.environ.get("HELP_CONTACT", "your college's HR office")
+# One noun phrase describing the assistant's scope, used in scope/decline copy.
+SCOPE_PHRASE = os.environ.get(
+    "SCOPE_PHRASE",
+    "faculty onboarding, pre-employment requirements, and the DLSU Faculty Manual",
+)
+# The reader the assistant serves ("faculty member", "employee", "new hire").
+READER_NOUN = os.environ.get("READER_NOUN", "faculty member")
+
 # --- API / UI ---
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("API_PORT", "8000"))
@@ -77,10 +94,10 @@ BM25_SQLITE_PATH = DATA_DIR / "bm25.sqlite"
 
 # Valid *document-level* categories (validated at ingest). Category is a soft
 # retrieval signal (see CATEGORY_BOOST), not a hard filter, and it's now the weak
-# lever — faculty_class carries the real disambiguation weight (Phase 2). The
+# lever — audience_class carries the real disambiguation weight (Phase 2). The
 # Midterm-era values (payroll, complaints, labor_law) are removed. "faculty_manual"
 # is the Manual's own doc label; it's never a query-side category (a user question
-# isn't "faculty_manual"), so the Manual competes on pure similarity + faculty_class.
+# isn't "faculty_manual"), so the Manual competes on pure similarity + audience_class.
 CATEGORIES = (
     "onboarding",
     "conduct",
@@ -99,20 +116,52 @@ QUERY_CATEGORIES = ("onboarding", "conduct", "leave", "benefits")
 # way the old hard $eq filter did.
 CATEGORY_BOOST = 0.05
 
-# --- Faculty class (Phase 2: the corpus's biggest retrieval hazard) ---
-# The Manual has three parallel classes with near-duplicate text but different
-# numbers (full-time 8.x leaves vs ASF 6.x leaves, etc.). Chunks carry a
-# faculty_class slug; these are the canonical slugs and their display labels
-# (used in the chunk context header and the disambiguation prompt). "" means the
-# content is class-agnostic (preamble, dress code, table of offenses).
-FACULTY_CLASS_LABELS = {
-    "full_time_academic": "Full-time Academic Faculty",
-    "part_time_academic": "Part-time Academic Faculty",
-    "academic_service": "Academic Service Faculty",
-}
-# Soft re-rank weight when the reader's stated class matches a chunk's class —
+# --- Audience segmentation (the corpus's biggest retrieval hazard) ---
+# GENERALIZATION: a corpus often carries near-duplicate policy text for different
+# sub-populations ("audience classes") with the SAME structure but DIFFERENT rules
+# — for DLSU, the three faculty classes (full-time 8.x leaves vs ASF 6.x leaves);
+# for a company, employment types (regular / probationary / contractor). Handing a
+# reader another segment's rules is a confident wrong answer, so chunks are tagged
+# with an audience_class slug and the agent asks which segment the reader is when
+# the evidence spans more than one. This taxonomy is the ONLY place the segments
+# are defined — swap it (and the manual's markers) to retarget, no code change.
+#   slug:     stable id stored in chunk metadata ("" = applies to all segments)
+#   label:    display name (chunk context header + clarifying question)
+#   markers:  UPPERCASE heading substrings that begin this segment's region in the
+#             manual (positional detection; see rag/chunking.detect_section_audience)
+#   keywords: lowercase phrases in a user message that signal they stated this segment
+AUDIENCE_CLASSES = (
+    {
+        "slug": "full_time_academic",
+        "label": "Full-time Academic Faculty",
+        "markers": ("FULL-TIME ACADEMIC FACULTY",),
+        "keywords": ("full-time", "full time", "fulltime"),
+    },
+    {
+        "slug": "part_time_academic",
+        "label": "Part-time Academic Faculty",
+        "markers": ("PART-TIME ACADEMIC FACULTY",),
+        "keywords": ("part-time", "part time", "parttime"),
+    },
+    {
+        "slug": "academic_service",
+        "label": "Academic Service Faculty",
+        "markers": ("ACADEMIC SERVICE FACULTY",),
+        "keywords": ("academic service", "asf"),
+    },
+)
+# Heading substrings that END audience-region tracking (content applies to all
+# segments thereafter): appendices, shared annexes, etc.
+AUDIENCE_RESET_MARKERS = ("APPENDIX",)
+# What to call the segmentation in the clarifying question ("faculty class",
+# "employment type", "membership tier", …).
+AUDIENCE_NOUN = os.environ.get("AUDIENCE_NOUN", "faculty class")
+# Derived lookups (do not edit — computed from AUDIENCE_CLASSES).
+AUDIENCE_LABELS = {c["slug"]: c["label"] for c in AUDIENCE_CLASSES}
+AUDIENCE_ORDER = tuple(c["slug"] for c in AUDIENCE_CLASSES)
+# Soft re-rank weight when the reader's stated segment matches a chunk's segment —
 # same mechanism/rationale as CATEGORY_BOOST (ordering only, floor sees true cosine).
-FACULTY_CLASS_BOOST = 0.05
+AUDIENCE_CLASS_BOOST = 0.05
 # Class disambiguation only fires when >1 class appears among the top-N retrieved
 # chunks (the *strong* evidence), not anywhere in top-k. A genuine class-split
 # question puts both classes at the very top (leave, permanency); an unanswerable
@@ -189,6 +238,10 @@ EMPLOYEE_ID_PATTERN = r"\bEMP-\d{4,6}\b"
 PHONE_PATTERN = r"(?:\+63|0)9\d{2}[-.\s]?\d{3}[-.\s]?\d{4}"
 
 # --- Web search fallback (Module 8: Tool Use) ---
+# GENERALIZATION: the statutory web fallback is PH/university-specific (national
+# agencies below). A deployment that doesn't need it — most companies — sets this
+# false and the search_web tool is not offered to the agent at all.
+ENABLE_WEB_FALLBACK = os.environ.get("ENABLE_WEB_FALLBACK", "true").lower() == "true"
 # search_web is restricted to these domains so it can't become a general-purpose
 # search engine (would defeat the on-topic guardrail). Enforced via Tavily's
 # include_domains param at search time, not post-hoc filtering. These are the

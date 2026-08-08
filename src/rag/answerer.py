@@ -16,36 +16,35 @@ from src.rag.retriever import (
     Retriever,
     apply_floor,
     get_retriever,
-    rerank_by_faculty_class,
+    rerank_by_audience,
 )
 from src.schemas import Citation, GroundedAnswer
 
-# Canonical display order for the three classes in a clarifying question.
-_CLASS_ORDER = ("full_time_academic", "part_time_academic", "academic_service")
 
-
-def detect_stated_class(text: str) -> str | None:
-    """Extract the reader's faculty class from their message, or None if unstated
-    or contradictory (both 'full-time' and 'part-time' mentioned → None). Query-
-    side counterpart to the positional detection at ingest."""
+def detect_stated_audience(text: str) -> str | None:
+    """Extract the reader's audience segment from their message, or None if
+    unstated or contradictory (two segments mentioned → None). Config-driven
+    (config.AUDIENCE_CLASSES keywords); query-side counterpart to the positional
+    detection at ingest."""
     t = text.lower()
     hits = set()
-    if "part-time" in t or "part time" in t or "parttime" in t:
-        hits.add("part_time_academic")
-    if "full-time" in t or "full time" in t or "fulltime" in t:
-        hits.add("full_time_academic")
-    if "academic service" in t or re.search(r"\basf\b", t):
-        hits.add("academic_service")
+    for segment in config.AUDIENCE_CLASSES:
+        if any(re.search(rf"\b{re.escape(kw)}\b", t) for kw in segment["keywords"]):
+            hits.add(segment["slug"])
     return hits.pop() if len(hits) == 1 else None
 
 
 def _clarification_answer(present: set[str]) -> GroundedAnswer:
-    """Build the class-disambiguation response for evidence that spans >1 class."""
-    labels = [config.FACULTY_CLASS_LABELS[c] for c in _CLASS_ORDER if c in present]
+    """Build the segment-disambiguation response for evidence that spans >1 segment."""
+    # Order by the configured order first, then any leftover slugs (defensive:
+    # a slug in the index but not in current config still degrades gracefully).
+    ordered = [s for s in config.AUDIENCE_ORDER if s in present]
+    ordered += [s for s in present if s not in config.AUDIENCE_ORDER]
+    labels = [config.AUDIENCE_LABELS.get(s, s) for s in ordered]
     options = ", ".join(labels[:-1]) + f", or {labels[-1]}" if len(labels) > 1 else labels[0]
     question = (
-        "Leave, benefit, and hiring rules differ by faculty class, and your answer "
-        f"depends on which you are. Which applies to you: {options}?"
+        f"The answer depends on your {config.AUDIENCE_NOUN}. "
+        f"Which applies to you: {options}?"
     )
     return GroundedAnswer(
         answer=question,
@@ -57,34 +56,41 @@ def _clarification_answer(present: set[str]) -> GroundedAnswer:
 
 
 IDK_ANSWER = (
-    "I couldn't find this in the DLSU Faculty Manual or the onboarding documents I "
-    "have, so I don't want to guess. You may want to consult the DLSU Faculty Manual "
-    "directly or your college's HR resources for this one."
+    f"I couldn't find this in the {config.CORPUS_TITLE} or the companion documents I have, "
+    f"so I don't want to guess. You may want to consult the {config.CORPUS_TITLE} directly "
+    f"or {config.HELP_CONTACT} for this one."
 )
 
-ANSWER_PROMPT = """You are the DLSU Faculty Onboarding Concierge. You answer a faculty \
-member's onboarding and Faculty Manual questions using ONLY the excerpts below, which come \
-from the DLSU Faculty Manual 2021 and its official onboarding companion documents.
+# The segment-disambiguation rule is only included when the deployment defines
+# audience segments (config.AUDIENCE_CLASSES); a corpus with no segmentation skips it.
+_SEGMENT_RULE = (
+    "\n- Requirements often differ by "
+    f"{config.AUDIENCE_NOUN} ({', '.join(config.AUDIENCE_LABELS[s] for s in config.AUDIENCE_ORDER)}). "
+    "If the excerpts give segment-specific answers and the question does not say which "
+    "segment the reader is, do NOT guess: set insufficient_context to true and ask which "
+    f"{config.AUDIENCE_NOUN} they belong to."
+    if config.AUDIENCE_CLASSES
+    else ""
+)
+
+ANSWER_PROMPT = f"""You are the {config.ASSISTANT_NAME}. You answer a {config.READER_NOUN}'s \
+questions about {config.SCOPE_PHRASE} using ONLY the excerpts below.
 
 Rules:
-- Base every claim on the excerpts; never use outside knowledge or another university's \
+- Base every claim on the excerpts; never use outside knowledge or another organization's \
 policy. A confident wrong answer about someone's employment terms is worse than no answer.
 - Cite every excerpt you used by its exact chunk_id, title, and section_path. Each excerpt \
 header includes a page number — state it in your answer (e.g. "p.131") so the reader can \
 check the source. When a section_path names an appendix (e.g. "Appendix F"), keep that too.
-- Quote specific numbers, durations, deadlines, form names, and rank codes exactly as \
-written (e.g. "15 working days", "BIR Form 1902", "Assistant Professor").
-- Requirements often differ by faculty class — Full-time Academic Faculty, Part-time \
-Academic Faculty, and Academic Service Faculty (ASF). If the excerpts give class-specific \
-answers and the question does not say which class the reader is, do NOT guess: set \
-insufficient_context to true and ask which faculty class they belong to.
+- Quote specific numbers, durations, deadlines, form names, and codes exactly as written \
+(e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}
 - If the excerpts do not contain the answer, set insufficient_context to true and say you \
 don't know rather than filling the gap from memory.
 
 Excerpts:
-{context}
+{{context}}
 
-Faculty member's question: {question}"""
+{config.READER_NOUN.capitalize()}'s question: {{question}}"""
 
 
 def _format_context(chunks: list[RetrievedChunk]) -> str:
@@ -165,20 +171,24 @@ def answer_question(
     if not chunks:
         return no_answer(), []
 
-    # Faculty-class disambiguation (Phase 2, the corpus's biggest hazard): if the
-    # evidence spans more than one faculty class and the reader hasn't said which
-    # they are, ask instead of answering — a merged full-time/part-time answer is
-    # a confident wrong answer about someone's employment terms. If they did state
-    # a class, softly re-rank toward it.
-    stated = detect_stated_class(question)
-    # Only the top-N chunks (the strong evidence) count toward the class split, so
-    # a lower-ranked lexical brush with a class-specific section doesn't trigger a
-    # bogus clarification on an otherwise-unanswerable question.
-    present = {c.faculty_class for c in chunks[: config.DISAMBIG_TOP_N] if c.faculty_class}
-    if stated is None and len(present) >= 2:
-        return _clarification_answer(present), []
-    if stated:
-        chunks = rerank_by_faculty_class(chunks, stated)
+    # Audience-segment disambiguation (the corpus's biggest hazard): if the
+    # evidence spans more than one segment and the reader hasn't said which they
+    # are, ask instead of answering — a merged answer across segments is a
+    # confident wrong answer about someone's terms. If they did state a segment,
+    # softly re-rank toward it. Entirely gated on config.AUDIENCE_CLASSES, so a
+    # deployment with no segmentation skips this cleanly (no clarifying question).
+    if config.AUDIENCE_CLASSES:
+        stated = detect_stated_audience(question)
+        # Only the top-N chunks (the strong evidence) count toward the segment
+        # split, so a lower-ranked lexical brush with a segment-specific section
+        # doesn't trigger a bogus clarification on an unanswerable question.
+        present = {
+            c.audience_class for c in chunks[: config.DISAMBIG_TOP_N] if c.audience_class
+        }
+        if stated is None and len(present) >= 2:
+            return _clarification_answer(present), []
+        if stated:
+            chunks = rerank_by_audience(chunks, stated)
 
     answer = generate_grounded_answer(question, chunks, client=client)
     if answer.insufficient_context:
