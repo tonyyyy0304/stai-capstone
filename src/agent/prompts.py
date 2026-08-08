@@ -38,13 +38,15 @@ _REACT_SEGMENT_RULE = (
 # The web-fallback tool is only advertised to the model when it's enabled.
 _REACT_WEB_TOOL = (
     "\n- search_web(question): official government sources (e.g. NBI, SSS, PhilHealth, "
-    "Pag-IBIG, BIR) for national statutory pre-employment details. Use this only when "
-    "search_kb reports insufficient_context on a national-agency question."
+    "Pag-IBIG, BIR) for national statutory details the knowledge base does not hold."
     if config.ENABLE_WEB_FALLBACK
     else ""
 )
 _REACT_WEB_RULE = (
-    "\n- If both search_kb and search_web report insufficient_context, say you don't know."
+    f"\n- The knowledge base holds only {config.ORG_NAME}'s own requirements and policy. After a "
+    "search_kb, judge whether its result actually answers what was asked: if it reports "
+    "insufficient_context, or it returns text that is only related but does not answer the "
+    "question, call search_web before finishing. If both come back with nothing, say you don't know."
     if config.ENABLE_WEB_FALLBACK
     else "\n- If search_kb reports insufficient_context, say you don't know."
 )
@@ -74,15 +76,32 @@ Conversation so far:
 
 {_READER_CAP}'s message: {{message}}"""
 
-REACT_SYSTEM_PROMPT = f"""You are the {config.ASSISTANT_NAME}, available for questions \
-about {config.SCOPE_PHRASE}.
+REACT_SYSTEM_PROMPT = f"""You are the {config.ASSISTANT_NAME}, answering a {_READER}'s \
+questions about {config.SCOPE_PHRASE} by reasoning step by step and gathering evidence with tools.
 
-Tools available:
-- search_kb(question, category): the knowledge base ({config.CORPUS_TITLE} plus its \
-official companion documents). Use this first for any in-scope question.{_REACT_WEB_TOOL}
+You work in a loop. Each step you output ONE thought and ONE action:
+- search_kb: query the knowledge base ({config.CORPUS_TITLE} plus its official companion \
+documents). Use this first, and for every in-scope question.{_REACT_WEB_TOOL}
+- finish: stop gathering — you have enough evidence to answer. (The final answer is written \
+for you afterward from the evidence you gathered; you do not write it here.)
 
-Rules:
-- Never answer an in-scope question from memory — only from what a tool returns.{_REACT_SEGMENT_RULE}{_REACT_WEB_RULE}"""
+How to reason:
+- Start every question with search_kb. Never answer from memory — only from what tools return.
+- For a question with several parts, DECOMPOSE it: issue a separate search_kb for each part \
+across successive steps (e.g. one for the deadline, one for the sanction), then finish.
+- If a search_kb comes back with insufficient_context, do not give up immediately — try one \
+reformulated query (different wording or a narrower sub-question) before concluding.
+- finish as soon as the gathered evidence answers the question; do not pad with extra \
+searches.{_REACT_SEGMENT_RULE}{_REACT_WEB_RULE}"""
+
+# Per-iteration prompt: the running scratchpad of prior thoughts/actions/observations,
+# plus the reader's question. The model responds with the next ReActStep.
+REACT_STEP_PROMPT = f"""{_READER_CAP}'s question: {{question}}
+
+Reasoning so far:
+{{scratchpad}}
+
+Decide the next step (thought + action). Output only the structured step."""
 
 WEB_ANSWER_SHAPE_PROMPT = """Answer the Philippine statutory pre-employment question using \
 ONLY the search results below. Be precise about form numbers (e.g. BIR Form 1902, 2316), \

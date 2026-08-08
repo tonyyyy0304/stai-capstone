@@ -51,6 +51,40 @@ class IntentClassification(BaseModel):
     )
 
 
+# --- ReAct reasoning loop (Module 7: Agent) ---
+
+class ReActAction(str, Enum):
+    SEARCH_KB = "search_kb"
+    SEARCH_WEB = "search_web"
+    FINISH = "finish"
+
+
+class ReActStep(BaseModel):
+    """One iteration of the agent's reasoning loop: a thought plus the next action.
+
+    The model plans retrieval only — it decides which tool to call with what query,
+    or that it has gathered enough evidence (`finish`). It never writes the final
+    answer here; that is synthesized afterward over the accumulated chunks so the
+    grounding guardrail still verifies every citation. Returned as `response_schema`
+    so the loop parses typed JSON, never free text.
+    """
+
+    thought: str = Field(
+        description="Brief reasoning about what is still needed and what to do next"
+    )
+    action: ReActAction = Field(
+        description="search_kb / search_web to gather more evidence, or finish when enough is gathered"
+    )
+    query: str = Field(
+        default="",
+        description="Search query for search_kb/search_web; may be a decomposed sub-question. Ignored for finish.",
+    )
+    category: str | None = Field(
+        default=None,
+        description="Optional topic category for search_kb (onboarding|conduct|leave|benefits)",
+    )
+
+
 # --- Grounded RAG answers (Module 1: RAG, Module 3: Structured Outputs) ---
 
 class Citation(BaseModel):

@@ -72,6 +72,7 @@ def judge_input(
                 response_mime_type="application/json",
                 response_schema=LLMJudgeVerdict,
                 temperature=0.0,
+                thinking_config=config.thinking_config(),
             ),
         )
     except (APIError, LLMBackendError) as exc:

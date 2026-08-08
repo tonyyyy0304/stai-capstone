@@ -12,11 +12,15 @@ call it directly don't gain surprise DB side effects.
 
 Per turn: classify_intent() (Module 4: Disambiguation) gates the conversation —
 ambiguous or low-confidence input gets a clarifying question, out-of-scope input
-gets declined, neither reaches a tool. Everything else enters _answer_pipeline()
-(Phase 5): a deterministic search_kb -> (statutory web fallback) sequence, NOT a
-model-driven ReAct tool-choice loop — the router already fixed the intent, so the
-loop was pure overhead. That keeps a normal turn at ~2 Gemini calls (router +
-grounded answer) instead of ~5.
+gets declined, neither reaches a tool. Everything else enters _react_loop()
+(Module 7: Agent): a model-driven ReAct loop that reasons step by step, choosing
+search_kb / search_web / finish each iteration (bounded by MAX_REACT_ITERATIONS).
+The model plans retrieval only — it can decompose a multi-part question into
+several search_kb queries and reformulate a query that came back insufficient —
+and the final answer is synthesized afterward over the union of gathered chunks
+via generate_grounded_answer(), so the grounding guardrail still verifies every
+citation. This buys robustness on hard multi-hop/ambiguous questions at the cost
+of ~1 planning call + 1 tool call per hop.
 
 Guardrails (Module 6, src/guardrails/) run at three stages of run_turn():
 1. Pre-router (_check_input): deterministic prompt-injection regex and a
@@ -42,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from src import config
-from src.agent import tools, usage
+from src.agent import prompts, tools, usage
 from src.agent.router import classify_intent, needs_clarification
 from src.guardrails.grounding import check_grounding
 from src.guardrails.input_checks import (
@@ -58,6 +62,8 @@ from src.schemas import (
     GuardrailResult,
     Intent,
     IntentClassification,
+    ReActAction,
+    ReActStep,
     TokenUsage,
     WebCitation,
 )
@@ -199,7 +205,7 @@ def run_turn(
                 token_usage=_turn_token_usage(turn_started_at, session_id),
             )
 
-        reply, run_state = _answer_pipeline(message, classification, steps, client, session_id)
+        reply, run_state = _react_loop(message, classification, steps, client, session_id)
     except (APIError, LLMBackendError) as exc:
         logger.warning("session=%s llm_api_error status=%s", session_id, exc.code)
         return AgentResponse(
@@ -237,73 +243,198 @@ def _turn_token_usage(turn_started_at: datetime, session_id: str) -> TokenUsage:
     )
 
 
-def _answer_pipeline(
+def _format_scratchpad(scratchpad: list[dict]) -> str:
+    """Render the running thought/action/observation trace for the next planning call."""
+    if not scratchpad:
+        return "(nothing yet — this is the first step)"
+    lines = []
+    for i, s in enumerate(scratchpad, 1):
+        lines.append(
+            f"{i}. thought: {s['thought']}\n"
+            f"   action: {s['action']}(query={s['query']!r})\n"
+            f"   observation: {s['observation']}"
+        )
+    return "\n".join(lines)
+
+
+def _plan_next_step(
+    message: str, scratchpad: list[dict], client, session_id: str
+) -> ReActStep:
+    """One planning call: the model reads the scratchpad and picks the next action."""
+    from google.genai import types
+
+    response = client.models.generate_content(
+        model=config.ACTIVE_CHAT_MODEL,
+        contents=(
+            prompts.REACT_SYSTEM_PROMPT
+            + "\n\n"
+            + prompts.REACT_STEP_PROMPT.format(
+                question=message, scratchpad=_format_scratchpad(scratchpad)
+            )
+        ),
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ReActStep,
+            temperature=0.0,
+            thinking_config=config.thinking_config(),
+        ),
+    )
+    usage.record_usage(
+        config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id
+    )
+    step = response.parsed
+    if step is None:  # unparseable plan → stop gathering and answer from what we have
+        return ReActStep(thought="unparseable planning step; finishing", action=ReActAction.FINISH)
+    return step
+
+
+def _dedupe_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Union of chunks across hops, first occurrence wins (a multi-hop question can
+    retrieve the same chunk from more than one sub-query)."""
+    seen: set[str] = set()
+    out: list[RetrievedChunk] = []
+    for c in chunks:
+        if c.chunk_id in seen:
+            continue
+        seen.add(c.chunk_id)
+        out.append(c)
+    return out
+
+
+def _react_loop(
     message: str,
     classification: IntentClassification,
     steps: list[AgentStep],
     client,
     session_id: str,
 ) -> tuple[str, _RunState]:
-    """Deterministic KB-first answer pipeline (replaces the generative ReAct loop,
-    Phase 5). The router already decided intent/category, and there are only two
-    tools whose order is fixed — so a model-driven "which tool?" loop was pure
-    overhead. This makes at most two tool calls (search_kb, then the statutory web
-    fallback only if the KB is insufficient AND the deployment enables it), with
-    no extra tool-selection LLM round-trips: ~2 Gemini calls/turn instead of ~5.
+    """Model-driven ReAct loop (Module 7). Each iteration the model emits a thought
+    and one action (search_kb / search_web / finish). It plans retrieval only — it
+    can decompose a multi-part question into several search_kb queries and reformulate
+    a query that came back insufficient — and the final answer is synthesized afterward
+    over the union of gathered chunks (see _synthesize_final), so the grounding
+    guardrail still verifies every citation. Bounded by MAX_REACT_ITERATIONS.
 
-    Note: retrieval uses the current message (not a history-rewritten query). Most
-    turns are self-contained; a class follow-up should restate context (the router
-    still sees history for clarification)."""
+    Retrieval uses the model's (possibly reformulated) query, not a history-rewrite;
+    the router still sees history for clarification."""
     run_state = _RunState()
+    scratchpad: list[dict] = []
+    kb_results: list[tuple] = []          # (GroundedAnswer, chunks) per search_kb hop
+    all_chunks: list[RetrievedChunk] = []
+    web_answer = None
 
-    answer, chunks = tools.search_kb(
-        message, category=classification.category, client=client, session_id=session_id
-    )
-    run_state.citations = answer.citations
-    run_state.web_citations = answer.web_citations
-    run_state.chunks = chunks
-    run_state.insufficient_context = answer.insufficient_context
-    steps.append(
-        AgentStep(
-            thought=f"search_kb category={classification.category}",
-            tool="search_kb",
-            tool_args={"question": message, "category": classification.category},
-            observation=json.dumps(
-                {
-                    "insufficient_context": answer.insufficient_context,
-                    "requires_clarification": answer.requires_clarification,
-                    "chunks_found": len(chunks),
-                }
-            ),
-        )
-    )
+    for _ in range(config.MAX_REACT_ITERATIONS):
+        step = _plan_next_step(message, scratchpad, client, session_id)
 
-    # Audience-segment split the KB couldn't resolve → ask, don't answer.
-    if answer.requires_clarification:
-        return answer.clarifying_question or answer.answer, run_state
-    if not answer.insufficient_context:
+        if step.action == ReActAction.FINISH:
+            steps.append(AgentStep(thought=step.thought, tool=None, tool_args={}, observation="finish"))
+            break
+
+        if step.action == ReActAction.SEARCH_WEB:
+            if not config.ENABLE_WEB_FALLBACK:
+                obs = "search_web is disabled in this deployment"
+            else:
+                web = tools.search_web(step.query or message, client=client, session_id=session_id)
+                if not web.insufficient_context:
+                    web_answer = web
+                obs = json.dumps({
+                    "source": web.source.value,
+                    "insufficient_context": web.insufficient_context,
+                    "answer_preview": web.answer[:200],
+                })
+            steps.append(AgentStep(thought=step.thought, tool="search_web",
+                                   tool_args={"question": step.query}, observation=obs))
+            scratchpad.append({"thought": step.thought, "action": "search_web",
+                               "query": step.query, "observation": obs})
+            continue
+
+        # default: search_kb
+        cat = step.category or classification.category
+        query = step.query or message
+        answer, chunks = tools.search_kb(query, category=cat, client=client, session_id=session_id)
+
+        # Audience-segment split the KB couldn't resolve → ask, don't answer.
+        if answer.requires_clarification:
+            run_state.chunks = chunks
+            steps.append(AgentStep(thought=step.thought, tool="search_kb",
+                                   tool_args={"question": query, "category": cat},
+                                   observation="requires_clarification"))
+            return answer.clarifying_question or answer.answer, run_state
+
+        kb_results.append((answer, chunks))
+        all_chunks.extend(chunks)
+        obs = json.dumps({
+            "insufficient_context": answer.insufficient_context,
+            "chunks_found": len(chunks),
+            "answer_preview": answer.answer[:200],
+        })
+        steps.append(AgentStep(thought=step.thought, tool="search_kb",
+                               tool_args={"question": query, "category": cat}, observation=obs))
+        scratchpad.append({"thought": step.thought, "action": "search_kb",
+                           "query": query, "observation": obs})
+
+    return _synthesize_final(message, kb_results, all_chunks, web_answer, run_state, client, session_id)
+
+
+def _synthesize_final(
+    message: str,
+    kb_results: list[tuple],
+    all_chunks: list[RetrievedChunk],
+    web_answer,
+    run_state: _RunState,
+    client,
+    session_id: str,
+) -> tuple[str, _RunState]:
+    """Turn the gathered evidence into one grounded reply once the loop finishes.
+
+    Single sufficient KB hop is reused as-is (no extra call). Multiple hops are
+    synthesized over the union of chunks so a multi-part answer is grounded in all of
+    them. A web answer is used only when the KB produced nothing usable; otherwise we
+    decline."""
+    from src.rag.answerer import generate_grounded_answer, no_answer
+
+    # The model only reaches for search_web when it judged the KB too weak to answer.
+    # So a sufficient web answer is the model's decision that web — not the KB's
+    # related-but-off text — is what actually answers this question; prefer it.
+    if web_answer is not None and not web_answer.insufficient_context:
+        run_state.citations = web_answer.citations
+        run_state.web_citations = web_answer.web_citations
+        run_state.chunks = []  # a web answer is grounded in web_citations, not KB chunks
+        run_state.insufficient_context = False
+        return web_answer.answer, run_state
+
+    # Single sufficient KB hop → reuse its already-grounded answer (no extra call).
+    if len(kb_results) == 1 and not kb_results[0][0].insufficient_context:
+        answer, hop_chunks = kb_results[0]
+        run_state.citations = answer.citations
+        run_state.web_citations = answer.web_citations
+        run_state.chunks = hop_chunks
+        run_state.insufficient_context = answer.insufficient_context
         return answer.answer, run_state
 
-    # KB couldn't answer → statutory web fallback, only if the deployment enables it.
-    if config.ENABLE_WEB_FALLBACK:
-        web = tools.search_web(message, client=client, session_id=session_id)
-        run_state.citations = web.citations
-        run_state.web_citations = web.web_citations
-        run_state.chunks = []  # a web answer is grounded in web_citations, not KB chunks
-        run_state.insufficient_context = web.insufficient_context
-        steps.append(
-            AgentStep(
-                thought="kb insufficient -> statutory web fallback",
-                tool="search_web",
-                tool_args={"question": message},
-                observation=json.dumps(
-                    {"source": web.source.value, "insufficient_context": web.insufficient_context}
-                ),
-            )
-        )
-        return web.answer, run_state
+    # Multi-hop (or single hop that pulled evidence) → synthesize over the union.
+    chunks = _dedupe_chunks(all_chunks)
+    if chunks:
+        final = generate_grounded_answer(message, chunks, client=client, session_id=session_id)
+        if not final.insufficient_context:
+            run_state.citations = final.citations
+            run_state.chunks = chunks
+            run_state.insufficient_context = False
+            return final.answer, run_state
 
-    return answer.answer, run_state
+    # KB gathered evidence but nothing sufficient, and no web (e.g. fallback disabled)
+    # → return the KB's own decline verbatim rather than a generic one.
+    if kb_results:
+        answer, hop_chunks = kb_results[-1]
+        run_state.citations = answer.citations
+        run_state.chunks = hop_chunks
+        run_state.insufficient_context = answer.insufficient_context
+        return answer.answer, run_state
+
+    # Nothing gathered at all.
+    na = no_answer()
+    run_state.insufficient_context = True
+    return na.answer, run_state
 
 
 def _source_dict_from_chunk(chunk: RetrievedChunk) -> dict:

@@ -142,6 +142,7 @@ def _summarize(existing_summary: str, evicted_turns: list[dict], client=None) ->
             response_mime_type="application/json",
             response_schema=SessionSummary,
             temperature=0.0,
+            thinking_config=config.thinking_config(),
         ),
     )
     result: SessionSummary | None = response.parsed

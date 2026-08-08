@@ -68,6 +68,7 @@ def search_web(
             response_mime_type="application/json",
             response_schema=GroundedAnswer,
             temperature=0.0,
+            thinking_config=config.thinking_config(),
         ),
     )
     usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(shape_response), session_id=session_id)

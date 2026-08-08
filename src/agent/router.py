@@ -46,6 +46,7 @@ def classify_intent(
             response_mime_type="application/json",
             response_schema=IntentClassification,
             temperature=0.0,
+            thinking_config=config.thinking_config(),
         ),
     )
     usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)

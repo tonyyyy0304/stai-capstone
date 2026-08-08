@@ -185,6 +185,15 @@ OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "gemma4:e4b")
 GEMINI_CHAT_MODEL = os.environ.get("GEMINI_CHAT_MODEL", "gemini-3.1-flash-lite")
 ACTIVE_CHAT_MODEL = GEMINI_CHAT_MODEL if LLM_PROVIDER == "gemini" else f"ollama:{OLLAMA_CHAT_MODEL}"
 
+# Gemini's model-internal "thinking" tokens are billed as output and add latency
+# to every call, and they surface a `thought_signature` non-text part that trips
+# the SDK's `.text` accessor. This project's ReAct loop lives at the orchestration
+# layer (the explicit `thought` field in ReActStep), so the model-internal trace
+# buys us little on the structured planning/routing/judging calls. Default off (0).
+# Set to -1 for dynamic (the model decides per-question) or a positive int to cap
+# thinking tokens. Only meaningful on Gemini; the Ollama client ignores it.
+GEMINI_THINKING_BUDGET = int(os.environ.get("GEMINI_THINKING_BUDGET", "0"))
+
 # --- Memory (Module 5) ---
 # Short-term in-context window; full history still persists in SQLite
 # (src/memory/session.py) regardless of this trim. PLAN.md §4 originally
@@ -320,6 +329,15 @@ def get_llm_client():
     raise RuntimeError(
         f"Unknown LLM_PROVIDER={LLM_PROVIDER!r}; expected 'gemini' or 'ollama'."
     )
+
+
+def thinking_config():
+    """A google-genai ThinkingConfig carrying GEMINI_THINKING_BUDGET, to pass as
+    GenerateContentConfig(thinking_config=...). Centralizes the budget so it's set
+    in one place. The Ollama client reads config via getattr and ignores it."""
+    from google.genai import types
+
+    return types.ThinkingConfig(thinking_budget=GEMINI_THINKING_BUDGET)
 
 
 def get_embedder():

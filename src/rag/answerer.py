@@ -141,6 +141,7 @@ def generate_grounded_answer(
             response_mime_type="application/json",
             response_schema=GroundedAnswer,
             temperature=0.2,
+            thinking_config=config.thinking_config(),
         ),
     )
     # Account this call under the turn's session (previously unlogged, so per-turn
