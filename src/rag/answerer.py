@@ -84,8 +84,11 @@ header includes a page number — state it in your answer (e.g. "p.131") so the 
 check the source. When a section_path names an appendix (e.g. "Appendix F"), keep that too.
 - Quote specific numbers, durations, deadlines, form names, and codes exactly as written \
 (e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}
-- If the excerpts do not contain the answer, set insufficient_context to true and say you \
-don't know rather than filling the gap from memory.
+- Answer only the specific question asked. If the excerpts do not answer THAT question, set \
+insufficient_context to true and say you don't know — even when the excerpts contain related or \
+adjacent information. A partial, nearby, or "the documents only say X instead" fact is NOT an \
+answer: in that case set insufficient_context to true (you may briefly note what the excerpts do \
+cover). Never fill the gap from memory.
 
 Excerpts:
 {{context}}

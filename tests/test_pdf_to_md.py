@@ -25,11 +25,11 @@ def test_headings_reconstructed_from_font_sizes(markdown):
     # H1 title, numbered H2 sections, and a nested H3 all reconstruct from the
     # three font-size tiers the corpus builder uses.
     assert "# DLSU Faculty Pre-employment Requirements Checklist" in markdown
-    for section in ("1. Core Document Set -- All Faculty Classes",
-                    "3. Requirements by Faculty Class",
-                    "4. Document Format Rules"):
+    for section in ("1. Faculty-Specific Documents -- All Faculty Classes",
+                    "4. Requirements by Faculty Class",
+                    "5. Document Format Rules"):
         assert f"## {section}" in markdown
-    assert "### 3.2 Part-time Academic Faculty" in markdown
+    assert "### 4.2 Part-time Academic Faculty" in markdown
 
 
 def test_page_chrome_removed(markdown):
@@ -41,13 +41,12 @@ def test_page_chrome_removed(markdown):
 
 
 def test_table_rendered_as_markdown(markdown):
-    assert "| Document | Purpose | Format requirement |" in markdown
+    assert "| Document | Format requirement |" in markdown
     assert (
-        "| Diploma (highest relevant degree) | Confirms degree conferral. "
-        "| Original or notarized true copy. |"
+        "| Diploma (highest relevant degree) | Original or notarized true copy. |"
     ) in markdown
     # table cell text must not leak into prose as duplicate plain lines
-    assert markdown.count("Confirms degree conferral.") == 1
+    assert markdown.count("Original or notarized true copy.") == 1
 
 
 def test_wrapped_paragraphs_rejoined(markdown):
@@ -67,7 +66,7 @@ def test_pdf_flows_through_pipeline_to_chunks():
     paths = {c.section_path for c in chunks}
     assert any("Requirements by Faculty Class" in p for p in paths)
     # the core document-set table survives inside a chunk
-    assert any("| Document | Purpose | Format requirement |" in c.text for c in chunks)
+    assert any("| Document | Format requirement |" in c.text for c in chunks)
 
 
 def test_table_to_markdown_handles_ragged_rows():
