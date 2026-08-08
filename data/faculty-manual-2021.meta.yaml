@@ -3,6 +3,10 @@ title: DLSU Faculty Manual 2021
 category: faculty_manual
 effective_date: 2021
 version: 2021
+# Enable positional faculty-class detection: the Manual's three classes are large
+# contiguous regions (unlike the companion docs' short comparison lists). Only the
+# Manual sets this. See src/rag/chunking.py split_sections(detect_class=...).
+detect_faculty_class: true
 # Drop the cover + Table-of-Contents front matter: keep everything from this
 # marker (the first real preamble content heading, case-sensitive) onward. The
 # title-case ToC entries don't match this all-caps body heading, so the ToC is

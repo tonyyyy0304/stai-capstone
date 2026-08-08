@@ -53,6 +53,13 @@ class Citation(BaseModel):
     chunk_id: str = Field(description="ID of the retrieved chunk this claim is grounded in")
     title: str = Field(description="Document title, e.g. 'Leave Policy'")
     section_path: str = Field(description="Section path, e.g. 'Sick Leave > Documentation'")
+    page: int = Field(
+        default=0,
+        description=(
+            "Printed page number the cited chunk is on. Populated by code from the "
+            "chunk's metadata (never invented by the model); 0 when unknown."
+        ),
+    )
 
 
 class AnswerSource(str, Enum):

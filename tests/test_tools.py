@@ -48,8 +48,10 @@ TAVILY_RESULTS = [
 
 def test_tavily_search_restricts_to_allowed_domains():
     client = FakeTavilyClient(results=TAVILY_RESULTS)
-    tools._tavily_search("is 13th month pay required?", tavily_client=client)
-    assert client.captured_kwargs["include_domains"] == list(config.DOLE_ALLOWED_DOMAINS)
+    tools._tavily_search("do I need an NBI clearance?", tavily_client=client)
+    assert client.captured_kwargs["include_domains"] == list(config.STATUTORY_GOV_DOMAINS)
+    # the agency sites the prompt names must actually be reachable
+    assert "nbi.gov.ph" in client.captured_kwargs["include_domains"]
 
 
 def test_tavily_search_fails_closed_on_api_error():

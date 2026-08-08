@@ -72,7 +72,6 @@ API_ERROR_REPLY = (
     "in a moment, or contact your college's HR office directly if this is urgent."
 )
 
-NON_LABOR_LAW_CATEGORIES = tuple(c for c in config.CATEGORIES if c != "labor_law")
 
 logger = logging.getLogger(__name__)
 
@@ -326,8 +325,8 @@ def _function_declarations() -> list:
                     ),
                     "category": types.Schema(
                         type="STRING",
-                        enum=list(NON_LABOR_LAW_CATEGORIES),
-                        description="Policy category to filter by, if known",
+                        enum=list(config.QUERY_CATEGORIES),
+                        description="Topic category hint, if clearly inferable",
                     ),
                 },
                 required=["question"],
@@ -385,6 +384,7 @@ def _source_dict_from_chunk(chunk: RetrievedChunk) -> dict:
         "chunk_id": chunk.chunk_id,
         "title": chunk.title,
         "section_path": chunk.section_path,
+        "page": chunk.page_start,
         "similarity": round(chunk.similarity, 4),
         "effective_date": chunk.effective_date,
         "version": chunk.version,

@@ -57,6 +57,23 @@ def test_rerank_by_category_preserves_similarity_and_noop_without_category():
     assert next(c for c in ranked if c.chunk_id == "b").similarity == 0.78
 
 
+def test_verify_citations_stamps_page_from_chunk():
+    """The citation's page comes from chunk metadata, not the model — even if the
+    model returned page=0 (or a wrong value), verify_citations overwrites it."""
+    chunk = RetrievedChunk(
+        chunk_id="faculty-manual-2021#050", text="dress code text", similarity=0.8,
+        doc_id="faculty-manual-2021", title="Faculty Manual 2021",
+        section_path="Attire and Grooming", category="faculty_manual", page_start=131,
+    )
+    answer = GroundedAnswer(
+        answer="Dress neatly.",
+        citations=[Citation(chunk_id="faculty-manual-2021#050", title="Faculty Manual 2021",
+                            section_path="Attire and Grooming", page=0)],
+    )
+    verified = verify_citations(answer, [chunk])
+    assert verified.citations[0].page == 131
+
+
 def test_verify_citations_drops_hallucinated_ids():
     answer = GroundedAnswer(
         answer="15 days.",
@@ -175,6 +192,21 @@ def test_multi_class_evidence_triggers_clarification_without_llm():
     assert answer.requires_clarification is True
     assert chunks == []
     assert "faculty class" in answer.clarifying_question.lower()
+
+
+def test_second_class_below_top_n_does_not_clarify(monkeypatch):
+    """A class-split only among lower-ranked chunks (lexical noise) must NOT
+    trigger clarification — the strong (top-N) evidence is a single class."""
+    monkeypatch.setattr(config, "DISAMBIG_TOP_N", 3)
+    retriever = FakeRetriever([
+        _class_chunk("m#1", "full_time_academic", similarity=0.70),
+        _class_chunk("m#2", "", similarity=0.69),
+        _class_chunk("m#3", "full_time_academic", similarity=0.68),
+        _class_chunk("m#4", "academic_service", similarity=0.60),  # rank 4, below top-3
+    ])
+    grounded = GroundedAnswer(answer="answer.", source=AnswerSource.INTERNAL_KB)
+    answer, _ = answer_question("some question", retriever=retriever, client=FakeShapeClient(grounded))
+    assert answer.requires_clarification is False
 
 
 def test_stated_class_does_not_clarify_and_reranks_to_top():

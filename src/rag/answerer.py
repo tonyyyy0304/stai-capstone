@@ -69,9 +69,9 @@ from the DLSU Faculty Manual 2021 and its official onboarding companion document
 Rules:
 - Base every claim on the excerpts; never use outside knowledge or another university's \
 policy. A confident wrong answer about someone's employment terms is worse than no answer.
-- Cite every excerpt you used by its exact chunk_id, title, and section_path. When a \
-section_path names a page or appendix (e.g. "p.24", "Appendix F"), keep it in your answer \
-so the reader can check the source.
+- Cite every excerpt you used by its exact chunk_id, title, and section_path. Each excerpt \
+header includes a page number — state it in your answer (e.g. "p.131") so the reader can \
+check the source. When a section_path names an appendix (e.g. "Appendix F"), keep that too.
 - Quote specific numbers, durations, deadlines, form names, and rank codes exactly as \
 written (e.g. "15 working days", "BIR Form 1902", "Assistant Professor").
 - Requirements often differ by faculty class — Full-time Academic Faculty, Part-time \
@@ -90,16 +90,23 @@ Faculty member's question: {question}"""
 def _format_context(chunks: list[RetrievedChunk]) -> str:
     parts = []
     for c in chunks:
+        page = f" | page: {c.page_start}" if c.page_start else ""
         parts.append(
-            f"[chunk_id: {c.chunk_id} | title: {c.title} | section_path: {c.section_path}]\n{c.text}"
+            f"[chunk_id: {c.chunk_id} | title: {c.title} | section_path: {c.section_path}{page}]\n{c.text}"
         )
     return "\n\n---\n\n".join(parts)
 
 
 def verify_citations(answer: GroundedAnswer, chunks: list[RetrievedChunk]) -> GroundedAnswer:
-    """Grounding guardrail: drop any citation whose chunk_id was not retrieved."""
-    retrieved_ids = {c.chunk_id for c in chunks}
-    verified = [c for c in answer.citations if c.chunk_id in retrieved_ids]
+    """Grounding guardrail: drop any citation whose chunk_id was not retrieved,
+    and stamp each surviving citation's page from the chunk metadata (deterministic
+    — the page never comes from the model)."""
+    by_id = {c.chunk_id: c for c in chunks}
+    verified = [
+        c.model_copy(update={"page": by_id[c.chunk_id].page_start})
+        for c in answer.citations
+        if c.chunk_id in by_id
+    ]
     return answer.model_copy(update={"citations": verified})
 
 
@@ -164,7 +171,10 @@ def answer_question(
     # a confident wrong answer about someone's employment terms. If they did state
     # a class, softly re-rank toward it.
     stated = detect_stated_class(question)
-    present = {c.faculty_class for c in chunks if c.faculty_class}
+    # Only the top-N chunks (the strong evidence) count toward the class split, so
+    # a lower-ranked lexical brush with a class-specific section doesn't trigger a
+    # bogus clarification on an otherwise-unanswerable question.
+    present = {c.faculty_class for c in chunks[: config.DISAMBIG_TOP_N] if c.faculty_class}
     if stated is None and len(present) >= 2:
         return _clarification_answer(present), []
     if stated:

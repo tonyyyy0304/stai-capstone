@@ -48,7 +48,17 @@ CHUNK_MIN_TOKENS = 80  # sections smaller than this are merged into their parent
 
 # --- Retrieval (Stage 5) ---
 TOP_K = 8
-SIMILARITY_FLOOR = 0.5  # below this the agent must say "I don't know" (tuned in evals)
+# Below this the agent must say "I don't know" instead of answering. Tuned via a
+# floor sweep over the golden set (evals/run_retrieval_eval.py): the lowest
+# genuinely-answerable question retrieves at ~0.63, so 0.55 stays safely below
+# every known-good answer (never suppresses recall) while still rejecting clearly
+# irrelevant sub-0.55 matches. NOTE: the floor is NOT the abstention lever for
+# near-topic negatives (e.g. "NBI fee in pesos", "HRMO office hours") — those
+# retrieve topically-adjacent chunks at 0.68–0.70, above real answers, so no safe
+# floor catches them. Abstaining on those is the generation layer's job (the model
+# sets insufficient_context when the excerpts don't contain the fact); a
+# deterministic faithfulness check is the Phase 3 hardening for it.
+SIMILARITY_FLOOR = 0.55
 
 # --- Advanced RAG: hybrid retrieval (PLAN.md §3.4) ---
 # "dense" = cosine-only over Chroma (default, unchanged behavior).
@@ -65,23 +75,23 @@ RRF_K = int(os.environ.get("RRF_K", "60"))
 RRF_CANDIDATE_POOL = int(os.environ.get("RRF_CANDIDATE_POOL", "20"))
 BM25_SQLITE_PATH = DATA_DIR / "bm25.sqlite"
 
-# Valid document categories. Category is a *soft* retrieval signal (see
-# CATEGORY_BOOST below), not a hard filter — a query tagged with one category
-# still retrieves across all of them, so the multi-topic Faculty Manual stays
-# reachable for every topic. "faculty_manual" is the Manual's own doc-level
-# label; it's category-neutral in practice (never a query-side category), so the
-# Manual competes purely on similarity. "labor_law" has no internal chunks — it's
-# the signal the router uses to route straight to the search_web fallback.
+# Valid *document-level* categories (validated at ingest). Category is a soft
+# retrieval signal (see CATEGORY_BOOST), not a hard filter, and it's now the weak
+# lever — faculty_class carries the real disambiguation weight (Phase 2). The
+# Midterm-era values (payroll, complaints, labor_law) are removed. "faculty_manual"
+# is the Manual's own doc label; it's never a query-side category (a user question
+# isn't "faculty_manual"), so the Manual competes on pure similarity + faculty_class.
 CATEGORIES = (
+    "onboarding",
+    "conduct",
     "leave",
     "benefits",
-    "payroll",
-    "conduct",
-    "complaints",
-    "onboarding",
-    "labor_law",
     "faculty_manual",
 )
+# The subset the router/search_kb may predict from a user question. Excludes
+# faculty_manual (a doc label, not a user-facing topic) — a query about leaves in
+# the Manual is category "leave", not "faculty_manual".
+QUERY_CATEGORIES = ("onboarding", "conduct", "leave", "benefits")
 # Soft category re-rank: a retrieved chunk whose category matches the query's
 # category gets this added to its *ordering* score (not its stored similarity, so
 # the similarity floor still sees true cosine). Small, so it only breaks ties /
@@ -103,6 +113,14 @@ FACULTY_CLASS_LABELS = {
 # Soft re-rank weight when the reader's stated class matches a chunk's class —
 # same mechanism/rationale as CATEGORY_BOOST (ordering only, floor sees true cosine).
 FACULTY_CLASS_BOOST = 0.05
+# Class disambiguation only fires when >1 class appears among the top-N retrieved
+# chunks (the *strong* evidence), not anywhere in top-k. A genuine class-split
+# question puts both classes at the very top (leave, permanency); an unanswerable
+# question that merely brushes a class-specific section by lexical overlap (e.g.
+# "HRMO office hours" grazing "Working Hours") has the second class ranked lower —
+# so it correctly falls through to a normal "I don't know" instead of a bogus
+# "which class are you?".
+DISAMBIG_TOP_N = 3
 
 # --- Agent (Module 7: ReAct Agent) ---
 MAX_REACT_ITERATIONS = 5
@@ -172,9 +190,22 @@ PHONE_PATTERN = r"(?:\+63|0)9\d{2}[-.\s]?\d{3}[-.\s]?\d{4}"
 
 # --- Web search fallback (Module 8: Tool Use) ---
 # search_web is restricted to these domains so it can't become a general-purpose
-# search engine (would defeat the HR-only topic-filter guardrail). Enforced via
-# Tavily's include_domains param at search time, not post-hoc filtering.
-DOLE_ALLOWED_DOMAINS = ("dole.gov.ph", "officialgazette.gov.ph", "lawphil.net")
+# search engine (would defeat the on-topic guardrail). Enforced via Tavily's
+# include_domains param at search time, not post-hoc filtering. These are the
+# official sources for the national statutory pre-employment agencies the fallback
+# actually covers (NBI/SSS/PhilHealth/Pag-IBIG/BIR) plus DOLE/gazette/lawphil for
+# labor-law text. (Previously only the three DOLE-side domains were allowed, so
+# the fallback could never reach the agency sites its own prompt names.)
+STATUTORY_GOV_DOMAINS = (
+    "nbi.gov.ph",
+    "sss.gov.ph",
+    "philhealth.gov.ph",
+    "pagibigfund.gov.ph",
+    "bir.gov.ph",
+    "dole.gov.ph",
+    "officialgazette.gov.ph",
+    "lawphil.net",
+)
 TAVILY_MAX_RESULTS = 5
 
 # --- Monitoring ---

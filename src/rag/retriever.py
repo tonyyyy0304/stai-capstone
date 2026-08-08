@@ -25,6 +25,7 @@ class RetrievedChunk:
     effective_date: str = ""
     version: str = ""
     faculty_class: str = ""  # "" = class-agnostic (Phase 2)
+    page_start: int = 0  # printed page number for citations (Phase 3); 0 = unknown
 
 
 def get_collection():
@@ -51,6 +52,7 @@ def _to_chunks(result: dict) -> list[RetrievedChunk]:
                 effective_date=meta.get("effective_date", ""),
                 version=meta.get("version", ""),
                 faculty_class=meta.get("faculty_class", ""),
+                page_start=int(meta.get("page_start", 0) or 0),
             )
         )
     return chunks

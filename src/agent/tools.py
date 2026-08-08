@@ -94,7 +94,7 @@ def _tavily_search(question: str, tavily_client=None) -> list[dict]:
     try:
         response = tavily_client.search(
             query=question,
-            include_domains=list(config.DOLE_ALLOWED_DOMAINS),
+            include_domains=list(config.STATUTORY_GOV_DOMAINS),
             max_results=config.TAVILY_MAX_RESULTS,
         )
     except (

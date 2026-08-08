@@ -184,7 +184,9 @@ def test_search_kb_clarification_short_circuits_loop(monkeypatch):
 
 
 def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
-    mock_classification(monkeypatch, Intent.FAQ, category="labor_law")
+    # Web fallback is triggered by search_kb reporting insufficient_context now,
+    # not by any category value.
+    mock_classification(monkeypatch, Intent.FAQ, category="onboarding")
     monkeypatch.setattr(
         tools,
         "search_kb",

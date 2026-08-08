@@ -168,6 +168,7 @@ class HybridRetriever:
                 effective_date=meta.get("effective_date", ""),
                 version=meta.get("version", ""),
                 faculty_class=meta.get("faculty_class", ""),
+                page_start=int(meta.get("page_start", 0) or 0),
             )
         return out
 

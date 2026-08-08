@@ -50,12 +50,40 @@ def test_split_sections_tags_class_positionally():
 
 def test_chunk_document_puts_class_in_header():
     doc = (
-        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n---\n\n"
+        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n"
+        "detect_faculty_class: true\n---\n\n"
         "### FULL-TIME ACADEMIC FACULTY\n\n" + ("full time leave detail. " * 40) + "\n"
     )
     chunks = chunk_document(doc)
     assert chunks[0].faculty_class == "full_time_academic"
     assert "Full-time Academic Faculty" in chunks[0].text.split("\n\n")[0]
+
+
+def test_page_markers_set_page_start_and_are_not_embedded():
+    doc = (
+        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n---\n\n"
+        "<!--page:23-->\n### C. Hiring Procedure\n\n" + ("hiring detail. " * 40) + "\n\n"
+        "<!--page:24-->\n### D. Probation\n\n" + ("probation detail. " * 40) + "\n"
+    )
+    chunks = chunk_document(doc)
+    hiring = next(c for c in chunks if "hiring detail" in c.text)
+    probation = next(c for c in chunks if "probation detail" in c.text)
+    assert hiring.page_start == 23
+    assert probation.page_start == 24
+    assert "<!--page:" not in hiring.text  # marker stripped, never embedded
+
+
+def test_companion_doc_class_comparison_does_not_positionally_tag():
+    """A companion doc that merely *lists* the three classes in a comparison
+    subsection must NOT get positionally tagged (no detect_faculty_class flag) —
+    otherwise everything after '3.3 Academic Service' is mistagged as ASF."""
+    doc = (
+        "---\ndoc_id: pre\ntitle: Preboarding\ncategory: onboarding\n---\n\n"
+        "### 3.3 Academic Service Faculty\n\n" + ("asf note. " * 20) + "\n\n"
+        "### 5. Where to Get Help\n\n" + ("contact the office. " * 20) + "\n"
+    )
+    chunks = chunk_document(doc)
+    assert all(c.faculty_class == "" for c in chunks)
 
 SAMPLE_DOC = """---
 doc_id: test-policy
