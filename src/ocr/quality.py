@@ -131,11 +131,13 @@ def _verdict(signals: dict) -> tuple[QualityVerdict, list[str], float]:
 
     min_dim = signals["min_dim_px"]
     if min_dim < config.MIN_IMAGE_DIM_PX:
-        reasons.append(f"min_dim_px {min_dim} below floor {config.MIN_IMAGE_DIM_PX}")
+        reasons.append(f"min_dim_px {min_dim} below reject floor {config.MIN_IMAGE_DIM_PX}")
         hard_fail = True
         scores.append(0.0)
     else:
-        scores.append(1.0)
+        if min_dim < config.MIN_IMAGE_DIM_WARN:
+            reasons.append(f"min_dim_px {min_dim} below warn threshold {config.MIN_IMAGE_DIM_WARN}")
+        scores.append(min(1.0, min_dim / config.MIN_IMAGE_DIM_WARN))
 
     exposure = signals["exposure_clip"]
     if exposure > config.EXPOSURE_CLIP_CEILING:

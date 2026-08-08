@@ -67,7 +67,7 @@ def _signals(**overrides):
         "blur_score": config.BLUR_VARIANCE_WARN + 1,
         "exposure_clip": 0.0,
         "skew_deg": 0.0,
-        "min_dim_px": config.MIN_IMAGE_DIM_PX + 1,
+        "min_dim_px": config.MIN_IMAGE_DIM_WARN + 1,  # above the warn tier too, not just the reject floor
         "quad_found": True,
     }
     base.update(overrides)
@@ -109,6 +109,23 @@ def test_min_dim_below_floor_rejects():
     verdict, _, score = quality._verdict(_signals(min_dim_px=config.MIN_IMAGE_DIM_PX - 1))
     assert verdict == QualityVerdict.REJECT
     assert score == 0.0
+
+
+def test_min_dim_between_floor_and_warn_is_warn_not_reject():
+    """The floor/warn split added 2026-08-09 after a real 518px specimen
+    (between the new floor=400 and the old floor, now warn=640) extracted
+    at 0.98-0.99 confidence on every field — see config.py's comment."""
+    midpoint = (config.MIN_IMAGE_DIM_PX + config.MIN_IMAGE_DIM_WARN) // 2
+    verdict, reasons, _ = quality._verdict(_signals(min_dim_px=midpoint))
+    assert verdict == QualityVerdict.WARN
+    assert any("min_dim_px" in r for r in reasons)
+
+
+def test_min_dim_exactly_at_warn_does_not_warn():
+    verdict, reasons, score = quality._verdict(_signals(min_dim_px=config.MIN_IMAGE_DIM_WARN))
+    assert verdict == QualityVerdict.PASS
+    assert reasons == []
+    assert score == 1.0
 
 
 def test_no_quad_found_is_not_a_hard_reject_alone():

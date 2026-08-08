@@ -111,6 +111,15 @@ ID_NEGATIVE_TYPES = (
 # status, gender — see CV_INTEGRATION.md §1.7's minimization stance).
 # Rendered for visual/distractor density only, never written to
 # *.expected.json, never part of any validation rule.
+#
+# nbi.reference_no: <FAMILY_NAME[:4]><DOB as YYMMDD>-N<8 digits> — this
+# shape (one dash, two 6-12-char alnum groups) matches both real specimens
+# reviewed (CV_INTEGRATION.md §2.3/Part 5), and matches doctypes.py's
+# is_valid_nbi_reference_no(). An earlier "NBI-YYYY-NNNNNNNN" convention,
+# invented before any real specimen existed, had two dashes and failed that
+# validator — caught by Phase 3's cross-check test against this exact
+# dataset (tests/test_doctypes.py), which is the failure mode that check
+# exists to catch.
 IDENTITIES = [
     {
         "identity_id": "id01",
@@ -121,7 +130,7 @@ IDENTITIES = [
         "middle_name": "SANTOS",
         "date_of_birth": "1990-01-01",
         "nbi": {
-            "reference_no": "NBI-2026-00457821",
+            "reference_no": "REYE900101-N00457821",
             "date_printed": "2026-02-14",
             "valid_until": "2027-02-14",
             "purpose": "Employment",
@@ -146,7 +155,7 @@ IDENTITIES = [
         "middle_name": "P",
         "date_of_birth": "1988-05-12",
         "nbi": {
-            "reference_no": "NBI-2026-01123344",
+            "reference_no": "DELA880512-N01123344",
             "date_printed": "2026-05-01",
             "valid_until": "2027-05-01",
             "purpose": "Employment",
@@ -171,7 +180,7 @@ IDENTITIES = [
         "middle_name": "M",
         "date_of_birth": "1995-11-20",
         "nbi": {
-            "reference_no": "NBI-2025-00987651",
+            "reference_no": "SANT951120-N00987651",
             "date_printed": "2026-06-05",
             "valid_until": "2027-06-05",
             "purpose": "Local Employment",
@@ -196,7 +205,7 @@ IDENTITIES = [
         "middle_name": "JR",
         "date_of_birth": "1987-10-04",
         "nbi": {
-            "reference_no": "NBI-2026-01345567",
+            "reference_no": "GARC871004-N01345567",
             "date_printed": "2026-06-10",
             "valid_until": "2027-06-10",
             "purpose": "Employment",
@@ -221,7 +230,7 @@ IDENTITIES = [
         "middle_name": "B",
         "date_of_birth": "1992-03-15",
         "nbi": {
-            "reference_no": "NBI-2026-00223311",
+            "reference_no": "MEND920315-N00223311",
             "date_printed": "2026-05-20",
             "valid_until": "2027-05-20",
             "purpose": "Employment",
@@ -246,7 +255,7 @@ IDENTITIES = [
         "middle_name": "III",
         "date_of_birth": "1984-07-22",
         "nbi": {
-            "reference_no": "NBI-2026-00778899",
+            "reference_no": "TORR840722-N00778899",
             "date_printed": "2026-04-15",
             "valid_until": "2027-04-15",
             "purpose": "Local Employment",
@@ -271,7 +280,7 @@ IDENTITIES = [
         "middle_name": "D",
         "date_of_birth": "1980-03-16",
         "nbi": {
-            "reference_no": "NBI-2026-01556677",
+            "reference_no": "FLOR800316-N01556677",
             "date_printed": "2026-07-01",
             "valid_until": "2027-07-01",
             "purpose": "Employment",
@@ -296,7 +305,7 @@ IDENTITIES = [
         "middle_name": "S",
         "date_of_birth": "1975-09-15",
         "nbi": {
-            "reference_no": "NBI-2025-00445566",
+            "reference_no": "RAMO750915-N00445566",
             "date_printed": "2026-03-10",
             "valid_until": "2027-03-10",
             "purpose": "Employment",

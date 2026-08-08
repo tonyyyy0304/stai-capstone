@@ -5,6 +5,11 @@ REACT_SYSTEM_PROMPT drives the tool-calling loop (Module 7: ReAct Agent).
 WEB_ANSWER_SHAPE_PROMPT drives the search_web fallback tool — Tavily does the
 actual searching (provider-agnostic), this prompt just shapes its results into
 a structured GroundedAnswer.
+NBI_EXTRACTION_PROMPT / ID_EXTRACTION_PROMPT drive src/ocr/extractor.py
+(Component 14) — DETECTION ONLY, no accept/reject decision belongs here
+(CV_INTEGRATION.md §2.6). `{fields}` is filled at call time from
+src/ocr/doctypes.py's registry, so the field list here and the actual
+response_schema never drift apart.
 """
 
 ROUTER_PROMPT = """You are the intent router for the DLSU Faculty Onboarding Concierge, \
@@ -94,6 +99,57 @@ data (emails, phone numbers, IDs, names) verbatim in it.
 
 Faculty member's message:
 {message}"""
+
+NBI_EXTRACTION_PROMPT = """You are extracting fields from a photo of a Philippine NBI \
+Clearance for a faculty pre-employment check. Read the document carefully and return ONLY \
+the fields listed below — do not extract or infer any other information printed on the \
+document (address, place of birth, citizenship, civil status, and gender are all visible \
+but must NOT be returned).
+
+Fields to extract:
+{fields}
+
+Rules:
+- If a field is unreadable, leave its value null and set model_confidence low — never guess \
+or fabricate a value.
+- Put a normalized ISO-8601 date (YYYY-MM-DD) in each date field's `value`, and the literal \
+printed text in `verbatim_text`.
+- The `remarks` field must be transcribed VERBATIM, exactly as printed — do not paraphrase, \
+summarize, or normalize it (e.g. "NO DEROGATORY" must stay "NO DEROGATORY", not "clean" or \
+"no record").
+- If the image is a document but not an NBI Clearance, set doc_type to "unknown_document" \
+and leave the other fields null rather than guessing at a match.
+- If the image is not a document at all (a blank page, a random photo), set doc_type to \
+"not_a_document" and leave the other fields null.
+- Set overall_confidence to your genuine confidence across all extracted fields, not just \
+the easiest ones."""
+
+ID_EXTRACTION_PROMPT = """You are extracting fields from a photo of a Philippine \
+government-issued ID (National ID, Driver's License, or Passport) for a faculty \
+pre-employment identity check. First classify which of the three this is (id_type), then \
+extract ONLY the fields listed below for that layout — do not extract or infer any other \
+information printed on the document (address, blood type, marital status, place of birth, \
+sex, height/weight/eye color, and restrictions are all visible but must NOT be returned).
+
+Fields to extract:
+{fields}
+
+Rules:
+- If a field is unreadable, OR this layout simply doesn't print it (a National ID has no \
+printed expiry), leave its value null and set model_confidence low — never guess.
+- Put a normalized ISO-8601 date (YYYY-MM-DD) in each date field's `value`, and the literal \
+printed text in `verbatim_text`.
+- If this is a PASSPORT: prioritize the machine-readable zone (the two fixed-width lines at \
+the bottom, starting with "P<PHL") over the visual header fields for family_name, \
+first_name, date_of_birth, id_number, and expiry_date — the MRZ uses a standardized font \
+built for machine reading and is more reliable than the stylized header text.
+- If this is a DRIVER'S LICENSE: the name is printed as ONE line ("Last Name, First Name \
+Middle Name") — split it into family_name/first_name/middle_name; do not return the whole \
+concatenated string in family_name alone.
+- If the image is a document but not a government ID, set doc_type to "unknown_document". \
+If it's not a document at all, set doc_type to "not_a_document". Leave the other fields \
+null in both cases rather than guessing.
+- Set overall_confidence to your genuine confidence across all extracted fields."""
 
 SESSION_SUMMARY_PROMPT = """Extend the existing conversation summary below with the new \
 turns that follow. Keep it concise — a few sentences covering what the employee asked \

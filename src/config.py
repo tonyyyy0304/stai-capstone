@@ -211,7 +211,17 @@ BLUR_VARIANCE_FLOOR = 100.0     # variance of Laplacian; below = reject
 BLUR_VARIANCE_WARN = 250.0      # below = warn
 MAX_SKEW_DEG = 12.0             # beyond = reject
 SKEW_WARN_DEG = 5.0
-MIN_IMAGE_DIM_PX = 640          # shorter side
+# Recalibrated 2026-08-09 against a real 768x518 specimen (shorter side 518)
+# that Gemini extracted at 0.98-0.99 confidence on every field once the old
+# MIN_IMAGE_DIM_PX=640 floor was bypassed to test it -- 640 was a Phase 0
+# placeholder never actually checked against a real document, only against
+# the mock dataset's synthetic clean-vs-lowres_jpeg gap (~1000px vs
+# ~300-500px), which said nothing about where real legibility breaks down.
+# Floor dropped well below the one confirmed-working sample (margin, not a
+# fit to n=1); old value demoted to a warn-only threshold, mirroring the
+# blur/skew floor+warn pattern. Revisit as more real samples arrive.
+MIN_IMAGE_DIM_PX = 400          # shorter side, px; below = reject
+MIN_IMAGE_DIM_WARN = 640        # below = warn
 EXPOSURE_CLIP_CEILING = 0.10    # fraction of pixels at 0 or 255 before warn
 OCR_PREPROCESS = True           # ablated off via --no-preprocess in the eval
 
