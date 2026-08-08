@@ -133,7 +133,7 @@ Steps 1 and 3 involve no LLM judgment. They're plain code with plain unit tests,
 Non-negotiable, because this is the one part of the project with consequences outside the course:
 
 - Real NBI Clearances come only from team members and consenting volunteers, with consent recorded.
-- `data/onboarding_docs/real/` is **gitignored**. Never committed, ever.
+- `data/references/real/` is **gitignored**. Never committed, ever.
 - Names and NBI reference numbers are **hashed** in anything that leaves the machine. No extracted field value is ever logged to MLflow.
 - EXIF is stripped on upload (geolocation is PII).
 - **No real document appears in a slide, screenshot, or recorded demo.** The demo uses mock documents only.

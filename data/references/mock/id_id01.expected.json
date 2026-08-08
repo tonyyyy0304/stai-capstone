@@ -1,0 +1,14 @@
+{
+  "identity_id": "id01",
+  "employee_id": "EMP-04821",
+  "doc_type": "government_id",
+  "id_type": "national_id",
+  "full_name": "REYES, MARIA SANTOS",
+  "family_name": "REYES",
+  "first_name": "MARIA",
+  "middle_name": "SANTOS",
+  "date_of_birth": "1990-01-01",
+  "id_number": "1234-5678-9101-0001",
+  "issue_date": "2019-06-14",
+  "expiry_date": null
+}

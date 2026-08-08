@@ -1,0 +1,15 @@
+{
+  "identity_id": "id04",
+  "employee_id": "EMP-05477",
+  "doc_type": "nbi_clearance",
+  "full_name": "GARCIA, PEDRO JR",
+  "family_name": "GARCIA",
+  "first_name": "PEDRO",
+  "middle_name": "JR",
+  "date_of_birth": "1987-10-04",
+  "reference_no": "NBI-2026-01345567",
+  "date_printed": "2026-06-10",
+  "valid_until": "2027-06-10",
+  "purpose": "Employment",
+  "remarks": "NO DEROGATORY"
+}

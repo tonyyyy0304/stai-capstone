@@ -223,10 +223,10 @@ score(chunk) = Σ_r 1 / (RRF_K + rank_r(chunk))
 
 ### 3.5 NBI Clearance image set — two separate subsets
 
-New data track `data/onboarding_docs/`, containing **two subsets that are evaluated and reported separately, never pooled** (this split is the instructor's explicit ask):
+New data track `data/references/`, containing **two subsets that are evaluated and reported separately, never pooled** (this split is the instructor's explicit ask):
 
 **(a) `real/` — real NBI Clearances.** Small (target 8–15 documents), collected only from team members and consenting volunteers, **each with recorded informed consent**, used solely to measure sim-to-real gap. Handling rules, all mandatory:
-- **Never committed to git.** `data/onboarding_docs/real/` is gitignored; the directory ships with a `README.md` and a `.gitkeep` only.
+- **Never committed to git.** `data/references/real/` is gitignored; the directory ships with a `README.md` and a `.gitkeep` only.
 - Ground-truth JSON stores field values needed for scoring; the **NBI ID number and full name are stored hashed** in anything that leaves the machine, and raw values never reach MLflow (§4.4 allowlists are fail-closed already).
 - No real document is used in a screenshot, slide, or recorded demo — the demo uses the mock subset.
 - Contributors can withdraw; deletion means deleting the image, the ground truth, and the cached extraction keyed by its hash.
@@ -302,7 +302,7 @@ New package `src/ocr/`. **Scope: one document type, done deeply — the NBI Clea
 Vision calls use `GEMINI_VISION_MODEL` (default `gemini-2.5-flash`), separate from `GEMINI_CHAT_MODEL` — the lite chat tier is not reliable at multimodal field extraction.
 
 **Mock dataset — `scripts/make_onboarding_docs.py`:**
-- 8 synthetic identities (`data/onboarding_docs/mock/identities.json`) — doubles as the faculty record backing Rule 4.
+- 8 synthetic identities (`data/references/mock/identities.json`) — doubles as the faculty record backing Rule 4.
 - A Pillow-rendered NBI Clearance layout template.
 - 5 degradation variants per document: `clean`, `skew` (8–15° perspective warp), `blur` (gaussian k=7–11), `glare` (radial overlay + brightness clip), `lowres_jpeg` (0.35 downscale, q=35).
 - 8 identities × 5 variants = **40 mock images**, each variant sharing one `<identity_id>.expected.json` with its clean counterpart — which is what makes the preprocessing ablation a controlled comparison rather than a headline number.
@@ -415,9 +415,10 @@ stai-capstone/
 │   ├── processed/                # faculty-manual-2021.md (+ supplementary) — clear old synthetic output first
 │   ├── chroma/                   # gitignored (dense vectors)
 │   ├── bm25.sqlite               # NEW: FTS5 index for hybrid retrieval, gitignored
-│   └── onboarding_docs/
-│       ├── real/                 # NEW: consented real NBI clearances — GITIGNORED, never committed (§3.5a)
-│       └── mock/                 # NEW: synthetic NBI images, identities.json, *.expected.json
+│   └── references/               # renamed from onboarding_docs/ during the CV rework
+│       ├── real/                 # NEW: consented real NBI + government ID docs — GITIGNORED, never committed (§3.5a)
+│       ├── mock/                 # NEW: synthetic NBI + government ID images, identities.json, *.expected.json
+│       └── samples/              # NEW: gitignored specimen/demo layout-reference images (CV_INTEGRATION.md Part 5)
 ├── scripts/
 │   ├── ingest.py                 # reused; recursive glob under data/raw/ + the top-level manual PDF
 │   └── make_onboarding_docs.py   # NEW: renders + degrades the mock NBI dataset

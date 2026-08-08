@@ -1,0 +1,234 @@
+[
+  {
+    "identity_id": "id01",
+    "employee_id": "EMP-04821",
+    "full_name": "REYES, MARIA SANTOS",
+    "family_name": "REYES",
+    "first_name": "MARIA",
+    "middle_name": "SANTOS",
+    "date_of_birth": "1990-01-01",
+    "nbi": {
+      "reference_no": "NBI-2026-00457821",
+      "date_printed": "2026-02-14",
+      "valid_until": "2027-02-14",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "45 Mabini Street, Brgy. Poblacion, Quezon City",
+      "place_of_birth": "Manila",
+      "citizenship": "Filipino",
+      "civil_status": "Single",
+      "gender": "Female"
+    },
+    "id_type": "national_id",
+    "id": {
+      "id_number": "1234-5678-9101-0001",
+      "issue_date": "2019-06-14",
+      "expiry_date": null
+    }
+  },
+  {
+    "identity_id": "id02",
+    "employee_id": "EMP-05122",
+    "full_name": "DELA CRUZ, JUAN P",
+    "family_name": "DELA CRUZ",
+    "first_name": "JUAN",
+    "middle_name": "P",
+    "date_of_birth": "1988-05-12",
+    "nbi": {
+      "reference_no": "NBI-2026-01123344",
+      "date_printed": "2026-05-01",
+      "valid_until": "2027-05-01",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "12 Rizal Avenue, Brgy. San Antonio, Makati City",
+      "place_of_birth": "Cebu City",
+      "citizenship": "Filipino",
+      "civil_status": "Married",
+      "gender": "Male"
+    },
+    "id_type": "national_id",
+    "id": {
+      "id_number": "1234-5678-9102-0002",
+      "issue_date": "2019-08-20",
+      "expiry_date": null
+    }
+  },
+  {
+    "identity_id": "id03",
+    "employee_id": "EMP-05310",
+    "full_name": "SANTOS, ANA LIZA M",
+    "family_name": "SANTOS",
+    "first_name": "ANA LIZA",
+    "middle_name": "M",
+    "date_of_birth": "1995-11-20",
+    "nbi": {
+      "reference_no": "NBI-2025-00987651",
+      "date_printed": "2026-06-05",
+      "valid_until": "2027-06-05",
+      "purpose": "Local Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "78 Bonifacio Street, Brgy. Bagong Silang, Caloocan City",
+      "place_of_birth": "Davao City",
+      "citizenship": "Filipino",
+      "civil_status": "Single",
+      "gender": "Female"
+    },
+    "id_type": "national_id",
+    "id": {
+      "id_number": "1234-5678-9103-0003",
+      "issue_date": "2020-01-10",
+      "expiry_date": null
+    }
+  },
+  {
+    "identity_id": "id04",
+    "employee_id": "EMP-05477",
+    "full_name": "GARCIA, PEDRO JR",
+    "family_name": "GARCIA",
+    "first_name": "PEDRO",
+    "middle_name": "JR",
+    "date_of_birth": "1987-10-04",
+    "nbi": {
+      "reference_no": "NBI-2026-01345567",
+      "date_printed": "2026-06-10",
+      "valid_until": "2027-06-10",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "23 Luna Street, Brgy. Maligaya, Pasig City",
+      "place_of_birth": "Baguio City",
+      "citizenship": "Filipino",
+      "civil_status": "Married",
+      "gender": "Male"
+    },
+    "id_type": "drivers_license",
+    "id": {
+      "id_number": "N04-12-000004",
+      "issue_date": "2017-11-24",
+      "expiry_date": "2028-10-04"
+    }
+  },
+  {
+    "identity_id": "id05",
+    "employee_id": "EMP-05602",
+    "full_name": "MENDOZA, CARLA B",
+    "family_name": "MENDOZA",
+    "first_name": "CARLA",
+    "middle_name": "B",
+    "date_of_birth": "1992-03-15",
+    "nbi": {
+      "reference_no": "NBI-2026-00223311",
+      "date_printed": "2026-05-20",
+      "valid_until": "2027-05-20",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "56 Aguinaldo Highway, Brgy. San Roque, Cavite City",
+      "place_of_birth": "Iloilo City",
+      "citizenship": "Filipino",
+      "civil_status": "Single",
+      "gender": "Female"
+    },
+    "id_type": "drivers_license",
+    "id": {
+      "id_number": "N05-12-000005",
+      "issue_date": "2019-06-01",
+      "expiry_date": "2029-06-01"
+    }
+  },
+  {
+    "identity_id": "id06",
+    "employee_id": "EMP-05789",
+    "full_name": "TORRES, RICARDO III",
+    "family_name": "TORRES",
+    "first_name": "RICARDO",
+    "middle_name": "III",
+    "date_of_birth": "1984-07-22",
+    "nbi": {
+      "reference_no": "NBI-2026-00778899",
+      "date_printed": "2026-04-15",
+      "valid_until": "2027-04-15",
+      "purpose": "Local Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "9 Quezon Avenue, Brgy. Sta. Cruz, Manila",
+      "place_of_birth": "Zamboanga City",
+      "citizenship": "Filipino",
+      "civil_status": "Married",
+      "gender": "Male"
+    },
+    "id_type": "drivers_license",
+    "id": {
+      "id_number": "N06-12-000006",
+      "issue_date": "2016-02-10",
+      "expiry_date": "2028-02-10"
+    }
+  },
+  {
+    "identity_id": "id07",
+    "employee_id": "EMP-05890",
+    "full_name": "FLORES, KATRINA D",
+    "family_name": "FLORES",
+    "first_name": "KATRINA",
+    "middle_name": "D",
+    "date_of_birth": "1980-03-16",
+    "nbi": {
+      "reference_no": "NBI-2026-01556677",
+      "date_printed": "2026-07-01",
+      "valid_until": "2027-07-01",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "34 Kalayaan Street, Brgy. Central, Quezon City",
+      "place_of_birth": "Bacolod City",
+      "citizenship": "Filipino",
+      "civil_status": "Single",
+      "gender": "Female"
+    },
+    "id_type": "passport",
+    "id": {
+      "id_number": "P0000007A",
+      "issue_date": "2021-06-27",
+      "expiry_date": "2031-06-26"
+    }
+  },
+  {
+    "identity_id": "id08",
+    "employee_id": "EMP-05991",
+    "full_name": "RAMOS, ELMER S",
+    "family_name": "RAMOS",
+    "first_name": "ELMER",
+    "middle_name": "S",
+    "date_of_birth": "1975-09-15",
+    "nbi": {
+      "reference_no": "NBI-2025-00445566",
+      "date_printed": "2026-03-10",
+      "valid_until": "2027-03-10",
+      "purpose": "Employment",
+      "remarks": "NO DEROGATORY"
+    },
+    "nbi_render_extra": {
+      "address": "67 EDSA, Brgy. Guadalupe, Mandaluyong City",
+      "place_of_birth": "Cagayan de Oro",
+      "citizenship": "Filipino",
+      "civil_status": "Married",
+      "gender": "Male"
+    },
+    "id_type": "passport",
+    "id": {
+      "id_number": "P0000008A",
+      "issue_date": "2020-01-15",
+      "expiry_date": "2030-01-14"
+    }
+  }
+]

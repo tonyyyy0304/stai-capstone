@@ -1,0 +1,15 @@
+{
+  "identity_id": "id06",
+  "employee_id": "EMP-05789",
+  "doc_type": "nbi_clearance",
+  "full_name": "TORRES, RICARDO III",
+  "family_name": "TORRES",
+  "first_name": "RICARDO",
+  "middle_name": "III",
+  "date_of_birth": "1984-07-22",
+  "reference_no": "NBI-2026-00778899",
+  "date_printed": "2026-04-15",
+  "valid_until": "2027-04-15",
+  "purpose": "Local Employment",
+  "remarks": "NO DEROGATORY"
+}

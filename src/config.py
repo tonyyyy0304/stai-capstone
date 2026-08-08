@@ -181,6 +181,65 @@ TAVILY_MAX_RESULTS = 5
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", (DATA_DIR / "mlruns").as_uri())
 MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "hr-agent")
 
+# --- CV/OCR document verification (Component 14) ---
+# Gemini is the default and the evaluated path — every threshold, cache entry,
+# and eval number assumes it. VISION_PROVIDER mirrors the LLM_PROVIDER/
+# EMBEDDING_PROVIDER switch above so the same quota-relief pattern applies to
+# vision: switchable, not blended, and NOT derived from LLM_PROVIDER —
+# GEMINI_CHAT_MODEL is a lite tier tuned for quota, not multimodal
+# extraction, so "vision follows chat" would be wrong even before quota
+# enters the picture. See CV_INTEGRATION.md §2.2/§2.6a.
+VISION_PROVIDER = os.environ.get("VISION_PROVIDER", "gemini")
+GEMINI_VISION_MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.5-flash")
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "llama3.2-vision")
+ACTIVE_VISION_MODEL = (
+    GEMINI_VISION_MODEL if VISION_PROVIDER == "gemini" else f"ollama:{OLLAMA_VISION_MODEL}"
+)
+
+# References folder (renamed from the original onboarding_docs/ during the
+# CV rework): mock + real datasets live here, plus a samples/ subfolder for
+# gitignored layout-reference specimen images (data/references/samples/).
+REFERENCES_DIR = DATA_DIR / "references"
+MOCK_DOCS_DIR = REFERENCES_DIR / "mock"
+REAL_DOCS_DIR = REFERENCES_DIR / "real"
+OCR_CACHE_DIR = REPO_ROOT / "evals" / "results" / "ocr_cache"
+
+# Image quality gate (src/ocr/quality.py). PROVISIONAL — calibrate against the
+# mock dataset (data/references/mock/) before trusting these in an eval;
+# see the calibration procedure in CV_INTEGRATION.md §2.4 / Phase 2.
+BLUR_VARIANCE_FLOOR = 100.0     # variance of Laplacian; below = reject
+BLUR_VARIANCE_WARN = 250.0      # below = warn
+MAX_SKEW_DEG = 12.0             # beyond = reject
+SKEW_WARN_DEG = 5.0
+MIN_IMAGE_DIM_PX = 640          # shorter side
+EXPOSURE_CLIP_CEILING = 0.10    # fraction of pixels at 0 or 255 before warn
+OCR_PREPROCESS = True           # ablated off via --no-preprocess in the eval
+
+# Extraction + validation (src/ocr/extractor.py, src/guardrails/doc_validation.py)
+OCR_CONFIDENCE_FLOOR = 0.70     # composite below this -> needs_review
+NAME_MATCH_THRESHOLD = 85       # rapidfuzz token_set_ratio, 0-100
+NBI_VALIDITY_MONTHS = 6         # EMPLOYER freshness policy, layered on top of
+                                # (not instead of) the document's own printed
+                                # valid_until — Rule 5 takes whichever is
+                                # stricter. See PLAN.md §4.1 Rule 5, CV_INTEGRATION.md §2.7.
+# Normalized clean-status strings for the `remarks` field (Rule 3). Deliberately
+# incomplete and tunable — extend as real samples show more phrasing variants.
+# Anything NOT in this tuple fails Rule 3 outright; never assumed clean by default.
+NBI_CLEAN_REMARKS = ("NO DEROGATORY", "NO DEROGATORY RECORD", "NO RECORD")
+# Government ID (CV_INTEGRATION.md §1.4a) — one required id_number pattern per
+# sub-type, each from exactly one specimen sample, none confirmed. See doctypes.py.
+ID_NUMBER_PATTERNS = {
+    "national_id": r"^\d{4}-\d{4}-\d{4}-\d{4}$",
+    "drivers_license": r"^[A-Z]\d{2}-\d{2}-\d{6}$",
+    "passport": r"^[A-Z]\d{7}[A-Z]$",
+}
+REQUIRED_ONBOARDING_DOCS = ("nbi_clearance", "government_id")
+
+# Upload handling (POST /upload-doc)
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+ALLOWED_IMAGE_MIME = ("image/jpeg", "image/png")   # PDF is a stretch goal
+PERSIST_UPLOADS = False         # don't keep raw images past the request
+
 
 def get_gemini_api_key() -> str:
     key = os.environ.get("GEMINI_API_KEY", "")
@@ -227,6 +286,25 @@ def get_llm_client():
         return OllamaClient(OLLAMA_URL, OLLAMA_CHAT_MODEL)
     raise RuntimeError(
         f"Unknown LLM_PROVIDER={LLM_PROVIDER!r}; expected 'gemini' or 'ollama'."
+    )
+
+
+def get_vision_client():
+    """Returns the active vision client per VISION_PROVIDER: a real
+    google-genai Client (default) or an OllamaClient. Both expose
+    .models.generate_content(model, contents, config); callers don't need to
+    know which one they got — same contract as get_llm_client(). Deliberately
+    its own switch, not derived from LLM_PROVIDER: vision and chat can be on
+    different providers at once (e.g. LLM_PROVIDER=ollama for cheap chat
+    testing, VISION_PROVIDER=gemini for reliable extraction)."""
+    if VISION_PROVIDER == "gemini":
+        return get_gemini_client()
+    if VISION_PROVIDER == "ollama":
+        from src.agent.llm_client import OllamaClient
+
+        return OllamaClient(OLLAMA_URL, OLLAMA_VISION_MODEL)
+    raise RuntimeError(
+        f"Unknown VISION_PROVIDER={VISION_PROVIDER!r}; expected 'gemini' or 'ollama'."
     )
 
 

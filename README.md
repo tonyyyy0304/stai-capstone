@@ -52,7 +52,7 @@ flowchart TD
     Agent --> Memory["Memory<br/>SQLite Session + Faculty Class + Onboarding Status"]
     API --> MLflow["MLflow Monitoring<br/>Latency, Tokens, Citations, OCR/Validation Outcome"]
     RAG --> Chroma["data/chroma + data/bm25.sqlite"]
-    CV --> OnboardingDocs["data/onboarding_docs/{real,mock}"]
+    CV --> OnboardingDocs["data/references/{real,mock}"]
     Memory --> SQLite["data/hr_agent.db"]
 ```
 
@@ -60,7 +60,7 @@ flowchart TD
 
 ## Handling Real Documents
 
-The OCR eval uses two separate subsets, **real** and **mock**, reported as separate numbers and never pooled. Real NBI Clearances are collected only with recorded consent; `data/onboarding_docs/real/` is **gitignored and never committed**; names and reference numbers are hashed anywhere they leave the machine; EXIF is stripped on upload; and **no real document appears in a slide, screenshot, or recorded demo** — demos use mock documents only. Full rules: [SCOPE.md](SCOPE.md) §8, [PLAN.md](PLAN.md) §3.5.
+The OCR eval uses two separate subsets, **real** and **mock**, reported as separate numbers and never pooled. Real NBI Clearances are collected only with recorded consent; `data/references/real/` is **gitignored and never committed**; names and reference numbers are hashed anywhere they leave the machine; EXIF is stripped on upload; and **no real document appears in a slide, screenshot, or recorded demo** — demos use mock documents only. Full rules: [SCOPE.md](SCOPE.md) §8, [PLAN.md](PLAN.md) §3.5.
 
 ## Setup Instructions
 
@@ -101,6 +101,7 @@ Stop with `Ctrl+C`, then `docker compose down`.
 
 ```bash
 pip install -r requirements.txt
+# (or, if you use uv: uv venv && uv pip install -r requirements.txt)
 python scripts/ingest.py            # ingests data/faculty-manual-2021.pdf + data/raw/
 uvicorn src.api:app --reload
 streamlit run src/ui.py             # in another terminal

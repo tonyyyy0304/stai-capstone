@@ -53,8 +53,8 @@ Full-time Academic Faculty, Part-time Academic Faculty, and Academic Service Fac
 
 ## Handling document data
 
-- **Two subsets, always separate:** `data/onboarding_docs/mock/` (synthetic, used in demos and slides) and `data/onboarding_docs/real/` (consented real NBI Clearances). Metrics are reported per subset, never pooled.
-- `data/onboarding_docs/real/` is **gitignored and never committed**. Real documents require recorded consent, hashed names/reference numbers anywhere they leave the machine, EXIF stripped on upload, and are **never** shown in slides, screenshots, or recordings.
+- **Two subsets, always separate:** `data/references/mock/` (synthetic, used in demos and slides) and `data/references/real/` (consented real NBI Clearances and government IDs). Metrics are reported per subset, never pooled. `data/references/samples/` is a third, distinct category — specimen/demo layout-reference images, also gitignored, never treated as real-subset data (CV_INTEGRATION.md Part 5).
+- `data/references/real/` is **gitignored and never committed**. Real documents require recorded consent, hashed names/reference numbers anywhere they leave the machine, EXIF stripped on upload, and are **never** shown in slides, screenshots, or recordings.
 - Redact PII before logging anything to MLflow — no extracted field value ever becomes a tag or metric.
 
 ## Commands

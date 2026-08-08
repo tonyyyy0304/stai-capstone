@@ -1,0 +1,14 @@
+{
+  "identity_id": "id02",
+  "employee_id": "EMP-05122",
+  "doc_type": "government_id",
+  "id_type": "national_id",
+  "full_name": "DELA CRUZ, JUAN P",
+  "family_name": "DELA CRUZ",
+  "first_name": "JUAN",
+  "middle_name": "P",
+  "date_of_birth": "1988-05-12",
+  "id_number": "1234-5678-9102-0002",
+  "issue_date": "2019-08-20",
+  "expiry_date": null
+}
