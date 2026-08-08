@@ -50,7 +50,7 @@ Question (a) is not "any question about the Manual." It is three named topics, c
 Both were found by reading the actual PDF, not assumed. Neither blocks the build, but both change what the golden set may legitimately contain.
 
 - **T1 gap — the statutory documents are not in the Manual.** "NBI" appears **zero times**. SSS / PhilHealth / Pag-IBIG / BIR appear only in the *benefits* and *retirement* sections (contribution sharing, CEAP plan, Appendix K), never as pre-employment submissions. The nearest hook is the hiring criterion *"clearance from immediate past employer and concerned government agency"* and *"certification of physical fitness to teach."*
-  **Resolution:** add one short supplementary corpus document, `data/raw/supplementary/ph-statutory-preemployment.md` — a cited summary of the standard PH statutory pre-employment requirements (NBI Clearance, SSS number, PhilHealth, Pag-IBIG MID, BIR 1902/2316), sourced from the agencies' own public guidance, clearly labelled as a *supplementary* source with its own `doc_id` and `source_url`. Citations in answers will then show `faculty-manual-2021` vs `ph-statutory-preemployment`, which is honest and demonstrates multi-source grounding. **Do not** write golden-set rows that expect the Manual to answer statutory questions.
+  **Resolution:** the statutory requirements are listed in the supplementary `dlsu-faculty-preemployment-requirements` checklist (§2, National Statutory Documents — NBI Clearance, SSS, PhilHealth, Pag-IBIG MID, TIN, BIR Form 2316), alongside the faculty-specific set in one consolidated document with its own `doc_id`. Citations in answers then show `faculty-manual-2021` vs `dlsu-faculty-preemployment-requirements`, which is honest and demonstrates multi-source grounding. The checklist lists *what to submit* and *how HRMO judges acceptability* only — it deliberately does **not** describe what each statutory document is or how to obtain one; those are general-knowledge / how-to questions handled by the web-search tool, and the golden set expects abstention on them. **Do not** write golden-set rows that expect the Manual to answer statutory questions.
 - **T2 gap — several of the listed "don'ts" are not Faculty Manual content.** Pop quizzes, "give a major requirement at least 4 weeks before its deadline," grading curves, bonus points, "free cut," and student grade appeals are **not in the Faculty Manual**. They live in the DLSU **Student Handbook / Academic Policies and Regulations**. What the Manual *does* give T2 is listed in the table above, and it is enough material for a topic.
   **Resolution — pick one before Phase 0a:** (i) restrict T2 to Manual-backed items only (safest, still substantive), or (ii) add the DLSU Student Handbook / academic-policy issuances as a second real corpus document, which makes the multi-hop tier genuinely interesting (*"the Manual says X about grade deadlines, the academic policy says Y about requirement notice"*) at the cost of one more ingestion source. **Recommendation: (ii)**, because the "4 weeks before deadline" style of question is exactly what makes T2 feel real to a faculty audience — but only if the document can be obtained; fall back to (i) otherwise.
 
@@ -174,7 +174,9 @@ Note the three-way parallel structure (full-time / part-time / ASF each have the
 - `section_path` metadata must carry the faculty class, and the chunk context header must too (`"Faculty Manual 2021 > Part-time Academic Faculty > Benefits > Leaves"`), otherwise citations are ambiguous and retrieval mixes classes.
 - The golden set must include a **disambiguation tier** (§3.3) of faculty-class-ambiguous questions where the *correct* behaviour is to ask which class the user is, not to answer.
 
-**Supplementary — `data/raw/supplementary/ph-statutory-preemployment.md`** (new, small): the general PH statutory pre-employment requirements the Manual does not cover (§1.2 T1 gap). Own `doc_id`, own `source_url` frontmatter, clearly attributed in citations.
+**Supplementary — two generated PDFs under `data/raw/`**, authored in `scripts/corpus_content/` and built by `scripts/build_preboarding_corpus.py` (each gets a `.meta.yaml` sidecar with its own `doc_id`/`source_url`):
+- `dlsu-faculty-preemployment-requirements.pdf` — the single consolidated pre-employment requirements checklist. Faculty-specific documents (§1) plus the national statutory set the Manual does not cover (§2, §1.2 T1 gap). Lists *what to submit* and *how HRMO judges acceptability*; deliberately omits document descriptions and how-to-obtain steps (those are web-search questions).
+- `dlsu-faculty-preboarding-process.pdf` — the pre-boarding process guide (six-stage workflow, timing, offices, contingent status) the Manual does not describe.
 
 **Optional second real source — DLSU Student Handbook / Academic Policies**, if obtainable, to close the T2 gap (§1.2). Decide in Phase 0a.
 
@@ -409,9 +411,9 @@ stai-capstone/
 ├── requirements.txt
 ├── data/
 │   ├── faculty-manual-2021.pdf   # PRIMARY CORPUS — DLSU Faculty Manual 2021, 203pp
-│   ├── raw/
-│   │   └── supplementary/
-│   │       └── ph-statutory-preemployment.md   # NEW: statutory reqs the Manual doesn't cover (§1.2)
+│   ├── raw/                      # supplementary corpus PDFs + .meta.yaml, built by build_preboarding_corpus.py
+│   │   ├── dlsu-faculty-preemployment-requirements.pdf  # consolidated reqs checklist (faculty + statutory, §1.2)
+│   │   └── dlsu-faculty-preboarding-process.pdf         # pre-boarding workflow the Manual doesn't describe
 │   ├── processed/                # faculty-manual-2021.md (+ supplementary) — clear old synthetic output first
 │   ├── chroma/                   # gitignored (dense vectors)
 │   ├── bm25.sqlite               # NEW: FTS5 index for hybrid retrieval, gitignored
@@ -420,6 +422,7 @@ stai-capstone/
 │       └── mock/                 # NEW: synthetic NBI images, identities.json, *.expected.json
 ├── scripts/
 │   ├── ingest.py                 # reused; recursive glob under data/raw/ + the top-level manual PDF
+│   ├── build_preboarding_corpus.py  # authors the supplementary PDFs from scripts/corpus_content/
 │   └── make_onboarding_docs.py   # NEW: renders + degrades the mock NBI dataset
 ├── src/
 │   ├── config.py                 # + vision model, OCR/quality thresholds, NBI_VALIDITY_MONTHS, RETRIEVER_MODE, RRF_K
@@ -463,7 +466,7 @@ Phase 0 is the critical path. **Phase 0a now carries more risk than in the previ
 
 | Phase | Work | Blocks |
 | --- | --- | --- |
-| **0a** | Ingest `faculty-manual-2021.pdf`; **manually spot-check the parse** on the T1/T2/T3 sections and Appendices D and F; add `page_start`/`faculty_class`/`topic` metadata; write the supplementary statutory doc; decide the T2 Student-Handbook question (§1.2) | everything |
+| **0a** | Ingest `faculty-manual-2021.pdf`; **manually spot-check the parse** on the T1/T2/T3 sections and Appendices D and F; add `page_start`/`faculty_class`/`topic` metadata; build the supplementary corpus PDFs (consolidated requirements checklist + process guide) via `build_preboarding_corpus.py`; decide the T2 Student-Handbook question (§1.2) | everything |
 | 0b | Tiered per-topic golden set against the *parsed* corpus (§3.3) — cannot start before 0a's parse is trusted | all retrieval evals |
 | 0c | Mock NBI dataset generator (§4.2); begin real-subset consent collection in parallel (§3.5a) — collection has human latency, start it early | all OCR work |
 | 1 | `doctypes.py`, `quality.py`, `extractor.py` (§4.2) | validation |

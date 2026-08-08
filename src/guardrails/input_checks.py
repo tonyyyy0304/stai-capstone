@@ -51,3 +51,12 @@ def check_injection_semantic(classification: IntentClassification) -> GuardrailR
     if classification.is_injection_attempt:
         return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
     return GuardrailResult(allowed=True)
+
+
+def check_jailbreak_semantic(classification: IntentClassification) -> GuardrailResult:
+    """Reads the router's is_jailbreak signal. A jailbreak is 'trying to change
+    how I operate' from the user's side, same as injection, so it reuses the
+    injection decline copy. Free — the router LLM call already ran."""
+    if classification.is_jailbreak:
+        return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
+    return GuardrailResult(allowed=True)

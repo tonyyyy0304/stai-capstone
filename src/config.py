@@ -223,6 +223,11 @@ TOXIC_WORDLIST = (
 # Below this confidence, the judge's flags are treated as too weak to block
 # (fail-open toward the employee rather than blocking a legitimate question).
 LLM_JUDGE_CONFIDENCE_FLOOR = 0.6
+# Phase 5 (quota): the separate LLM-as-judge input call is folded into the router
+# by default — the router already returns is_toxic/is_injection_attempt/is_jailbreak
+# in the same call, so a second LLM safety pass per turn is redundant. Set true to
+# re-enable the judge as an extra defense-in-depth layer (one more call/turn).
+ENABLE_LLM_JUDGE = os.environ.get("ENABLE_LLM_JUDGE", "false").lower() == "true"
 # Which detected violations actually block entry. PII is intentionally excluded —
 # it's detected for redaction/observability, not rejection (see pii.py); off_topic
 # stays authoritative at the router (input_checks.py), the judge just catches it
@@ -242,6 +247,9 @@ PHONE_PATTERN = r"(?:\+63|0)9\d{2}[-.\s]?\d{3}[-.\s]?\d{4}"
 # agencies below). A deployment that doesn't need it — most companies — sets this
 # false and the search_web tool is not offered to the agent at all.
 ENABLE_WEB_FALLBACK = os.environ.get("ENABLE_WEB_FALLBACK", "true").lower() == "true"
+# Ground web results in a specific country (Tavily `country` param boosts sources
+# from it). Kept in the deployment profile so a non-PH deployment retargets it.
+SEARCH_COUNTRY = os.environ.get("SEARCH_COUNTRY", "philippines")
 # search_web is restricted to these domains so it can't become a general-purpose
 # search engine (would defeat the on-topic guardrail). Enforced via Tavily's
 # include_domains param at search time, not post-hoc filtering. These are the

@@ -121,14 +121,16 @@ def no_answer() -> GroundedAnswer:
 
 
 def generate_grounded_answer(
-    question: str, chunks: list[RetrievedChunk], client=None
+    question: str, chunks: list[RetrievedChunk], client=None, session_id: str | None = None
 ) -> GroundedAnswer:
     """One Gemini call with response_schema=GroundedAnswer over the given chunks."""
     from google.genai import types
 
+    from src.agent import usage
+
     if not chunks:
         return no_answer()
-    client = client or config.get_llm_client() 
+    client = client or config.get_llm_client()
     response = client.models.generate_content(
         model=config.ACTIVE_CHAT_MODEL,
         contents=ANSWER_PROMPT.format(context=_format_context(chunks), question=question),
@@ -138,6 +140,9 @@ def generate_grounded_answer(
             temperature=0.2,
         ),
     )
+    # Account this call under the turn's session (previously unlogged, so per-turn
+    # token usage undercounted the answer call).
+    usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
     answer: GroundedAnswer = response.parsed
     if answer is None:  # model returned unparseable output — fail closed
         return no_answer()
@@ -157,6 +162,7 @@ def answer_question(
     category: str | None = None,
     retriever: Retriever | None = None,
     client=None,
+    session_id: str | None = None,
 ) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
     """End-to-end RAG: retrieve → floor check → grounded answer.
 
@@ -190,7 +196,7 @@ def answer_question(
         if stated:
             chunks = rerank_by_audience(chunks, stated)
 
-    answer = generate_grounded_answer(question, chunks, client=client)
+    answer = generate_grounded_answer(question, chunks, client=client, session_id=session_id)
     if answer.insufficient_context:
         return answer, []
     return answer, chunks

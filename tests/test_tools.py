@@ -7,7 +7,7 @@ def test_search_kb_delegates_to_answerer(monkeypatch):
     expected = (GroundedAnswer(answer="15 days.", source=AnswerSource.INTERNAL_KB), [])
     captured = {}
 
-    def fake_answer_question(question, category=None):
+    def fake_answer_question(question, category=None, **kw):
         captured["question"] = question
         captured["category"] = category
         return expected

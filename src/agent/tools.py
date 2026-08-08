@@ -1,10 +1,14 @@
-"""Tools the ReAct agent can call (Module 8: Tool Use).
+"""Tools the answer pipeline calls (Module 8: Tool Use).
+
+The orchestrator's pipeline (Phase 5) calls these directly in a fixed order —
+search_kb first, then search_web only if the KB is insufficient — rather than a
+model choosing between them in a ReAct loop.
 
 - search_kb    -> internal RAG, delegates to answer_question() in src/rag/answerer.py
 - search_web   -> fallback for national statutory pre-employment questions (NBI, SSS,
                   PhilHealth, Pag-IBIG, BIR) the internal KB doesn't cover; Tavily search
-                  (domain-restricted, provider-agnostic) + one structured Gemini call to
-                  shape results into a GroundedAnswer
+                  (Philippines-grounded, domain-restricted, provider-agnostic) + one
+                  structured Gemini call to shape results into a GroundedAnswer
 """
 
 import logging
@@ -27,12 +31,13 @@ NO_WEB_ANSWER = (
 # --- search_kb (internal RAG) -------------------------------------------------
 
 def search_kb(
-    question: str, category: str | None = None
+    question: str, category: str | None = None, client=None, session_id: str | None = None
 ) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
-    """Internal faculty onboarding & Faculty Manual RAG tool. Thin wrapper so the
-    orchestrator has a single tool-call surface; all retrieval/grounding logic lives
-    in src/rag/answerer.py."""
-    return answer_question(question, category=category)
+    """Internal knowledge-base RAG tool. Thin wrapper so the orchestrator has a
+    single tool-call surface; all retrieval/grounding logic lives in
+    src/rag/answerer.py. session_id is threaded so the grounded-answer call is
+    accounted under the turn."""
+    return answer_question(question, category=category, client=client, session_id=session_id)
 
 
 # --- search_web (statutory pre-employment fallback) ---------------------------
@@ -80,8 +85,13 @@ def search_web(
 
 
 def _tavily_search(question: str, tavily_client=None) -> list[dict]:
-    """Domain-restricted Tavily search. Fails closed (empty list) on API errors
-    rather than raising — a search outage shouldn't crash the whole agent turn."""
+    """Country- and domain-restricted Tavily search. Grounded in the Philippines
+    two ways: `country` (config.SEARCH_COUNTRY) boosts PH sources, and
+    `include_domains` (config.STATUTORY_GOV_DOMAINS) hard-restricts to the official
+    PH government agencies the fallback covers (NBI/SSS/PhilHealth/Pag-IBIG/BIR/
+    DOLE). Fails closed (empty list) on API errors rather than raising — a search
+    outage shouldn't crash the whole agent turn. `country` is passed as a kwarg so
+    older Tavily SDKs that don't accept it degrade to domain-only grounding."""
     from tavily.errors import (
         BadRequestError,
         ForbiddenError,
@@ -91,12 +101,19 @@ def _tavily_search(question: str, tavily_client=None) -> list[dict]:
     from tavily.errors import TimeoutError as TavilyTimeoutError
 
     tavily_client = tavily_client or config.get_tavily_client()
+    search_kwargs = dict(
+        query=question,
+        include_domains=list(config.STATUTORY_GOV_DOMAINS),
+        max_results=config.TAVILY_MAX_RESULTS,
+    )
+    if config.SEARCH_COUNTRY:
+        search_kwargs["country"] = config.SEARCH_COUNTRY
     try:
-        response = tavily_client.search(
-            query=question,
-            include_domains=list(config.STATUTORY_GOV_DOMAINS),
-            max_results=config.TAVILY_MAX_RESULTS,
-        )
+        response = tavily_client.search(**search_kwargs)
+    except TypeError:
+        # SDK too old for the `country` kwarg — retry with domain grounding only.
+        search_kwargs.pop("country", None)
+        response = tavily_client.search(**search_kwargs)
     except (
         BadRequestError,
         ForbiddenError,

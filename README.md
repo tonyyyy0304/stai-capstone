@@ -34,7 +34,7 @@ Core technologies:
 
 - **LLM:** Google Gemini via `google-genai` by default, optional Ollama (`LLM_PROVIDER`).
 - **Embeddings:** Gemini by default, optional Ollama (`EMBEDDING_PROVIDER`).
-- **Corpus:** `data/faculty-manual-2021.pdf` + a small supplementary statutory-requirements doc.
+- **Corpus:** `data/faculty-manual-2021.pdf` + two small supplementary PDFs (a consolidated pre-employment requirements checklist and a pre-boarding process guide).
 - **Vector store:** ChromaDB. **Structured data:** SQLite. **API:** FastAPI. **UI:** Streamlit. **Monitoring:** MLflow. **Deployment:** Docker Compose.
 
 ## Architecture Diagram

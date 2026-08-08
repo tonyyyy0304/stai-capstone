@@ -1,4 +1,4 @@
-"""ReAct agent loop (Module 7: ReAct Agent).
+"""Turn orchestration (Module 7: agent).
 
 run_turn() is the core entry point:
     run_turn(session_id, message, history) -> AgentResponse
@@ -12,10 +12,11 @@ call it directly don't gain surprise DB side effects.
 
 Per turn: classify_intent() (Module 4: Disambiguation) gates the conversation —
 ambiguous or low-confidence input gets a clarifying question, out-of-scope input
-gets declined, neither reaches a tool. Everything else enters the ReAct loop:
-Gemini picks a tool, tools.py executes it, the result is fed back as an
-observation, and the model repeats until it answers in plain text or
-MAX_REACT_ITERATIONS is hit.
+gets declined, neither reaches a tool. Everything else enters _answer_pipeline()
+(Phase 5): a deterministic search_kb -> (statutory web fallback) sequence, NOT a
+model-driven ReAct tool-choice loop — the router already fixed the intent, so the
+loop was pure overhead. That keeps a normal turn at ~2 Gemini calls (router +
+grounded answer) instead of ~5.
 
 Guardrails (Module 6, src/guardrails/) run at three stages of run_turn():
 1. Pre-router (_check_input): deterministic prompt-injection regex and a
@@ -41,10 +42,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from src import config
-from src.agent import prompts, tools, usage
+from src.agent import tools, usage
 from src.agent.router import classify_intent, needs_clarification
 from src.guardrails.grounding import check_grounding
-from src.guardrails.input_checks import check_injection_semantic, check_topic_and_injection
+from src.guardrails.input_checks import (
+    check_injection_semantic,
+    check_jailbreak_semantic,
+    check_topic_and_injection,
+)
 from src.guardrails.llm_judge import check_input_llm
 from src.guardrails.toxicity import check_toxicity, check_toxicity_semantic
 from src.rag.retriever import RetrievedChunk
@@ -62,10 +67,6 @@ OUT_OF_SCOPE_REPLY = (
     f"{config.HELP_CONTACT} directly."
 )
 FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
-MAX_ITERATIONS_REPLY = (
-    "I wasn't able to finish handling this in the usual number of steps. "
-    f"Please try rephrasing, or contact {config.HELP_CONTACT} directly if this is urgent."
-)
 API_ERROR_REPLY = (
     "I'm having trouble reaching the assistant service right now. Please try again "
     f"in a moment, or contact {config.HELP_CONTACT} directly if this is urgent."
@@ -108,29 +109,36 @@ class _RunState:
 
 
 def _check_input(message: str, client=None, session_id: str | None = None) -> GuardrailResult:
-    """Pre-router input guardrails, before intent is known. First the
-    deterministic, no-LLM-call checks — prompt-injection regex and a plain
-    toxicity wordlist — which short-circuit blatant cases for free (Gemini
-    quota is the #1 constraint, PLAN.md §2.1/§8). Anything that gets past
-    those goes to the LLM-as-judge (src/guardrails/llm_judge.py), one
-    structured call classifying toxicity/PII/injection/off-topic/jailbreak.
-    The judge fails open, so a failed call never breaks the turn."""
+    """Pre-router input guardrails, before intent is known. The deterministic,
+    no-LLM-call checks — prompt-injection regex and a plain toxicity wordlist —
+    short-circuit blatant cases for free (Gemini quota is the #1 constraint).
+
+    Phase 5: the LLM-as-judge is NOT run per turn by default — the router carries
+    the same LLM safety signals (is_toxic/is_injection_attempt/is_jailbreak) in a
+    call that happens anyway (see _check_semantic_guardrails). Set
+    config.ENABLE_LLM_JUDGE to add it back as an extra defense-in-depth layer; it
+    fails open, so a failed call never breaks the turn."""
     result = check_topic_and_injection(message)
     if not result.allowed:
         return result
     result = check_toxicity(message)
     if not result.allowed:
         return result
-    return check_input_llm(message, client=client, session_id=session_id)
+    if config.ENABLE_LLM_JUDGE:
+        return check_input_llm(message, client=client, session_id=session_id)
+    return GuardrailResult(allowed=True)
 
 
 def _check_semantic_guardrails(classification: IntentClassification) -> GuardrailResult:
     """Post-router guardrail backstop, run immediately after classify_intent()
-    returns — free, since that LLM call already happened and its response
-    schema already carries is_toxic/is_injection_attempt (ROUTER_PROMPT asks
-    for both). Catches paraphrased abuse/injection the pre-router
-    deterministic layer misses."""
+    returns — free, since that LLM call already happened and its response schema
+    carries is_toxic/is_injection_attempt/is_jailbreak (ROUTER_PROMPT asks for
+    all three). This is now the primary LLM safety pass (Phase 5), catching
+    paraphrased abuse/injection/jailbreak the deterministic pre-layer misses."""
     result = check_injection_semantic(classification)
+    if not result.allowed:
+        return result
+    result = check_jailbreak_semantic(classification)
     if not result.allowed:
         return result
     return check_toxicity_semantic(classification)
@@ -191,9 +199,7 @@ def run_turn(
                 token_usage=_turn_token_usage(turn_started_at, session_id),
             )
 
-        reply, run_state = _run_tool_loop(
-            message, history, classification, steps, client, session_id
-        )
+        reply, run_state = _answer_pipeline(message, classification, steps, client, session_id)
     except (APIError, LLMBackendError) as exc:
         logger.warning("session=%s llm_api_error status=%s", session_id, exc.code)
         return AgentResponse(
@@ -231,154 +237,73 @@ def _turn_token_usage(turn_started_at: datetime, session_id: str) -> TokenUsage:
     )
 
 
-def _run_tool_loop(
+def _answer_pipeline(
     message: str,
-    history: list[dict[str, str]],
     classification: IntentClassification,
     steps: list[AgentStep],
     client,
     session_id: str,
 ) -> tuple[str, _RunState]:
-    from google.genai import types
+    """Deterministic KB-first answer pipeline (replaces the generative ReAct loop,
+    Phase 5). The router already decided intent/category, and there are only two
+    tools whose order is fixed — so a model-driven "which tool?" loop was pure
+    overhead. This makes at most two tool calls (search_kb, then the statutory web
+    fallback only if the KB is insufficient AND the deployment enables it), with
+    no extra tool-selection LLM round-trips: ~2 Gemini calls/turn instead of ~5.
 
+    Note: retrieval uses the current message (not a history-rewritten query). Most
+    turns are self-contained; a class follow-up should restate context (the router
+    still sees history for clarification)."""
     run_state = _RunState()
-    contents = _build_initial_contents(history, message, classification)
-    agent_tools = types.Tool(function_declarations=_function_declarations())
 
-    for iteration in range(config.MAX_REACT_ITERATIONS):
-        response = client.models.generate_content(
-            model=config.ACTIVE_CHAT_MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=prompts.REACT_SYSTEM_PROMPT,
-                tools=[agent_tools],
-                temperature=0.2,
+    answer, chunks = tools.search_kb(
+        message, category=classification.category, client=client, session_id=session_id
+    )
+    run_state.citations = answer.citations
+    run_state.web_citations = answer.web_citations
+    run_state.chunks = chunks
+    run_state.insufficient_context = answer.insufficient_context
+    steps.append(
+        AgentStep(
+            thought=f"search_kb category={classification.category}",
+            tool="search_kb",
+            tool_args={"question": message, "category": classification.category},
+            observation=json.dumps(
+                {
+                    "insufficient_context": answer.insufficient_context,
+                    "requires_clarification": answer.requires_clarification,
+                    "chunks_found": len(chunks),
+                }
             ),
         )
-        usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
-        candidate_content = response.candidates[0].content
-        function_calls = [
-            part.function_call for part in candidate_content.parts if part.function_call
-        ]
+    )
 
-        if not function_calls:
-            return response.text or FALLBACK_CLARIFYING_TEXT, run_state
+    # Audience-segment split the KB couldn't resolve → ask, don't answer.
+    if answer.requires_clarification:
+        return answer.clarifying_question or answer.answer, run_state
+    if not answer.insufficient_context:
+        return answer.answer, run_state
 
-        contents.append(candidate_content)
-        response_parts = []
-        for call in function_calls:
-            args = dict(call.args or {})
-            observation = _execute_tool(call.name, args, client, run_state, session_id)
-            steps.append(
-                AgentStep(
-                    thought=f"iteration {iteration + 1}: calling {call.name}",
-                    tool=call.name,
-                    tool_args=args,
-                    observation=json.dumps(observation),
-                )
-            )
-            response_parts.append(
-                types.Part.from_function_response(name=call.name, response=observation)
-            )
-
-        # A faculty-class split the KB tool couldn't resolve is a stop condition:
-        # return the clarifying question directly rather than letting the model
-        # narrate around it or fall through to search_web.
-        if run_state.clarification:
-            return run_state.clarification, run_state
-
-        contents.append(types.Content(role="user", parts=response_parts))
-
-    return MAX_ITERATIONS_REPLY, run_state
-
-
-def _build_initial_contents(
-    history: list[dict[str, str]], message: str, classification: IntentClassification
-):
-    from google.genai import types
-
-    contents = []
-    for turn in history:
-        role = "model" if turn["role"] == "assistant" else "user"
-        contents.append(types.Content(role=role, parts=[types.Part(text=turn["content"])]))
-    hint = f"[router: intent={classification.intent.value}, category={classification.category}]\n{message}"
-    contents.append(types.Content(role="user", parts=[types.Part(text=hint)]))
-    return contents
-
-
-def _function_declarations() -> list:
-    from google.genai import types
-
-    declarations = [
-        types.FunctionDeclaration(
-            name="search_kb",
-            description=(
-                f"Search the knowledge base ({config.CORPUS_TITLE} plus its official "
-                f"companion documents) for questions about {config.SCOPE_PHRASE}."
-            ),
-            parameters=types.Schema(
-                type="OBJECT",
-                properties={
-                    "question": types.Schema(
-                        type="STRING", description=f"The {config.READER_NOUN}'s question"
-                    ),
-                    "category": types.Schema(
-                        type="STRING",
-                        enum=list(config.QUERY_CATEGORIES),
-                        description="Topic category hint, if clearly inferable",
-                    ),
-                },
-                required=["question"],
-            ),
-        ),
-    ]
-    # The statutory web fallback is PH/university-specific — only offered when the
-    # deployment enables it (config.ENABLE_WEB_FALLBACK).
+    # KB couldn't answer → statutory web fallback, only if the deployment enables it.
     if config.ENABLE_WEB_FALLBACK:
-        declarations.append(
-            types.FunctionDeclaration(
-                name="search_web",
-                description="Search official Philippine government sources for national "
-                "statutory pre-employment requirements (e.g. NBI, SSS, PhilHealth, "
-                "Pag-IBIG, BIR) not covered by the internal knowledge base.",
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "question": types.Schema(
-                            type="STRING", description="The statutory pre-employment question"
-                        )
-                    },
-                    required=["question"],
+        web = tools.search_web(message, client=client, session_id=session_id)
+        run_state.citations = web.citations
+        run_state.web_citations = web.web_citations
+        run_state.chunks = []  # a web answer is grounded in web_citations, not KB chunks
+        run_state.insufficient_context = web.insufficient_context
+        steps.append(
+            AgentStep(
+                thought="kb insufficient -> statutory web fallback",
+                tool="search_web",
+                tool_args={"question": message},
+                observation=json.dumps(
+                    {"source": web.source.value, "insufficient_context": web.insufficient_context}
                 ),
             )
         )
-    return declarations
+        return web.answer, run_state
 
-
-def _execute_tool(name: str, args: dict, client, run_state: _RunState, session_id: str) -> dict:
-    if name == "search_kb":
-        answer, chunks = tools.search_kb(args["question"], category=args.get("category"))
-        run_state.citations = answer.citations
-        run_state.web_citations = answer.web_citations
-        run_state.chunks = chunks
-        run_state.insufficient_context = answer.insufficient_context
-        if answer.requires_clarification:
-            run_state.clarification = answer.clarifying_question or answer.answer
-        return {
-            "answer": answer.answer,
-            "insufficient_context": answer.insufficient_context,
-            "requires_clarification": answer.requires_clarification,
-            "chunks_found": len(chunks),
-        }
-
-    if name == "search_web":
-        answer = tools.search_web(args["question"], client=client, session_id=session_id)
-        run_state.citations = answer.citations
-        run_state.web_citations = answer.web_citations
-        run_state.insufficient_context = answer.insufficient_context
-        return {"answer": answer.answer, "insufficient_context": answer.insufficient_context}
-
-    return {"error": f"unknown tool: {name}"}
+    return answer.answer, run_state
 
 
 def _source_dict_from_chunk(chunk: RetrievedChunk) -> dict:

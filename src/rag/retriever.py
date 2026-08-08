@@ -8,6 +8,7 @@ if nothing passes, the caller must answer "I don't know" — never from memory.
 from dataclasses import dataclass
 
 import chromadb
+from chromadb.config import Settings
 
 from src import config
 from src.rag.embeddings import Embedder
@@ -29,7 +30,10 @@ class RetrievedChunk:
 
 
 def get_collection():
-    client = chromadb.PersistentClient(path=str(config.CHROMA_DIR))
+    client = chromadb.PersistentClient(
+        path=str(config.CHROMA_DIR),
+        settings=Settings(anonymized_telemetry=False),
+    )
     return client.get_or_create_collection(
         name=config.COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
