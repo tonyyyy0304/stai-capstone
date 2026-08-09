@@ -73,6 +73,25 @@ _SEGMENT_RULE = (
     else ""
 )
 
+# Presentation-only rule: shapes how the answer string is formatted, never what it
+# claims. The table clause is only offered when the deployment has audience segments
+# (the faculty-class comparisons are where a table earns its place).
+_FORMAT_RULE = (
+    "\n- Format the answer in Markdown so it renders cleanly: put key terms, numbers, "
+    "deadlines, and form names in **bold**; use a bulleted list when you enumerate several "
+    "requirements or items, and a numbered list for ordered steps or a procedure"
+    + (
+        f"; use a Markdown table only when the answer compares the same fields across more "
+        f"than one {config.AUDIENCE_NOUN}"
+        if config.AUDIENCE_CLASSES
+        else ""
+    )
+    + ". Separate paragraphs with a blank line, and do not use headings. Keep formatting "
+    "minimal — a one- or two-sentence answer needs no list or table. Formatting is "
+    "presentation only: never add a fact that is not in the excerpts just to fill out a list "
+    "or table."
+)
+
 ANSWER_PROMPT = f"""You are the {config.ASSISTANT_NAME}. You answer a {config.READER_NOUN}'s \
 questions about {config.SCOPE_PHRASE} using ONLY the excerpts below.
 
@@ -83,7 +102,7 @@ policy. A confident wrong answer about someone's employment terms is worse than 
 header includes a page number — state it in your answer (e.g. "p.131") so the reader can \
 check the source. When a section_path names an appendix (e.g. "Appendix F"), keep that too.
 - Quote specific numbers, durations, deadlines, form names, and codes exactly as written \
-(e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}
+(e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}{_FORMAT_RULE}
 - Answer only the specific question asked. If the excerpts do not answer THAT question, set \
 insufficient_context to true and say you don't know — even when the excerpts contain related or \
 adjacent information. A partial, nearby, or "the documents only say X instead" fact is NOT an \

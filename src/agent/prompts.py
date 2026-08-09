@@ -108,6 +108,10 @@ ONLY the search results below. Be precise about form numbers (e.g. BIR Form 1902
 agency names, ID requirements, and validity windows. If the results do not actually answer \
 the question, set insufficient_context to true instead of guessing.
 
+Format the answer in Markdown: put form numbers, agency names, and validity windows in \
+**bold**; use a bulleted list when you enumerate several documents or requirements, and a \
+numbered list for ordered steps. Keep it minimal and add no facts beyond the search results.
+
 Question: {question}
 
 Search results:
