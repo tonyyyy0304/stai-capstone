@@ -166,15 +166,18 @@ def test_semantic_jailbreak_flag_blocks(monkeypatch):
 
 
 def test_faq_uses_search_kb_then_answers(monkeypatch):
-    # ReAct loop: the model plans search_kb, observes a sufficient answer, then
-    # finishes. A single sufficient KB hop is reused as-is (no re-synthesis call).
+    # ReAct loop: the model plans search_kb (retrieve-only), observes the chunks,
+    # then finishes. The one grounded answer is shaped at the end over those chunks.
     mock_classification(monkeypatch, Intent.FAQ, category="leave")
     monkeypatch.setattr(
-        tools,
-        "search_kb",
-        lambda question, category=None, **kw: (
-            GroundedAnswer(answer="15 sick days a year.", source=AnswerSource.INTERNAL_KB),
-            ["chunk1"],
+        tools, "retrieve_kb",
+        lambda question, category=None: ([fake_chunk("chunk1")], None),
+    )
+    import src.rag.answerer as answerer_mod
+    monkeypatch.setattr(
+        answerer_mod, "generate_grounded_answer",
+        lambda message, chunks, client=None, session_id=None, history=None: GroundedAnswer(
+            answer="15 sick days a year.", source=AnswerSource.INTERNAL_KB
         ),
     )
     client = FakeClient([
@@ -184,27 +187,18 @@ def test_faq_uses_search_kb_then_answers(monkeypatch):
     result = orchestrator.run_turn("s3", "how many sick leave days do I get?", client=client)
     assert result.reply == "15 sick days a year."
     assert [s.tool for s in result.steps] == [None, "search_kb", None]
-    assert result.chunks == ["chunk1"]
+    assert [c.chunk_id for c in result.chunks] == ["chunk1"]
 
 
 def test_search_kb_clarification_short_circuits_loop(monkeypatch):
-    """A faculty-class split from search_kb returns the clarifying question
-    verbatim and stops the loop immediately — no further planning call (the
-    FakeClient has only the one planning response)."""
+    """A faculty-class split from retrieve_kb returns the clarifying question
+    verbatim and stops the loop immediately — no further planning call and no
+    grounded-answer call (the FakeClient has only the one planning response)."""
     mock_classification(monkeypatch, Intent.FAQ, category="benefits")
     clarify = "Which applies to you: Full-time Academic Faculty, or Academic Service Faculty?"
     monkeypatch.setattr(
-        tools,
-        "search_kb",
-        lambda question, category=None, **kw: (
-            GroundedAnswer(
-                answer=clarify,
-                source=AnswerSource.INTERNAL_KB,
-                requires_clarification=True,
-                clarifying_question=clarify,
-            ),
-            [],
-        ),
+        tools, "retrieve_kb",
+        lambda question, category=None: ([], clarify),
     )
     client = FakeClient([
         react_step_response("check the KB", ReActAction.SEARCH_KB, query="vacation leave days"),
@@ -219,12 +213,8 @@ def test_faq_falls_back_to_search_web_when_kb_insufficient(monkeypatch):
     # then finishes. The sufficient web answer is used since the KB had nothing.
     mock_classification(monkeypatch, Intent.FAQ, category="onboarding")
     monkeypatch.setattr(
-        tools,
-        "search_kb",
-        lambda question, category=None, **kw: (
-            GroundedAnswer(answer="", source=AnswerSource.NONE, insufficient_context=True),
-            [],
-        ),
+        tools, "retrieve_kb",
+        lambda question, category=None: ([], None),  # KB retrieval comes back empty
     )
     monkeypatch.setattr(
         tools,
@@ -249,19 +239,16 @@ def test_multihop_decomposes_and_synthesizes(monkeypatch):
     mock_classification(monkeypatch, Intent.FAQ, category="conduct")
     kb_calls = []
 
-    def fake_kb(question, category=None, **kw):
+    def fake_kb(question, category=None):
         kb_calls.append(question)
-        return (
-            GroundedAnswer(answer=f"partial: {question}", source=AnswerSource.INTERNAL_KB),
-            [fake_chunk(f"c{len(kb_calls)}")],
-        )
+        return [fake_chunk(f"c{len(kb_calls)}")], None
 
-    monkeypatch.setattr(tools, "search_kb", fake_kb)
+    monkeypatch.setattr(tools, "retrieve_kb", fake_kb)
 
     import src.rag.answerer as answerer_mod
     seen_chunks = {}
 
-    def fake_synth(message, chunks, client=None, session_id=None):
+    def fake_synth(message, chunks, client=None, session_id=None, history=None):
         seen_chunks["ids"] = [c.chunk_id for c in chunks]
         return GroundedAnswer(answer="combined: deadline + sanction", source=AnswerSource.INTERNAL_KB)
 
@@ -285,17 +272,13 @@ def test_max_iterations_caps_the_loop(monkeypatch):
     monkeypatch.setattr(config, "MAX_REACT_ITERATIONS", 3)
     mock_classification(monkeypatch, Intent.FAQ, category="leave")
     monkeypatch.setattr(
-        tools,
-        "search_kb",
-        lambda question, category=None, **kw: (
-            GroundedAnswer(answer="partial", source=AnswerSource.INTERNAL_KB),
-            [fake_chunk("c1")],
-        ),
+        tools, "retrieve_kb",
+        lambda question, category=None: ([fake_chunk("c1")], None),
     )
     import src.rag.answerer as answerer_mod
     monkeypatch.setattr(
         answerer_mod, "generate_grounded_answer",
-        lambda message, chunks, client=None, session_id=None: GroundedAnswer(
+        lambda message, chunks, client=None, session_id=None, history=None: GroundedAnswer(
             answer="synthesized after cap", source=AnswerSource.INTERNAL_KB
         ),
     )
@@ -311,17 +294,16 @@ def test_max_iterations_caps_the_loop(monkeypatch):
 
 
 def test_kb_insufficient_and_web_disabled_returns_kb_answer(monkeypatch):
-    """With the web fallback disabled (a company deployment), an insufficient KB
-    result is returned as-is — search_web is never called."""
+    """With the web fallback disabled (a company deployment) and the KB retrieval
+    coming back empty, the turn declines gracefully — search_web is never called
+    and no grounded-answer call is made (there are no chunks to shape)."""
+    from src.rag.answerer import IDK_ANSWER
+
     monkeypatch.setattr(config, "ENABLE_WEB_FALLBACK", False)
     mock_classification(monkeypatch, Intent.FAQ, category="onboarding")
     monkeypatch.setattr(
-        tools,
-        "search_kb",
-        lambda question, category=None, **kw: (
-            GroundedAnswer(answer="I don't know.", source=AnswerSource.NONE, insufficient_context=True),
-            [],
-        ),
+        tools, "retrieve_kb",
+        lambda question, category=None: ([], None),  # nothing clears the floor
     )
     def _boom(*a, **k):
         raise AssertionError("search_web must not be called when the fallback is disabled")
@@ -331,8 +313,61 @@ def test_kb_insufficient_and_web_disabled_returns_kb_answer(monkeypatch):
         react_step_response("nothing there", ReActAction.FINISH),
     ])
     result = orchestrator.run_turn("s7", "something the KB can't answer", client=client)
-    assert result.reply == "I don't know."
+    assert result.reply == IDK_ANSWER
+    assert result.insufficient_context is True
     assert [s.tool for s in result.steps] == [None, "search_kb", None]
+
+
+def test_followup_clarification_reaches_planner_and_answerer(monkeypatch):
+    """Regression: after the router resolves a terse follow-up (a bare "Part-time"
+    answering a prior clarifying question), the conversation history must reach both
+    the ReAct planner AND the grounded answerer — not just the router. Previously
+    the loop planned/answered over the bare "Part-time" with no context and abstained.
+    """
+    history = [
+        {"role": "user", "content": "What's the pre-employment process?"},
+        {"role": "assistant", "content": "Could you specify your faculty class?"},
+    ]
+    mock_classification(monkeypatch, Intent.FAQ, category="onboarding")
+    monkeypatch.setattr(
+        tools, "retrieve_kb",
+        lambda question, category=None: ([fake_chunk("c1")], None),
+    )
+
+    seen = {}
+    import src.rag.answerer as answerer_mod
+
+    def fake_synth(message, chunks, client=None, session_id=None, history=None):
+        seen["answerer_history"] = history
+        return GroundedAnswer(
+            answer="Part-time faculty submit X, then Y.", source=AnswerSource.INTERNAL_KB
+        )
+
+    monkeypatch.setattr(answerer_mod, "generate_grounded_answer", fake_synth)
+
+    # Capture the raw prompt text handed to each planning call so we can assert the
+    # planner actually saw the prior turns.
+    planner_contents = []
+
+    class CapturingModels(FakeModels):
+        def generate_content(self, model, contents, config):
+            planner_contents.append(contents)
+            return super().generate_content(model, contents, config)
+
+    client = FakeClient([])
+    client.models = CapturingModels([
+        react_step_response("resolve the follow-up against history",
+                            ReActAction.SEARCH_KB, query="part-time faculty pre-employment process"),
+        react_step_response("have enough", ReActAction.FINISH),
+    ])
+
+    result = orchestrator.run_turn("s-followup", "Part-time", history=history, client=client)
+
+    assert result.reply == "Part-time faculty submit X, then Y."
+    # History reached the grounded answerer.
+    assert seen["answerer_history"] == history
+    # History reached the planner (the prior question text is in the planning prompt).
+    assert any("pre-employment process" in c for c in planner_contents)
 
 
 def test_gemini_api_error_returns_graceful_fallback(monkeypatch):
@@ -349,23 +384,30 @@ def test_gemini_api_error_returns_graceful_fallback(monkeypatch):
 def test_token_usage_reflects_recorded_calls(monkeypatch):
     """token_usage sums the usage-log rows written this turn (by the router,
     grounded-answer call, etc.). The pipeline delegates those calls to
-    router/tools; here a fake search_kb records usage and the turn reports it."""
+    router/answerer; here a fake grounded-answer call records usage and the turn
+    reports it."""
     from src.agent import usage
     from src.schemas import TokenUsage
 
     mock_classification(monkeypatch, Intent.FAQ, category="leave")
+    monkeypatch.setattr(
+        tools, "retrieve_kb",
+        lambda question, category=None: ([fake_chunk("c1")], None),
+    )
 
-    def fake_kb(question, category=None, **kw):
+    import src.rag.answerer as answerer_mod
+
+    def fake_synth(message, chunks, client=None, session_id=None, history=None):
         usage.record_usage(
             "test-model",
             TokenUsage(prompt_tokens=30, completion_tokens=13, total_tokens=43),
             session_id="s9",
         )
-        return GroundedAnswer(answer="15 sick days a year.", source=AnswerSource.INTERNAL_KB), ["c1"]
+        return GroundedAnswer(answer="15 sick days a year.", source=AnswerSource.INTERNAL_KB)
 
-    monkeypatch.setattr(tools, "search_kb", fake_kb)
+    monkeypatch.setattr(answerer_mod, "generate_grounded_answer", fake_synth)
     # Planning calls carry no usage_metadata (zeros), so the turn total is exactly
-    # what fake_kb recorded — proving the sum comes from the recorded calls.
+    # what fake_synth recorded — proving the sum comes from the recorded calls.
     client = FakeClient([
         react_step_response("look it up", ReActAction.SEARCH_KB, query="sick leave"),
         react_step_response("done", ReActAction.FINISH),

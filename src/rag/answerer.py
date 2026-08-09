@@ -34,18 +34,22 @@ def detect_stated_audience(text: str) -> str | None:
     return hits.pop() if len(hits) == 1 else None
 
 
-def _clarification_answer(present: set[str]) -> GroundedAnswer:
-    """Build the segment-disambiguation response for evidence that spans >1 segment."""
+def _clarification_question(present: set[str]) -> str:
+    """The segment-disambiguation question for evidence that spans >1 segment."""
     # Order by the configured order first, then any leftover slugs (defensive:
     # a slug in the index but not in current config still degrades gracefully).
     ordered = [s for s in config.AUDIENCE_ORDER if s in present]
     ordered += [s for s in present if s not in config.AUDIENCE_ORDER]
     labels = [config.AUDIENCE_LABELS.get(s, s) for s in ordered]
     options = ", ".join(labels[:-1]) + f", or {labels[-1]}" if len(labels) > 1 else labels[0]
-    question = (
+    return (
         f"The answer depends on your {config.AUDIENCE_NOUN}. "
         f"Which applies to you: {options}?"
     )
+
+
+def _clarification_answer(question: str) -> GroundedAnswer:
+    """Wrap a clarifying question string as the segment-disambiguation response."""
     return GroundedAnswer(
         answer=question,
         citations=[],
@@ -112,6 +116,10 @@ cover). Never fill the gap from memory.
 Excerpts:
 {{context}}
 
+Conversation so far (earlier turns in this chat, for resolving what "the question" refers to \
+when it is a terse follow-up — e.g. a bare "Part-time"; NOT evidence, never cite it):
+{{conversation}}
+
 {config.READER_NOUN.capitalize()}'s question: {{question}}"""
 
 
@@ -142,10 +150,26 @@ def no_answer() -> GroundedAnswer:
     return GroundedAnswer(answer=IDK_ANSWER, citations=[], insufficient_context=True)
 
 
+def _format_conversation(history: list[dict[str, str]] | None) -> str:
+    """Render prior turns for the answer prompt's follow-up-resolution slot.
+    Kept local so the rag layer doesn't import the agent layer."""
+    if not history:
+        return "(no prior turns)"
+    return "\n".join(f"{turn['role']}: {turn['content']}" for turn in history)
+
+
 def generate_grounded_answer(
-    question: str, chunks: list[RetrievedChunk], client=None, session_id: str | None = None
+    question: str,
+    chunks: list[RetrievedChunk],
+    client=None,
+    session_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> GroundedAnswer:
-    """One Gemini call with response_schema=GroundedAnswer over the given chunks."""
+    """One Gemini call with response_schema=GroundedAnswer over the given chunks.
+
+    `history` (prior chat turns) is threaded only so the model can resolve a terse
+    follow-up question against what came before; it is explicitly not evidence and
+    is never cited (the grounding guardrail drops anything not in `chunks`)."""
     from google.genai import types
 
     from src.agent import usage
@@ -155,7 +179,11 @@ def generate_grounded_answer(
     client = client or config.get_llm_client()
     response = client.models.generate_content(
         model=config.ACTIVE_CHAT_MODEL,
-        contents=ANSWER_PROMPT.format(context=_format_context(chunks), question=question),
+        contents=ANSWER_PROMPT.format(
+            context=_format_context(chunks),
+            question=question,
+            conversation=_format_conversation(history),
+        ),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=GroundedAnswer,
@@ -180,25 +208,27 @@ def generate_grounded_answer(
     return answer
 
 
-def answer_question(
+def retrieve_kb(
     question: str,
     category: str | None = None,
     retriever: Retriever | None = None,
-    client=None,
-    session_id: str | None = None,
-) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
-    """End-to-end RAG: retrieve → floor check → grounded answer.
+) -> tuple[list[RetrievedChunk], str | None]:
+    """Retrieval half of the RAG pipeline — retrieve → floor check → audience
+    disambiguation — WITHOUT the grounded-answer LLM call.
 
-    Returns the answer plus the chunks that passed the floor (for UI expanders
-    and MLflow traces). Chunks are withheld when the answer is insufficient —
-    otherwise the UI would show "possibly relevant" excerpts right next to an
-    "I don't know" reply, which reads as contradictory even though those
-    excerpts were exactly what the model just checked and rejected.
-    """
+    Returns (chunks, clarifying_question). chunks is the floor-passing,
+    audience-reranked evidence ([] when nothing clears the floor). When the
+    evidence spans more than one audience segment and the reader hasn't said
+    which they are, chunks is [] and clarifying_question carries the segment
+    question — the caller must ask, not answer.
+
+    Split out of answer_question() so the ReAct loop can gather evidence across
+    several hops and shape ONE grounded answer at the end, instead of paying a
+    grounded-answer call on every hop (see src/agent/orchestrator.py)."""
     retriever = retriever or get_retriever()
     chunks = apply_floor(retriever.retrieve(question, category=category))
     if not chunks:
-        return no_answer(), []
+        return [], None
 
     # Audience-segment disambiguation (the corpus's biggest hazard): if the
     # evidence spans more than one segment and the reader hasn't said which they
@@ -215,9 +245,33 @@ def answer_question(
             c.audience_class for c in chunks[: config.DISAMBIG_TOP_N] if c.audience_class
         }
         if stated is None and len(present) >= 2:
-            return _clarification_answer(present), []
+            return [], _clarification_question(present)
         if stated:
             chunks = rerank_by_audience(chunks, stated)
+
+    return chunks, None
+
+
+def answer_question(
+    question: str,
+    category: str | None = None,
+    retriever: Retriever | None = None,
+    client=None,
+    session_id: str | None = None,
+) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
+    """End-to-end RAG: retrieve → floor check → grounded answer.
+
+    Returns the answer plus the chunks that passed the floor (for UI expanders
+    and MLflow traces). Chunks are withheld when the answer is insufficient —
+    otherwise the UI would show "possibly relevant" excerpts right next to an
+    "I don't know" reply, which reads as contradictory even though those
+    excerpts were exactly what the model just checked and rejected.
+    """
+    chunks, clarification = retrieve_kb(question, category=category, retriever=retriever)
+    if clarification is not None:
+        return _clarification_answer(clarification), []
+    if not chunks:
+        return no_answer(), []
 
     answer = generate_grounded_answer(question, chunks, client=client, session_id=session_id)
     if answer.insufficient_context:

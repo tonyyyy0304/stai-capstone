@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 
 from src import config
 from src.agent import prompts, tools, usage
-from src.agent.router import classify_intent, needs_clarification
+from src.agent.router import classify_intent, format_history, needs_clarification
 from src.guardrails.grounding import check_grounding
 from src.guardrails.input_checks import (
     check_injection_semantic,
@@ -205,7 +205,9 @@ def run_turn(
                 token_usage=_turn_token_usage(turn_started_at, session_id),
             )
 
-        reply, run_state = _react_loop(message, classification, steps, client, session_id)
+        reply, run_state = _react_loop(
+            message, classification, steps, client, session_id, history
+        )
     except (APIError, LLMBackendError) as exc:
         logger.warning("session=%s llm_api_error status=%s", session_id, exc.code)
         return AgentResponse(
@@ -258,9 +260,17 @@ def _format_scratchpad(scratchpad: list[dict]) -> str:
 
 
 def _plan_next_step(
-    message: str, scratchpad: list[dict], client, session_id: str
+    message: str,
+    scratchpad: list[dict],
+    client,
+    session_id: str,
+    history: list[dict[str, str]] | None = None,
 ) -> ReActStep:
-    """One planning call: the model reads the scratchpad and picks the next action."""
+    """One planning call: the model reads the scratchpad and picks the next action.
+
+    `history` lets the planner resolve a terse follow-up (a bare "Part-time"
+    answering a clarifying question) into a complete standalone search query,
+    the same conversation view the router already gets."""
     from google.genai import types
 
     response = client.models.generate_content(
@@ -269,7 +279,9 @@ def _plan_next_step(
             prompts.REACT_SYSTEM_PROMPT
             + "\n\n"
             + prompts.REACT_STEP_PROMPT.format(
-                question=message, scratchpad=_format_scratchpad(scratchpad)
+                question=message,
+                scratchpad=_format_scratchpad(scratchpad),
+                history=format_history(history or []),
             )
         ),
         config=types.GenerateContentConfig(
@@ -307,6 +319,7 @@ def _react_loop(
     steps: list[AgentStep],
     client,
     session_id: str,
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[str, _RunState]:
     """Model-driven ReAct loop (Module 7). Each iteration the model emits a thought
     and one action (search_kb / search_web / finish). It plans retrieval only — it
@@ -316,15 +329,21 @@ def _react_loop(
     guardrail still verifies every citation. Bounded by MAX_REACT_ITERATIONS.
 
     Retrieval uses the model's (possibly reformulated) query, not a history-rewrite;
-    the router still sees history for clarification."""
+    the router still sees history for clarification.
+
+    Each search_kb hop only *retrieves* (tools.retrieve_kb) — no per-hop grounded-answer
+    call. The loop reasons over the retrieved chunks themselves (count, top similarity,
+    a preview), and the single grounded answer is shaped once at the end over the union
+    of chunks (_synthesize_final). A multi-hop turn therefore pays one grounded-answer
+    call, not one per hop."""
     run_state = _RunState()
     scratchpad: list[dict] = []
-    kb_results: list[tuple] = []          # (GroundedAnswer, chunks) per search_kb hop
     all_chunks: list[RetrievedChunk] = []
+    kb_hops = 0
     web_answer = None
 
     for _ in range(config.MAX_REACT_ITERATIONS):
-        step = _plan_next_step(message, scratchpad, client, session_id)
+        step = _plan_next_step(message, scratchpad, client, session_id, history)
 
         if step.action == ReActAction.FINISH:
             steps.append(AgentStep(thought=step.thought, tool=None, tool_args={}, observation="finish"))
@@ -348,49 +367,53 @@ def _react_loop(
                                "query": step.query, "observation": obs})
             continue
 
-        # default: search_kb
+        # default: search_kb — retrieve only, no per-hop grounded-answer call.
         cat = step.category or classification.category
         query = step.query or message
-        answer, chunks = tools.search_kb(query, category=cat, client=client, session_id=session_id)
+        chunks, clarification = tools.retrieve_kb(query, category=cat)
 
-        # Audience-segment split the KB couldn't resolve → ask, don't answer.
-        if answer.requires_clarification:
-            run_state.chunks = chunks
+        # Audience-segment split the retrieval couldn't resolve → ask, don't answer.
+        if clarification is not None:
+            run_state.chunks = []
             steps.append(AgentStep(thought=step.thought, tool="search_kb",
                                    tool_args={"question": query, "category": cat},
                                    observation="requires_clarification"))
-            return answer.clarifying_question or answer.answer, run_state
+            return clarification, run_state
 
-        kb_results.append((answer, chunks))
+        kb_hops += 1
         all_chunks.extend(chunks)
+        top = chunks[0] if chunks else None
         obs = json.dumps({
-            "insufficient_context": answer.insufficient_context,
             "chunks_found": len(chunks),
-            "answer_preview": answer.answer[:200],
+            "insufficient": len(chunks) == 0,
+            "top_similarity": round(getattr(top, "similarity", 0.0), 3) if top else 0.0,
+            "top_preview": getattr(top, "text", "")[:200] if top else "",
         })
         steps.append(AgentStep(thought=step.thought, tool="search_kb",
                                tool_args={"question": query, "category": cat}, observation=obs))
         scratchpad.append({"thought": step.thought, "action": "search_kb",
                            "query": query, "observation": obs})
 
-    return _synthesize_final(message, kb_results, all_chunks, web_answer, run_state, client, session_id)
+    return _synthesize_final(
+        message, all_chunks, kb_hops, web_answer, run_state, client, session_id, history
+    )
 
 
 def _synthesize_final(
     message: str,
-    kb_results: list[tuple],
     all_chunks: list[RetrievedChunk],
+    kb_hops: int,
     web_answer,
     run_state: _RunState,
     client,
     session_id: str,
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[str, _RunState]:
     """Turn the gathered evidence into one grounded reply once the loop finishes.
 
-    Single sufficient KB hop is reused as-is (no extra call). Multiple hops are
-    synthesized over the union of chunks so a multi-part answer is grounded in all of
-    them. A web answer is used only when the KB produced nothing usable; otherwise we
-    decline."""
+    Exactly one grounded-answer call, over the deduped union of every hop's chunks,
+    so a multi-part answer is grounded in all of them. A web answer is used only when
+    the KB produced nothing usable; otherwise we decline."""
     from src.rag.answerer import generate_grounded_answer, no_answer
 
     # The model only reaches for search_web when it judged the KB too weak to answer.
@@ -403,35 +426,26 @@ def _synthesize_final(
         run_state.insufficient_context = False
         return web_answer.answer, run_state
 
-    # Single sufficient KB hop → reuse its already-grounded answer (no extra call).
-    if len(kb_results) == 1 and not kb_results[0][0].insufficient_context:
-        answer, hop_chunks = kb_results[0]
-        run_state.citations = answer.citations
-        run_state.web_citations = answer.web_citations
-        run_state.chunks = hop_chunks
-        run_state.insufficient_context = answer.insufficient_context
-        return answer.answer, run_state
-
-    # Multi-hop (or single hop that pulled evidence) → synthesize over the union.
+    # Shape the one grounded answer over the union of chunks gathered across hops.
     chunks = _dedupe_chunks(all_chunks)
     if chunks:
-        final = generate_grounded_answer(message, chunks, client=client, session_id=session_id)
+        final = generate_grounded_answer(
+            message, chunks, client=client, session_id=session_id, history=history
+        )
         if not final.insufficient_context:
             run_state.citations = final.citations
             run_state.chunks = chunks
             run_state.insufficient_context = False
             return final.answer, run_state
+        # Gathered evidence but it doesn't answer the question (and no usable web) →
+        # return the model's grounded decline, withholding the rejected chunks (mirrors
+        # answer_question, so the UI never shows "maybe relevant" excerpts beside "I don't know").
+        run_state.citations = final.citations
+        run_state.chunks = []
+        run_state.insufficient_context = True
+        return final.answer, run_state
 
-    # KB gathered evidence but nothing sufficient, and no web (e.g. fallback disabled)
-    # → return the KB's own decline verbatim rather than a generic one.
-    if kb_results:
-        answer, hop_chunks = kb_results[-1]
-        run_state.citations = answer.citations
-        run_state.chunks = hop_chunks
-        run_state.insufficient_context = answer.insufficient_context
-        return answer.answer, run_state
-
-    # Nothing gathered at all.
+    # Nothing retrieved across any hop (kb_hops may be >0 with all-empty retrievals).
     na = no_answer()
     run_state.insufficient_context = True
     return na.answer, run_state

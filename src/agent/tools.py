@@ -15,7 +15,7 @@ import logging
 
 from src import config
 from src.agent import prompts, usage
-from src.rag.answerer import answer_question
+from src.rag.answerer import answer_question, retrieve_kb as _retrieve_kb
 from src.rag.retriever import RetrievedChunk
 from src.schemas import AnswerSource, GroundedAnswer, WebCitation
 
@@ -38,6 +38,19 @@ def search_kb(
     src/rag/answerer.py. session_id is threaded so the grounded-answer call is
     accounted under the turn."""
     return answer_question(question, category=category, client=client, session_id=session_id)
+
+
+def retrieve_kb(
+    question: str, category: str | None = None
+) -> tuple[list[RetrievedChunk], str | None]:
+    """Retrieval-only KB tool for the ReAct loop: returns (chunks, clarifying_question)
+    without the per-hop grounded-answer LLM call that search_kb makes. The loop
+    gathers chunks across hops and shapes ONE grounded answer at the end
+    (src/agent/orchestrator.py::_synthesize_final), so a multi-hop turn pays one
+    grounded-answer call instead of one per hop. clarifying_question is set (and
+    chunks empty) when the evidence spans more than one audience segment and the
+    reader hasn't said which — the caller must ask, not answer."""
+    return _retrieve_kb(question, category=category)
 
 
 # --- search_web (statutory pre-employment fallback) ---------------------------

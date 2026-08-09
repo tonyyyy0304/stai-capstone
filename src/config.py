@@ -279,7 +279,13 @@ STATUTORY_GOV_DOMAINS = (
 TAVILY_MAX_RESULTS = 5
 
 # --- Monitoring ---
-MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", (DATA_DIR / "mlruns").as_uri())
+# SQLite backend (MLflow 3.x): a single file, no server needed, and unlike the
+# legacy file store it supports the trace-metrics aggregates the Traces UI draws.
+# The old file store lives at data/mlruns (kept as a backup, migrated via
+# `mlflow migrate-filestore`).
+MLFLOW_TRACKING_URI = os.environ.get(
+    "MLFLOW_TRACKING_URI", f"sqlite:///{(DATA_DIR / 'mlflow.db').as_posix()}"
+)
 MLFLOW_EXPERIMENT_NAME = os.environ.get("MLFLOW_EXPERIMENT_NAME", "hr-agent")
 
 
@@ -319,13 +325,17 @@ def get_llm_client():
     """Returns the active chat/reasoning client per LLM_PROVIDER: either a
     real google-genai Client (default) or an OllamaClient adapter exposing
     the same .models.generate_content(model, contents, config) interface.
-    Callers don't need to know which one they got."""
+    Callers don't need to know which one they got. The client is wrapped so
+    each generate_content call is traced as a child span when a chat turn is
+    active (src/monitoring.py); the wrapper is transparent otherwise."""
+    from src.monitoring import trace_llm_client  # lazy: monitoring imports config
+
     if LLM_PROVIDER == "gemini":
-        return get_gemini_client()
+        return trace_llm_client(get_gemini_client())
     if LLM_PROVIDER == "ollama":
         from src.agent.llm_client import OllamaClient
 
-        return OllamaClient(OLLAMA_URL, OLLAMA_CHAT_MODEL)
+        return trace_llm_client(OllamaClient(OLLAMA_URL, OLLAMA_CHAT_MODEL))
     raise RuntimeError(
         f"Unknown LLM_PROVIDER={LLM_PROVIDER!r}; expected 'gemini' or 'ollama'."
     )

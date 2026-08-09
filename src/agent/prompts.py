@@ -44,11 +44,11 @@ _REACT_WEB_TOOL = (
 )
 _REACT_WEB_RULE = (
     f"\n- The knowledge base holds only {config.ORG_NAME}'s own requirements and policy. After a "
-    "search_kb, judge whether its result actually answers what was asked: if it reports "
-    "insufficient_context, or it returns text that is only related but does not answer the "
-    "question, call search_web before finishing. If both come back with nothing, say you don't know."
+    "search_kb, judge from the excerpts whether they actually answer what was asked: if it finds "
+    "no excerpts, or returns only text that is related but does not answer the question, call "
+    "search_web before finishing. If both come back with nothing, say you don't know."
     if config.ENABLE_WEB_FALLBACK
-    else "\n- If search_kb reports insufficient_context, say you don't know."
+    else "\n- If search_kb finds no relevant excerpts, say you don't know."
 )
 
 ROUTER_PROMPT = f"""You are the intent router for the {config.ASSISTANT_NAME}, which helps \
@@ -89,14 +89,21 @@ How to reason:
 - Start every question with search_kb. Never answer from memory — only from what tools return.
 - For a question with several parts, DECOMPOSE it: issue a separate search_kb for each part \
 across successive steps (e.g. one for the deadline, one for the sanction), then finish.
-- If a search_kb comes back with insufficient_context, do not give up immediately — try one \
-reformulated query (different wording or a narrower sub-question) before concluding.
+- If a search_kb comes back with no excerpts (or only weak, low-similarity ones), do not give \
+up immediately — try one reformulated query (different wording or a narrower sub-question) \
+before concluding.
 - finish as soon as the gathered evidence answers the question; do not pad with extra \
 searches.{_REACT_SEGMENT_RULE}{_REACT_WEB_RULE}"""
 
 # Per-iteration prompt: the running scratchpad of prior thoughts/actions/observations,
 # plus the reader's question. The model responds with the next ReActStep.
 REACT_STEP_PROMPT = f"""{_READER_CAP}'s question: {{question}}
+
+Conversation so far (earlier turns in this chat; use them to resolve a terse \
+follow-up — e.g. a bare "Part-time" answering a clarifying question, or "what about that?" — \
+into a complete, standalone search_kb query. If the current question already stands alone, \
+ignore this):
+{{history}}
 
 Reasoning so far:
 {{scratchpad}}
