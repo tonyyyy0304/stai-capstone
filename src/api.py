@@ -4,23 +4,50 @@ Member 4 owns this boundary: HTTP contracts, request validation, sanitized
 monitoring, and API-shaped responses for the Streamlit UI. When Member 2's
 agent orchestrator is present it can be plugged in without changing clients;
 until then the endpoint serves grounded FAQ answers through the RAG module.
+
+POST /upload-doc / GET /onboarding-status/{employee_id} (Component 14, Phase 6)
+run the CV pipeline synchronously and separately from /chat's agent loop — raw
+image bytes never cross into the ReAct loop (CV_INTEGRATION.md §1.5). No HR
+record source exists anywhere in this codebase, so full_name/date_of_birth are
+supplied by the uploader alongside employee_id, not looked up.
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src import config
-from src.monitoring import chat_trace, configure_mlflow
+from src.guardrails.doc_validation import (
+    apply_cross_document_result,
+    validate_cross_document,
+    validate_document,
+    validate_id_document,
+)
+from src.memory import onboarding_status
+from src.monitoring import chat_trace, configure_mlflow, doc_trace
+from src.ocr.extractor import extract_document, load_cached_result
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, TokenUsage, WebCitation
+from src.schemas import (
+    ChecklistStatus,
+    Citation,
+    DocType,
+    RuleResult,
+    TokenUsage,
+    ValidationOutcome,
+    ValidationResult,
+    WebCitation,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -72,6 +99,11 @@ class HealthResponse(BaseModel):
     manifest_exists: bool
     gemini_api_key_configured: bool
     mlflow_tracking_uri: str
+
+
+class UploadDocResponse(BaseModel):
+    validation: ValidationResult
+    checklist: ChecklistStatus
 
 
 class UsageResponse(BaseModel):
@@ -181,6 +213,127 @@ def chat(request: ChatRequest) -> ChatResponse:
         }
         trace["tags"] = {"route": "rag", "insufficient_context": response.insufficient_context}
         return response
+
+
+_OTHER_DOC_TYPE = {
+    "nbi_clearance": DocType.GOVERNMENT_ID,
+    "government_id": DocType.NBI_CLEARANCE,
+}
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """Magic-byte sniff, not the filename/declared content-type — a renamed
+    file shouldn't be able to claim a MIME type it isn't."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return None
+
+
+def _rejected_before_processing(detail: str, message: str) -> ValidationResult:
+    """A reject that never reached extraction — nothing to record against the
+    checklist, since there's no real document attempt behind it (oversized
+    file, wrong MIME)."""
+    return ValidationResult(
+        outcome=ValidationOutcome.REJECTED,
+        rules=[RuleResult(rule="fail_safe", passed=False, detail=detail)],
+        composite_confidence=0.0,
+        message=message,
+    )
+
+
+@app.post("/upload-doc", response_model=UploadDocResponse)
+async def upload_doc(
+    file: UploadFile,
+    employee_id: str = Form(...),
+    doc_type: Literal["nbi_clearance", "government_id"] = Form(...),
+    full_name: str = Form(...),
+    date_of_birth: str = Form(...),
+) -> UploadDocResponse:
+    """Runs the full CV pipeline synchronously (quality gate -> extraction ->
+    validation -> checklist record -> cross-document check against any
+    sibling document already on file), outside the agent's ReAct loop
+    entirely (CV_INTEGRATION.md §1.5). Degrades toward needs_review/rejected
+    rather than a 500 on any processing failure, matching
+    _try_agent_orchestrator's no-HTTPException convention.
+    """
+    raw_bytes = await file.read()
+
+    with doc_trace(session_id=employee_id, doc_type=doc_type) as trace:
+        if len(raw_bytes) > config.MAX_UPLOAD_BYTES:
+            validation = _rejected_before_processing(
+                "file exceeds maximum upload size", "This file is too large. Please upload a smaller image."
+            )
+            trace["tags"] = {"validation_outcome": validation.outcome.value}
+            return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+        mime_type = _sniff_image_mime(raw_bytes)
+        if mime_type is None or mime_type not in config.ALLOWED_IMAGE_MIME:
+            validation = _rejected_before_processing(
+                "unsupported file type", "Please upload a JPEG or PNG image."
+            )
+            trace["tags"] = {"validation_outcome": validation.outcome.value}
+            return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+        doc_type_enum = DocType(doc_type)
+        faculty_record = {"employee_id": employee_id, "full_name": full_name, "date_of_birth": date_of_birth}
+
+        extracted, quality_report = None, None
+        try:
+            extracted, quality_report = extract_document(raw_bytes, mime_type, expected_doc_type=doc_type_enum)
+        except Exception:
+            logger.exception("upload_doc_extraction_failed employee_id=%s doc_type=%s", employee_id, doc_type)
+
+        if quality_report is None:
+            validation = ValidationResult(
+                outcome=ValidationOutcome.NEEDS_REVIEW,
+                rules=[RuleResult(rule="fail_safe", passed=False, detail="processing error")],
+                composite_confidence=0.0,
+                message="Something went wrong processing this document. It has been sent for manual review.",
+            )
+        elif doc_type_enum == DocType.NBI_CLEARANCE:
+            validation = validate_document(extracted, quality_report, faculty_record)
+        else:
+            validation = validate_id_document(extracted, quality_report, faculty_record)
+
+        source_hash = hashlib.sha256(raw_bytes).hexdigest()
+        onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
+
+        # Cross-document check: only runs when a sibling document is already on
+        # file, via a cache-hit re-extraction (extractor.load_cached_result) —
+        # zero new API calls, no new image bytes (CV_INTEGRATION.md §2.7).
+        other_type = _OTHER_DOC_TYPE[doc_type]
+        sibling = onboarding_status.get_document(employee_id, other_type)
+        if extracted is not None and sibling is not None and sibling.source_hash:
+            sibling_result = load_cached_result(sibling.source_hash, other_type)
+            if sibling_result is not None:
+                nbi_result = extracted if doc_type_enum == DocType.NBI_CLEARANCE else sibling_result
+                id_result = sibling_result if doc_type_enum == DocType.NBI_CLEARANCE else extracted
+                cross_rule = validate_cross_document(nbi_result, id_result)
+                validation = apply_cross_document_result(validation, cross_rule)
+                onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
+
+        # Sanitized shape only — never a field value (blur_score/skew_deg from
+        # the deterministic quality gate; extraction_confidence/fields_* from
+        # the validation outcome, not from any ExtractedField.value).
+        trace["metrics"] = {
+            "extraction_confidence": validation.composite_confidence,
+            "fields_extracted": sum(1 for r in validation.rules if r.rule == "completeness" and r.passed),
+            "fields_missing": sum(1 for r in validation.rules if r.rule == "completeness" and not r.passed),
+        }
+        trace["tags"] = {"validation_outcome": validation.outcome.value}
+        if quality_report is not None:
+            trace["metrics"]["blur_score"] = quality_report.blur_score
+            trace["metrics"]["skew_deg"] = quality_report.skew_deg
+            trace["tags"]["quality_verdict"] = quality_report.verdict.value
+
+        return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+
+@app.get("/onboarding-status/{employee_id}", response_model=ChecklistStatus)
+def onboarding_status_endpoint(employee_id: str) -> ChecklistStatus:
+    return onboarding_status.get_status(employee_id)
 
 
 @app.get("/usage", response_model=UsageResponse)

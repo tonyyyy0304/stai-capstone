@@ -38,6 +38,13 @@ _ALLOWED_METRIC_KEYS = frozenset(
         "source_count",
         "web_citation_count",
         "action_count",
+        # Component 14 (CV/OCR, Phase 6) — never a field value, only shape/score.
+        "blur_score",
+        "skew_deg",
+        "extraction_confidence",
+        "fields_extracted",
+        "fields_missing",
+        "ocr_latency_ms",
     }
 )
 # String trace tags — searchable/filterable labels in the MLflow Traces UI.
@@ -50,6 +57,10 @@ _ALLOWED_TAG_KEYS = frozenset(
         "session_id",
         "chat_model",
         "embedding_model",
+        # Component 14 (CV/OCR, Phase 6) — classification labels only.
+        "doc_type",
+        "validation_outcome",
+        "quality_verdict",
     }
 )
 
@@ -151,6 +162,58 @@ def chat_trace(session_id: str, message: str) -> Iterator[dict[str, Any]]:
             }
             tags["status"] = status
             tags["session_id"] = session_id
+            mlflow.update_current_trace(tags=tags)
+
+
+@contextmanager
+def doc_trace(session_id: str, doc_type: str) -> Iterator[dict[str, Any]]:
+    """Record one document-upload pipeline run (Component 14, Phase 6) as an
+    MLflow trace. Same shape/contract as chat_trace — a mutable trace_state
+    dict for metrics/tags, filtered through the same fail-closed allowlists,
+    a no-op yield when MLflow is unavailable. Callers populate trace_state
+    from ImageQualityReport/ValidationResult fields, never from an
+    ExtractedField's .value."""
+    trace_state: dict[str, Any] = {
+        "metrics": {},
+        "tags": {},
+        "attributes": {"session_id": session_id, "doc_type": doc_type},
+    }
+
+    mlflow = _safe_import_mlflow()
+    if mlflow is None:
+        yield trace_state
+        return
+
+    configure_mlflow()
+    started = perf_counter()
+    status = "ok"
+    with mlflow.start_span(name="doc_upload", span_type="AGENT") as span:
+        span.set_attributes({**trace_state["attributes"], "vision_model": config.ACTIVE_VISION_MODEL})
+        try:
+            yield trace_state
+        except Exception as exc:
+            status = "error"
+            trace_state["tags"]["error_type"] = type(exc).__name__
+            raise
+        finally:
+            latency_ms = (perf_counter() - started) * 1000.0
+            metrics = {
+                key: value
+                for key, value in trace_state.get("metrics", {}).items()
+                if key in _ALLOWED_METRIC_KEYS and isinstance(value, (int, float))
+            }
+            metrics.setdefault("latency_ms", latency_ms)
+            metrics.setdefault("ocr_latency_ms", latency_ms)
+            span.set_attributes(metrics)
+
+            tags = {
+                key: str(value)
+                for key, value in trace_state.get("tags", {}).items()
+                if key in _ALLOWED_TAG_KEYS
+            }
+            tags["status"] = status
+            tags["session_id"] = session_id
+            tags["doc_type"] = doc_type
             mlflow.update_current_trace(tags=tags)
 
 

@@ -335,6 +335,75 @@ def test_cross_document_both_mismatch_lists_both():
     assert "date_of_birth" in result.detail
 
 
+# --- apply_cross_document_result() (Phase 6, POST /upload-doc's sibling check) -
+
+def test_apply_cross_document_escalates_accepted_to_needs_review_on_mismatch():
+    accepted = doc_validation.validate_document(_clean_nbi(), _quality(), _faculty_record())
+    assert accepted.outcome == ValidationOutcome.ACCEPTED
+    cross_rule = doc_validation.validate_cross_document(
+        _clean_nbi(), _clean_id(family_name=_field("CRUZ"), first_name=_field("JUAN"), middle_name=_field(None, 0.0))
+    )
+
+    result = doc_validation.apply_cross_document_result(accepted, cross_rule)
+
+    assert result.outcome == ValidationOutcome.NEEDS_REVIEW
+    assert "cross_document_consistency" in [r.rule for r in result.rules]
+    assert not next(r for r in result.rules if r.rule == "cross_document_consistency").passed
+
+
+def test_apply_cross_document_passing_check_leaves_accepted_untouched():
+    accepted = doc_validation.validate_document(_clean_nbi(), _quality(), _faculty_record())
+    cross_rule = doc_validation.validate_cross_document(_clean_nbi(), _clean_id())
+
+    result = doc_validation.apply_cross_document_result(accepted, cross_rule)
+
+    assert result.outcome == ValidationOutcome.ACCEPTED
+    assert result.message == accepted.message
+
+
+def test_apply_cross_document_never_downgrades_below_needs_review():
+    """A document already rejected/needs_review on its own merits stays
+    exactly that -- a failing cross-check doesn't make it "more rejected"."""
+    already_needs_review = doc_validation.validate_document(
+        _clean_nbi(purpose=_field(None, 0.0)), _quality(), _faculty_record()
+    )
+    assert already_needs_review.outcome == ValidationOutcome.NEEDS_REVIEW
+    mismatched_cross_rule = doc_validation.validate_cross_document(
+        _clean_nbi(), _clean_id(family_name=_field("CRUZ"), first_name=_field("JUAN"), middle_name=_field(None, 0.0))
+    )
+
+    result = doc_validation.apply_cross_document_result(already_needs_review, mismatched_cross_rule)
+
+    assert result.outcome == ValidationOutcome.NEEDS_REVIEW
+    assert "cross_document_consistency" in [r.rule for r in result.rules]
+
+
+def test_apply_cross_document_never_upgrades_a_rejected_outcome():
+    """A passing cross-check doesn't excuse an expired document -- agreement
+    between two documents isn't proof the first one is still valid."""
+    expired = doc_validation.validate_document(
+        _clean_nbi(), _quality(), _faculty_record(), as_of=date(2028, 1, 1)
+    )
+    assert expired.outcome == ValidationOutcome.REJECTED
+    passing_cross_rule = doc_validation.validate_cross_document(_clean_nbi(), _clean_id())
+
+    result = doc_validation.apply_cross_document_result(expired, passing_cross_rule)
+
+    assert result.outcome == ValidationOutcome.REJECTED
+
+
+def test_apply_cross_document_appends_rule_without_dropping_existing_ones():
+    accepted = doc_validation.validate_document(_clean_nbi(), _quality(), _faculty_record())
+    cross_rule = doc_validation.validate_cross_document(_clean_nbi(), _clean_id())
+
+    result = doc_validation.apply_cross_document_result(accepted, cross_rule)
+
+    original_rule_names = {r.rule for r in accepted.rules}
+    result_rule_names = {r.rule for r in result.rules}
+    assert original_rule_names <= result_rule_names
+    assert len(result.rules) == len(accepted.rules) + 1
+
+
 # --- PII assertion, across a representative sweep -----------------------------
 
 

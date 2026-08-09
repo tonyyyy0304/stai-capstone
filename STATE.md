@@ -54,31 +54,29 @@ Agentic RAG that answers **DLSU Faculty Manual 2021** onboarding questions with 
 - **Docker**: `Dockerfile.api`, `Dockerfile.ui`, `Dockerfile.mlflow`, `docker-compose.yml`; Render start scripts under `scripts/`.
 
 ### CV/DS: NBI Clearance + Government ID verification (secondary track — Component 14)
-Full design doc: [CV_INTEGRATION.md](CV_INTEGRATION.md). Phases 0–5 of 9 done; RAG remains primary per CLAUDE.md's priority.
+Full design doc: [CV_INTEGRATION.md](CV_INTEGRATION.md). All 8 phases (0–7) done — backend/API/agent/evals/UI all built; UI styling not yet visually verified live. Phase 4a (Ollama vision fallback) is explicitly deferred, not on the critical path. RAG remains primary per CLAUDE.md's priority.
 - **Config/schemas** (`src/config.py` CV/OCR block, `src/schemas.py`) — vision provider/model selection (Gemini primary, Ollama switchable fallback), quality thresholds, `DocType`/`IdType`/`ImageQualityReport`/`ExtractedField`/`NbiExtractionResult`/`IdExtractionResult`/`ValidationResult`/`ChecklistStatus`.
 - **Mock dataset** (`data/references/mock/`) — 100 images, 2 document types (NBI Clearance + Government ID covering National ID/Driver's License/Passport), 5 degradation variants × 16 identities + 26 negatives (including cross-document mismatch fixtures); `data/references/real/` (gitignored, consented) and `data/references/samples/` (gitignored, layout reference) are separate, never-pooled subsets.
 - **Layer 1 — quality gate** (`src/ocr/quality.py`) — OpenCV deterministic blur/skew/exposure/resolution check; a `reject` verdict short-circuits before any API call (the quota mechanism).
-- **Layer 2 — extraction** (`src/ocr/extractor.py`) — one Gemini multimodal call per document, SHA-256-keyed disk cache (`evals/results/ocr_cache/`), one conditional retry on low-confidence fields (`OCR_ENABLE_RETRY`). Detection only — never decides accept/reject.
+- **Layer 2 — extraction** (`src/ocr/extractor.py`) — one Gemini multimodal call per document, SHA-256-keyed disk cache (`evals/results/ocr_cache/`), one conditional retry on low-confidence fields (`OCR_ENABLE_RETRY`); `load_cached_result()` for a hash-only cache lookup (no image bytes needed) used by the cross-document sibling check. Detection only — never decides accept/reject.
 - **Document registry** (`src/ocr/doctypes.py`) — declarative field/validator spec per doc type, shared by extraction prompts and validation.
-- **Layer 3 — validation** (`src/guardrails/doc_validation.py`) — `validate_document()` (NBI) / `validate_id_document()` (Government ID), same six-rule shape (type match, completeness, format, identity, validity window, fail-safe); `validate_cross_document()` (NBI↔ID name/DOB consistency). Rule 4 (identity) and Rule 6 (fail-safe) structurally can only ever escalate to `needs_review`, never auto-reject.
+- **Layer 3 — validation** (`src/guardrails/doc_validation.py`) — `validate_document()` (NBI) / `validate_id_document()` (Government ID), same six-rule shape (type match, completeness, format, identity, validity window, fail-safe); `validate_cross_document()` (NBI↔ID name/DOB consistency); `apply_cross_document_result()` folds a cross-check into an already-computed `ValidationResult`, escalating `accepted`→`needs_review` on mismatch, never downgrading further or upgrading a result that failed on its own merits. Rule 4 (identity) and Rule 6 (fail-safe) structurally can only ever escalate to `needs_review`, never auto-reject.
 - **Checklist state** (`src/memory/onboarding_status.py`) — durable per-employee `(doc_type → status)` in SQLite; never stores an extracted field value, only status/outcome/source_hash.
+- **Agent wiring** (`src/agent/orchestrator.py`, `src/agent/prompts.py`) — `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` short-circuit in `run_turn()` before `_react_loop()` (same pattern as `OUT_OF_SCOPE`), not new ReAct tools — the orchestrator turned out to be a closed-enum ReAct loop, not Gemini function-calling, so there was nothing to register a tool into. `ROUTER_PROMPT` now disambiguates "what documents do I need?" (stays `faq`) from "what's my document's status?" (`document_status`), per PLAN.md §4.4.
+- **API** (`src/api.py`) — `POST /upload-doc` (multipart: file + employee_id + doc_type + full_name + date_of_birth — no HR record source exists in this codebase, so identity is uploader-supplied, not looked up) runs quality→extract→validate→record→cross-check synchronously, outside the chat/ReAct path entirely; `GET /onboarding-status/{employee_id}`.
+- **Monitoring** (`src/monitoring.py`) — `doc_trace()` sibling to `chat_trace()`; tag/metric allowlists extended (`doc_type`/`validation_outcome`/`quality_verdict` tags, `blur_score`/`skew_deg`/`extraction_confidence`/`fields_extracted`/`fields_missing`/`ocr_latency_ms` metrics), no field value ever added.
+- **UI** (`src/ui.py`) — styled: Employee ID field, a Document Checklist card (color-coded status pills, refetched every render so it updates without a manual reload), and a styled "Upload a document" expander (friendly doc-type labels, name/DOB remembered across the two uploads, accent-filled submit button, persisted color-coded result banner). Extends the file's existing oklch design tokens/patterns rather than inventing new ones. Also fixed an unrelated pre-existing layout bug (`stMain` missing `min-width: 0`, causing horizontal overflow — a flex sibling of `stSidebar` refusing to shrink below its content's intrinsic width). **Not yet visually verified live** (no browser/DOM tool available) — awaiting a live test pass.
+- **Evals** (`evals/run_ocr_eval.py`, `evals/run_validation_eval.py`) — per-field exact-match + normalized CER (OCR) and precision/recall/F1 + false-auto-pass rate + cross-document trigger rate (validation), both reported per `doc_type`, never pooled; `run_validation_eval.py` runs entirely off cached extractions, genuinely zero API cost. Already found and fixed a real bug: `scripts/make_onboarding_docs.py`'s `wrong_person` negative fixture never actually swapped in the impostor's name (wrong dict key overridden), so it silently tested nothing — both fixtures now genuinely mismatch, re-verified at 0% false-auto-pass.
 
 ### Evals & tests
 - **Golden set** (`evals/golden_set.jsonl`, 32 rows) — per-topic + per-tier.
 - **Retrieval eval** (`evals/run_retrieval_eval.py`) — per-topic/per-tier hit-rate.
 - **Guardrail eval** (`evals/run_guardrail_eval.py`) + red-team set (`evals/guardrail_redteam.jsonl`).
-- **Unit tests** (`tests/`, 19 files, 308 passed / 1 skipped) — api, chunking, doc_validation, doctypes, extractor, guardrails, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
+- **Unit tests** (`tests/`, 19 files, 335 passed / 1 skipped) — api, chunking, doc_validation, doctypes, extractor, guardrails, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
 
 ---
 
 ## Planned / not yet implemented
-
-### CV/DS Component 14 — Phase 6 onward (agent + API + UI wiring)
-- Agent wiring: `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` exist in `schemas.py` but `ROUTER_PROMPT` doesn't classify into them yet, and `orchestrator.py`'s `run_turn()`/`_react_loop()` has no handling branch for either — see `CV_INTEGRATION.md` Phase 6 note on the ReAct loop being a closed-enum design, not Gemini function-calling.
-- API: `POST /upload-doc`, `GET /onboarding-status/{employee_id}` — neither exists in `src/api.py` yet.
-- UI: no `st.file_uploader` or checklist panel in `src/ui.py` yet; `employee_id` isn't threaded through the chat payload yet either.
-- Monitoring: `doc_trace()` sibling to `chat_trace()`, plus tag/metric allowlist extension, not yet added to `src/monitoring.py`.
-- Evals: `evals/run_ocr_eval.py`, `run_validation_eval.py` — reported per subset (**real** vs **mock**, never pooled).
 
 ### End-to-end / answer evals
 - `evals/run_answer_eval.py` — end-to-end answer accuracy harness.

@@ -37,6 +37,14 @@ Guardrails (Module 6, src/guardrails/) run at three stages of run_turn():
    pre-router deterministic layer misses.
 3. Output (check_grounding): re-verifies citations before the final
    AgentResponse is returned.
+
+Intent.DOCUMENT_UPLOAD / Intent.DOCUMENT_STATUS (Component 14, Phase 6) short-
+circuit before _react_loop() the same way OUT_OF_SCOPE already does, rather than
+becoming new ReActAction members — a checklist lookup is a deterministic read,
+not something that benefits from the model's planning loop, and this keeps
+_react_loop()/ReActAction untouched. Raw document bytes never reach this file at
+all; POST /upload-doc (src/api.py) runs that pipeline synchronously and
+separately (CV_INTEGRATION.md §1.5).
 """
 
 import json
@@ -71,6 +79,14 @@ from src.schemas import (
 OUT_OF_SCOPE_REPLY = (
     f"I can only help with {config.SCOPE_PHRASE}. For anything else, please reach out to "
     f"{config.HELP_CONTACT} directly."
+)
+DOCUMENT_UPLOAD_REPLY = (
+    "You can submit your document using the upload option in this app. Once it's processed, "
+    "just ask me and I can tell you its status here."
+)
+NO_EMPLOYEE_ID_REPLY = (
+    "I don't have your employee ID for this session, so I can't look up your document status. "
+    "Please provide it and ask again."
 )
 FALLBACK_CLARIFYING_TEXT = "Could you clarify what you need help with?"
 API_ERROR_REPLY = (
@@ -150,11 +166,51 @@ def _check_semantic_guardrails(classification: IntentClassification) -> Guardrai
     return check_toxicity_semantic(classification)
 
 
+def _format_checklist_reply(status) -> str:
+    """Renders a ChecklistStatus into a short human reply. PII-free by
+    construction — ChecklistStatus/OnboardingDocument (src/schemas.py) never
+    carry an extracted field value, only status/outcome per doc_type."""
+    if not status.documents:
+        return "I don't see any documents on file for you yet."
+    lines = [f"- {doc.doc_type.value.replace('_', ' ')}: {doc.status.value.replace('_', ' ')}"
+             for doc in status.documents]
+    if status.missing:
+        missing_labels = ", ".join(d.replace("_", " ") for d in status.missing)
+        lines.append(f"\nStill needed: {missing_labels}.")
+    else:
+        lines.append("\nAll required documents are on file.")
+    return "Here's your document checklist:\n" + "\n".join(lines)
+
+
+def _handle_document_status(employee_id: str | None, steps: list[AgentStep]) -> str:
+    """Read-only checklist lookup (Component 14, CV_INTEGRATION.md §1.5) —
+    deliberately NOT a ReAct tool/action: this is a deterministic status
+    lookup, not something that needs the model's reasoning loop, so it
+    short-circuits in run_turn() before _react_loop() the same way
+    Intent.OUT_OF_SCOPE already does."""
+    if not employee_id:
+        return NO_EMPLOYEE_ID_REPLY
+
+    from src.memory import onboarding_status
+
+    status = onboarding_status.get_status(employee_id)
+    steps.append(
+        AgentStep(
+            thought="looked up onboarding document checklist",
+            tool="get_onboarding_status",
+            tool_args={"employee_id": employee_id},
+            observation=status.model_dump_json(),
+        )
+    )
+    return _format_checklist_reply(status)
+
+
 def run_turn(
     session_id: str,
     message: str,
     history: list[dict[str, str]] | None = None,
     client=None,
+    employee_id: str | None = None,
 ) -> AgentResponse:
     history = history or []
     steps: list[AgentStep] = []
@@ -201,6 +257,20 @@ def run_turn(
         if classification.intent == Intent.OUT_OF_SCOPE:
             return AgentResponse(
                 reply=OUT_OF_SCOPE_REPLY,
+                steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
+            )
+
+        if classification.intent == Intent.DOCUMENT_UPLOAD:
+            return AgentResponse(
+                reply=DOCUMENT_UPLOAD_REPLY,
+                steps=steps,
+                token_usage=_turn_token_usage(turn_started_at, session_id),
+            )
+
+        if classification.intent == Intent.DOCUMENT_STATUS:
+            return AgentResponse(
+                reply=_handle_document_status(employee_id, steps),
                 steps=steps,
                 token_usage=_turn_token_usage(turn_started_at, session_id),
             )
@@ -494,7 +564,7 @@ def handle_message(
     if manage_memory:
         history = memory_persistent.get_context(session_id, employee_id)
 
-    result = run_turn(session_id, message, history=history, client=client)
+    result = run_turn(session_id, message, history=history, client=client, employee_id=employee_id)
 
     if manage_memory:
         memory_session.append_turn(session_id, "user", message)

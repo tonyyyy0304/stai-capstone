@@ -13,6 +13,7 @@ already used in evals/run_guardrail_eval.py; routine `pytest tests/` must
 never spend live quota on its own.
 """
 
+import hashlib
 import os
 from types import SimpleNamespace
 
@@ -459,6 +460,72 @@ def test_retry_failed_api_call_keeps_first_attempt(tmp_path, monkeypatch):
     assert result is not None
     assert result.family_name.value == "REYES"  # first attempt's good fields survive
     assert result.middle_name.value is None      # the field that prompted the retry stays null — honest, not fabricated
+
+
+# --- load_cached_result() (Phase 6, cross-document sibling lookup) -----------
+# Hash-only lookup — no image bytes required, since POST /upload-doc can't
+# assume the sibling document's original bytes are still around
+# (config.PERSIST_UPLOADS is False by default).
+
+def test_load_cached_result_hits_by_hash_alone(tmp_path, monkeypatch):
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _FakeClient(parsed_result=_canned_nbi_result())
+    image_bytes = _bytes("nbi_id01_clean.png")
+    source_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    extractor.extract_document(
+        image_bytes, "image/png", DocType.NBI_CLEARANCE, client=fake_client, use_cache=True,
+    )
+
+    result = extractor.load_cached_result(source_hash, DocType.NBI_CLEARANCE)
+
+    assert result is not None
+    assert result.family_name.value == "REYES"
+
+
+def test_load_cached_result_miss_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    assert extractor.load_cached_result("0" * 64, DocType.NBI_CLEARANCE) is None
+
+
+def test_load_cached_result_respects_preprocess_flag(tmp_path, monkeypatch):
+    """The preprocess flag is part of the cache key -- a hash cached under
+    preprocess=True must not spuriously hit a preprocess=False lookup."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _FakeClient(parsed_result=_canned_nbi_result())
+    image_bytes = _bytes("nbi_id01_clean.png")
+    source_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    extractor.extract_document(
+        image_bytes, "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=True, preprocess=True,
+    )
+
+    assert extractor.load_cached_result(source_hash, DocType.NBI_CLEARANCE, preprocess_flag=True) is not None
+    assert extractor.load_cached_result(source_hash, DocType.NBI_CLEARANCE, preprocess_flag=False) is None
+
+
+def test_load_cached_result_unsupported_doc_type_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    assert extractor.load_cached_result("0" * 64, DocType.UNKNOWN_DOCUMENT) is None
+
+
+def test_load_cached_result_works_for_government_id_too(tmp_path, monkeypatch):
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _FakeClient(parsed_result=_canned_id_result(id_type=IdType.NATIONAL_ID))
+    image_bytes = _bytes("id_id01_clean.png")
+    source_hash = hashlib.sha256(image_bytes).hexdigest()
+
+    extractor.extract_document(
+        image_bytes, "image/png", DocType.GOVERNMENT_ID, client=fake_client, use_cache=True,
+    )
+
+    result = extractor.load_cached_result(source_hash, DocType.GOVERNMENT_ID)
+    assert result is not None
+    assert result.id_type == IdType.NATIONAL_ID
 
 
 # --- Optional live test — real Gemini call, skipped by default --------------

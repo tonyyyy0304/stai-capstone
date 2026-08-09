@@ -165,6 +165,100 @@ def test_semantic_jailbreak_flag_blocks(monkeypatch):
     assert all(step.tool is None for step in result.steps)
 
 
+def test_document_upload_intent_points_at_the_uploader(monkeypatch):
+    mock_classification(monkeypatch, Intent.DOCUMENT_UPLOAD)
+    result = orchestrator.run_turn("s-up", "how do I upload my NBI clearance?", client=FakeClient([]))
+    assert result.reply == orchestrator.DOCUMENT_UPLOAD_REPLY
+    assert all(step.tool is None for step in result.steps)
+
+
+def test_document_status_without_employee_id_asks_for_it_not_a_lookup(monkeypatch):
+    mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
+    result = orchestrator.run_turn("s-st", "what's the status of my documents?", client=FakeClient([]))
+    assert result.reply == orchestrator.NO_EMPLOYEE_ID_REPLY
+    assert all(step.tool is None for step in result.steps)  # never reaches the DB lookup
+
+
+def test_document_status_with_employee_id_looks_up_checklist(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
+
+    result = orchestrator.run_turn(
+        "s-st2", "is my NBI clearance approved yet?", client=FakeClient([]), employee_id="EMP-04821"
+    )
+
+    tool_step = next(s for s in result.steps if s.tool == "get_onboarding_status")
+    assert tool_step.tool_args == {"employee_id": "EMP-04821"}
+    assert "checklist" in result.reply.lower()
+
+
+def test_document_status_reflects_recorded_documents(monkeypatch, tmp_path):
+    """Not just a smoke test of the short-circuit -- confirms the reply
+    actually reflects what's on file via onboarding_status.record_result()."""
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
+
+    from src.memory import onboarding_status
+    from src.schemas import DocType, RuleResult, ValidationOutcome, ValidationResult
+
+    onboarding_status.record_result(
+        "EMP-04821", DocType.NBI_CLEARANCE,
+        ValidationResult(outcome=ValidationOutcome.ACCEPTED, rules=[], composite_confidence=0.9, message=""),
+        source_hash="h1",
+    )
+
+    result = orchestrator.run_turn(
+        "s-st3", "what's my document status?", client=FakeClient([]), employee_id="EMP-04821"
+    )
+
+    assert "nbi clearance" in result.reply.lower()
+    assert "government id" in result.reply.lower()  # still missing, should be mentioned
+
+
+def test_document_status_tool_observation_is_pii_free(monkeypatch, tmp_path):
+    """The get_onboarding_status AgentStep.observation is claimed PII-free by
+    construction (ChecklistStatus/OnboardingDocument never carry a field
+    value) -- asserted directly here, not just trusted from the schema
+    docstring, per the same PII-assertion discipline as
+    test_doc_validation.py's test_no_pii_leaks_into_any_rule_detail_or_message."""
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
+
+    from src.memory import onboarding_status
+    from src.schemas import DocType, RuleResult, ValidationOutcome, ValidationResult
+
+    onboarding_status.record_result(
+        "EMP-04821", DocType.NBI_CLEARANCE,
+        ValidationResult(outcome=ValidationOutcome.ACCEPTED, rules=[], composite_confidence=0.9, message=""),
+        source_hash="h1",
+    )
+
+    result = orchestrator.run_turn(
+        "s-pii", "what's my document status?", client=FakeClient([]), employee_id="EMP-04821"
+    )
+
+    pii_needles = ["REYES", "MARIA", "1990-01-01", "REYE900101-N00457821"]
+    tool_step = next(s for s in result.steps if s.tool == "get_onboarding_status")
+    assert not any(needle in tool_step.observation for needle in pii_needles)
+    assert not any(needle in result.reply for needle in pii_needles)
+
+
+def test_handle_message_threads_employee_id_into_run_turn(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    seen = {}
+
+    def fake_run_turn(session_id, message, history=None, client=None, employee_id=None):
+        seen["employee_id"] = employee_id
+        return orchestrator.AgentResponse(reply="ok")
+
+    monkeypatch.setattr(orchestrator, "run_turn", fake_run_turn)
+
+    orchestrator.handle_message("what's my status?", session_id="s1", employee_id="EMP-04821")
+
+    assert seen["employee_id"] == "EMP-04821"
+
+
 def test_faq_uses_search_kb_then_answers(monkeypatch):
     # ReAct loop: the model plans search_kb (retrieve-only), observes the chunks,
     # then finishes. The one grounded answer is shaped at the end over those chunks.

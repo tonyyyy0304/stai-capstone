@@ -56,10 +56,14 @@ def _field_hint_block(doc_type: DocType) -> str:
     return "\n".join(lines)
 
 
-def _cache_key(original_bytes: bytes, preprocess_flag: bool) -> str:
-    digest = hashlib.sha256(original_bytes).hexdigest()
+def _build_cache_key(digest: str, preprocess_flag: bool) -> str:
     model_slug = config.ACTIVE_VISION_MODEL.replace("/", "-").replace(":", "-")
     return f"{digest}_{int(preprocess_flag)}_{model_slug}"
+
+
+def _cache_key(original_bytes: bytes, preprocess_flag: bool) -> str:
+    digest = hashlib.sha256(original_bytes).hexdigest()
+    return _build_cache_key(digest, preprocess_flag)
 
 
 def _cache_path(cache_key: str):
@@ -83,6 +87,25 @@ def _save_to_cache(cache_path, result) -> None:
         cache_path.write_text(result.model_dump_json(indent=2))
     except OSError:
         logger.warning("ocr_cache_write_failed path=%s", cache_path)
+
+
+def load_cached_result(source_hash: str, doc_type: DocType, preprocess_flag: bool | None = None):
+    """Hash-only cache lookup, no image bytes required (Phase 6, POST
+    /upload-doc's cross-document sibling lookup, CV_INTEGRATION.md §2.7).
+
+    source_hash already equals the digest half of _cache_key()'s output, so
+    the cache entry can be reconstructed directly — needed because the
+    original bytes usually aren't available on a later request
+    (config.PERSIST_UPLOADS is False by default, so raw uploads aren't kept
+    past their own request). Returns None on a cache miss, same as any other
+    failed lookup; callers should treat that as "no cross-check possible
+    right now," not an error."""
+    if doc_type not in _SCHEMA_BY_DOC_TYPE:
+        return None
+    do_preprocess = config.OCR_PREPROCESS if preprocess_flag is None else preprocess_flag
+    cache_key = _build_cache_key(source_hash, do_preprocess)
+    _, schema = _SCHEMA_BY_DOC_TYPE[doc_type]
+    return _load_from_cache(_cache_path(cache_key), schema)
 
 
 def _retryable_field_names(doc_type: DocType) -> list[str]:

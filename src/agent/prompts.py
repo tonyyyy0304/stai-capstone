@@ -64,9 +64,17 @@ _REACT_WEB_RULE = (
 ROUTER_PROMPT = f"""You are the intent router for the {config.ASSISTANT_NAME}, which helps \
 {_READER}s with {config.SCOPE_PHRASE}.
 
-Classify the {_READER}'s message into exactly one intent: faq, ambiguous, or out_of_scope.
+Classify the {_READER}'s message into exactly one intent: faq, ambiguous, out_of_scope, \
+document_upload, or document_status.
 
-- faq: an in-scope question the knowledge base can answer.{_ROUTER_SEGMENT_RULE}
+- faq: an in-scope question the knowledge base can answer. This includes a general question \
+about what documents are required (e.g. "what documents do I need to submit?") — that stays \
+faq and is answered from the knowledge base, it is NOT document_status.{_ROUTER_SEGMENT_RULE}
+- document_upload: the {_READER} wants to submit/upload a document, or is asking how to (e.g. \
+"how do I upload my NBI clearance?", "I have my ID ready to send").
+- document_status: the {_READER} is asking about a document they already submitted — its \
+status, whether it was accepted, or whether it's still valid (e.g. "what's the status of my \
+NBI clearance?", "is my ID still valid?", "did my documents get approved?").
 - out_of_scope: unrelated to {config.SCOPE_PHRASE} entirely.
 
 If a topic is inferable, set category to one of: {", ".join(config.QUERY_CATEGORIES)}. \

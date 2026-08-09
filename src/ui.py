@@ -49,6 +49,17 @@ a:hover { text-decoration: underline; }
 [data-testid="stHeader"] { display: none; }
 [data-testid="stAppViewContainer"] { background: oklch(98.2% 0.004 250); }
 [data-testid="stMainBlockContainer"] { padding: 0 !important; max-width: 100% !important; }
+/* stMain is a flex sibling of stSidebar under stAppViewContainer. Flex
+   children default to min-width:auto, so stMain refuses to shrink below its
+   content's intrinsic width even with flex:1 -- if anything inside (e.g. the
+   centered 680px message column) has a wide-enough intrinsic min-content
+   width, the whole row overflows the viewport instead of stMain actually
+   shrinking to fit beside the sidebar. Without this, the header (which has
+   no such forcing content) sits correctly while the message list/quick
+   prompts/composer -- which all center via max-width+margin:auto -- end up
+   centered within an oversized box and pushed off-screen right, with a
+   horizontal scrollbar as the visible symptom. */
+[data-testid="stMain"] { min-width: 0 !important; overflow-x: hidden !important; }
 
 /* Sidebar shell */
 [data-testid="stSidebar"] {
@@ -81,6 +92,17 @@ a:hover { text-decoration: underline; }
   white-space: nowrap !important;
 }
 .st-key-new_chat_btn button:hover { background: oklch(94% 0.008 250) !important; }
+
+/* Document upload submit button (Component 14) -- same accent-filled
+   pattern as .st-key-privacy_agree_btn below. */
+.st-key-upload_submit_btn button {
+  background: __ACCENT__ !important; color: white !important; border: none !important;
+  border-radius: 9px !important; padding: 9px 16px !important;
+  font-size: 13.5px !important; font-weight: 500 !important; margin-top: 4px !important;
+}
+.st-key-upload_submit_btn button:hover {
+  background: color-mix(in oklab, __ACCENT__ 88%, black) !important;
+}
 
 /* Message list */
 .st-key-message_list { max-width: 680px; margin: 0 auto; padding: 32px 24px 20px 24px; }
@@ -257,6 +279,18 @@ def _init_state() -> None:
     st.session_state.setdefault("api_url", config.API_URL)
     st.session_state.setdefault("awaiting_response", False)
     st.session_state.setdefault("pending_request", None)
+    # Component 14: needed so "what's my document status?" in chat can
+    # resolve to a checklist lookup, and so the uploader below knows who
+    # it's uploading for.
+    st.session_state.setdefault("employee_id", "")
+    # Remembered across the two uploads so the user doesn't retype identity
+    # fields for the second document.
+    st.session_state.setdefault("upload_full_name", "")
+    st.session_state.setdefault("upload_dob", "")
+    # Deferred-render pattern (matches pending_request/awaiting_response
+    # above) -- set on submit, rendered on the NEXT run, so the result
+    # banner survives the rerun that follows a successful upload.
+    st.session_state.setdefault("last_upload_result", None)
 
 
 def _toggle_sidebar() -> None:
@@ -375,6 +409,150 @@ def _render_declined_screen() -> None:
         st.button("Review the notice again", key="privacy_review_btn", on_click=_reconsider_privacy)
 
 
+_DOC_TYPE_LABELS = {"nbi_clearance": "NBI Clearance", "government_id": "Government ID"}
+
+# Status/outcome -> (text color, background, border), extending this file's
+# existing oklch language. "needs_review" reuses the exact amber already
+# defined for _render_actions' "pending" chip rather than inventing a
+# separate token; "accepted"/"validated" and "rejected"/"needs_review" are
+# aliased together since ChecklistStatus (DocStatus) and the /upload-doc
+# result (ValidationOutcome) use different vocabularies for the same idea.
+_STATUS_STYLES = {
+    "validated": ("oklch(35% 0.12 145)", "oklch(96% 0.03 145)", "oklch(85% 0.06 145)"),
+    "accepted": ("oklch(35% 0.12 145)", "oklch(96% 0.03 145)", "oklch(85% 0.06 145)"),
+    "needs_review": ("oklch(45% 0.11 85)", "oklch(96% 0.03 85)", "oklch(87% 0.05 85)"),
+    "rejected": ("oklch(45% 0.15 25)", "oklch(96% 0.03 25)", "oklch(87% 0.06 25)"),
+    "submitted": ("oklch(40% 0.012 250)", "oklch(95% 0.006 250)", "oklch(88% 0.008 250)"),
+    "missing": ("oklch(55% 0.012 250)", "oklch(96% 0.004 250)", "oklch(90% 0.006 250)"),
+}
+
+
+def _status_badge_style(status: str) -> tuple[str, str, str]:
+    return _STATUS_STYLES.get(status, _STATUS_STYLES["missing"])
+
+
+def _status_badge_html(status: str) -> str:
+    text_color, bg_color, border_color = _status_badge_style(status)
+    label = status.replace("_", " ").title()
+    return (
+        f'<span style="font-size:11px;font-weight:500;padding:3px 9px;border-radius:999px;'
+        f'color:{text_color};background:{bg_color};border:1px solid {border_color};'
+        f'white-space:nowrap;">{label}</span>'
+    )
+
+
+def _render_checklist() -> None:
+    """Document checklist card (Component 14). Fetches GET /onboarding-status
+    on every render when an employee ID is set -- a cheap SQLite read, no
+    LLM/vision cost -- so it reflects the latest state on every rerun
+    (including the one that follows a successful upload) without needing a
+    manual page refresh."""
+    employee_id = st.session_state.employee_id.strip()
+    if not employee_id:
+        return
+
+    try:
+        response = requests.get(
+            f"{st.session_state.api_url.rstrip('/')}/onboarding-status/{employee_id}", timeout=10
+        )
+        response.raise_for_status()
+        checklist = response.json()
+    except requests.RequestException:
+        st.markdown(
+            '<div style="font-size:12px;color:oklch(55% 0.012 250);padding:4px 8px;">'
+            "Could not load document checklist.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
+        'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;">Document Checklist</div>',
+        unsafe_allow_html=True,
+    )
+    rows = []
+    for doc in checklist.get("documents", []):
+        label = _DOC_TYPE_LABELS.get(doc["doc_type"], doc["doc_type"])
+        rows.append(
+            '<div style="display:flex;align-items:center;justify-content:space-between;'
+            'padding:7px 0;border-bottom:1px solid oklch(93% 0.006 250);">'
+            f'<span style="font-size:13px;color:oklch(28% 0.015 255);">{label}</span>'
+            f'{_status_badge_html(doc["status"])}'
+            "</div>"
+        )
+    if rows:
+        rows[-1] = rows[-1].replace("border-bottom:1px solid oklch(93% 0.006 250);", "")
+    st.markdown(
+        '<div style="display:flex;flex-direction:column;padding:2px 10px;border-radius:10px;'
+        'background:oklch(99% 0.002 250);border:1px solid oklch(90% 0.006 250);">'
+        + "".join(rows) + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_uploader() -> None:
+    """Document upload flow (Component 14) -- posts to POST /upload-doc and
+    defers rendering the result to the NEXT run (matching
+    _queue_message/_fetch_pending_response's deferred pattern) so the result
+    banner survives the rerun a successful submission triggers, which is
+    also what makes the checklist above refresh without a manual reload."""
+    with st.expander("Upload a document", expanded=False):
+        upload_doc_type = st.selectbox(
+            "Document type", list(_DOC_TYPE_LABELS), format_func=lambda v: _DOC_TYPE_LABELS[v],
+            key="upload_doc_type",
+        )
+        st.session_state.upload_full_name = st.text_input(
+            "Full name (as printed on the document)",
+            value=st.session_state.upload_full_name, key="upload_full_name_input",
+        )
+        st.session_state.upload_dob = st.text_input(
+            "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
+        )
+        upload_file = st.file_uploader("File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key="upload_file")
+
+        if st.button("Submit document", key="upload_submit_btn", use_container_width=True):
+            employee_id = st.session_state.employee_id.strip()
+            if not (employee_id and st.session_state.upload_full_name and st.session_state.upload_dob and upload_file):
+                st.error("Employee ID, full name, date of birth, and a file are all required.")
+            else:
+                try:
+                    response = requests.post(
+                        f"{st.session_state.api_url.rstrip('/')}/upload-doc",
+                        data={
+                            "employee_id": employee_id,
+                            "doc_type": upload_doc_type,
+                            "full_name": st.session_state.upload_full_name,
+                            "date_of_birth": st.session_state.upload_dob,
+                        },
+                        files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
+                        timeout=90,
+                    )
+                    response.raise_for_status()
+                    st.session_state.last_upload_result = response.json()
+                except requests.RequestException as exc:
+                    st.session_state.last_upload_result = {"error": str(exc)}
+                st.rerun()
+
+        result = st.session_state.last_upload_result
+        if result:
+            if "error" in result:
+                st.markdown(
+                    f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                    f'background:oklch(96% 0.03 25);border:1px solid oklch(87% 0.06 25);'
+                    f'color:oklch(45% 0.15 25);font-size:13px;">Upload failed: {html.escape(result["error"])}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                validation = result["validation"]
+                text_color, bg_color, border_color = _status_badge_style(validation["outcome"])
+                st.markdown(
+                    f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                    f'background:{bg_color};border:1px solid {border_color};color:{text_color};'
+                    f'font-size:13px;">{html.escape(validation["message"])}</div>',
+                    unsafe_allow_html=True,
+                )
+
+
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
     with st.sidebar:
         st.markdown(
@@ -392,12 +570,18 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
             unsafe_allow_html=True,
         )
         st.markdown(
-            '''<div style="display:flex;align-items:center;gap:8px;padding:10px 8px;border-top:1px solid oklch(90% 0.006 250);margin-top:10px;">
-  <div style="width:26px;height:26px;border-radius:999px;background:oklch(88% 0.01 250);flex-shrink:0;"></div>
-  <div style="font-size:12.5px;color:oklch(45% 0.012 250);">Employee session</div>
-</div>''',
+            '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
+            'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;border-top:1px solid oklch(90% 0.006 250);'
+            'margin-top:10px;">Employee ID</div>',
             unsafe_allow_html=True,
         )
+        st.session_state.employee_id = st.text_input(
+            "Employee ID", value=st.session_state.employee_id, key="employee_id_input",
+            label_visibility="collapsed", placeholder="e.g. EMP-04821",
+        )
+
+        _render_checklist()
+        _render_uploader()
 
         if dev_mode:
             with st.expander("Developer tools", expanded=False):
@@ -503,6 +687,7 @@ def _fetch_pending_response() -> None:
     payload: dict = {
         "session_id": st.session_state.session_id,
         "message": pending.get("message", ""),
+        "employee_id": st.session_state.employee_id or None,
     }
 
     try:

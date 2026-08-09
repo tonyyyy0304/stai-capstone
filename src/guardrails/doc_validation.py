@@ -59,6 +59,10 @@ _MSG_FORMAT = "Some fields on this document could not be verified. It has been s
 _MSG_IDENTITY = "The name on this document does not match our records. It has been sent for manual review."
 _MSG_NEEDS_REVIEW = "This document needs manual review before it can be accepted."
 _MSG_ACCEPTED = "Document verified successfully."
+_MSG_CROSS_DOCUMENT_MISMATCH = (
+    "The name or date of birth on this document does not match your other submitted document. "
+    "It has been sent for manual review."
+)
 
 _SUFFIXES = {"JR", "SR", "II", "III", "IV"}
 _NON_ALNUM = re.compile(r"[^A-Z0-9 ]")
@@ -334,3 +338,25 @@ def validate_cross_document(nbi: NbiExtractionResult, id_doc: IdExtractionResult
         else f"cross-document mismatch: {', '.join(mismatches)}"
     )
     return RuleResult(rule="cross_document_consistency", passed=passed, detail=detail)
+
+
+def apply_cross_document_result(validation: ValidationResult, cross_rule: RuleResult) -> ValidationResult:
+    """Appends the cross-document check to an already-computed single-document
+    ValidationResult (Phase 6, POST /upload-doc's sibling-lookup path,
+    CV_INTEGRATION.md §2.7/§2.8) and re-derives the outcome.
+
+    A failing cross-check can only ever ESCALATE an ACCEPTED outcome to
+    NEEDS_REVIEW — same never-auto-reject property as Rule 4/Rule 6, for the
+    same reason (this is still just identity-consistency evidence, not proof
+    of fraud). It never downgrades an outcome further (a document already
+    REJECTED or NEEDS_REVIEW on its own merits stays that way), and a PASSING
+    cross-check never upgrades an outcome that failed on its own merits —
+    agreement between two documents doesn't excuse an expired one, for
+    instance."""
+    rules = [*validation.rules, cross_rule]
+    outcome = validation.outcome
+    message = validation.message
+    if not cross_rule.passed and outcome == ValidationOutcome.ACCEPTED:
+        outcome = ValidationOutcome.NEEDS_REVIEW
+        message = _MSG_CROSS_DOCUMENT_MISMATCH
+    return validation.model_copy(update={"rules": rules, "outcome": outcome, "message": message})

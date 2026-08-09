@@ -522,7 +522,14 @@ def render_nbi_negative(kind: str, index: int, rng: random.Random) -> tuple[Imag
     elif kind == "wrong_person":
         base = IDENTITIES[index % len(IDENTITIES)]
         impostor = IDENTITIES[(index + 1) % len(IDENTITIES)]
-        fake = dict(base, full_name=impostor["full_name"])
+        # render_nbi_clean() reads family_name/first_name/middle_name directly,
+        # not full_name -- overriding only full_name (as this used to) left the
+        # rendered image showing the victim's own real name, so this negative
+        # never actually tested Rule 4 at all. Found via a false auto-pass in
+        # evals/run_validation_eval.py (Phase 7). Mirrors the correct pattern
+        # already used by render_id_negative()'s cross_name_mismatch branch.
+        fake = dict(base, family_name=impostor["family_name"], first_name=impostor["first_name"],
+                    middle_name=impostor["middle_name"], full_name=impostor["full_name"])
         img = render_nbi_clean(fake)
         expected_doc_type, expected_outcome = "nbi_clearance", "needs_review"
         reason = f"name on document does not match faculty record for {base['employee_id']} (Rule 4)"

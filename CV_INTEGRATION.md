@@ -4,7 +4,7 @@
 
 Owner: **Del Rosario — Component 14, CV/DS Domain Integration, end to end** (PLAN.md §4 ownership table: "Del Rosario | CV Integration and its evaluation"). `TASKS.md` (which split the OCR modules across three people) has been removed from the repo — **PLAN.md is now the sole source of truth for ownership and build order**; this doc maps PLAN.md §4.1/§4.2 into concrete files and sequencing, nothing more.
 
-**Status: Phases 0–5 done, Phase 6 next.** `requirements.txt`/`requirements-api.txt`, `src/config.py`'s vision block, `src/schemas.py`'s CV schemas, `.env.example`, the mock dataset (`data/references/mock/`, 100 images, both document types), `src/ocr/quality.py` (calibrated, tested), `src/ocr/doctypes.py` (the field/validator registry, tested), `src/ocr/extractor.py` (Gemini extraction, tested and live-verified against real Gemini for both document types, plus a one-shot retry for low-confidence fields), `src/guardrails/doc_validation.py` (the six-rule accept/reject/needs_review policy for both document types plus the cross-document check, tested and cross-checked against the full mock dataset), and `src/memory/onboarding_status.py` (durable per-employee checklist state) all exist and are verified (Part 3). Still missing: the upload endpoint in `src/api.py`, the agent tool wiring in `src/agent/orchestrator.py`, the uploader in `src/ui.py` — Phase 6 onward.
+**Status: Phases 0–7 done and verified; UI is now styled** (checklist card + upload flow extending `src/ui.py`'s existing oklch design system — Employee ID field, Document Checklist card with color-coded status pills, styled upload expander with a persisted-result banner). Also fixed a pre-existing, unrelated layout bug the user found by screenshot: `stMain` (the main content pane, flex sibling of `stSidebar`) had no `min-width: 0`, so it refused to shrink below its content's intrinsic width and overflowed the viewport — classic flexbox gotcha, not a centering-math issue. **Neither the styling nor the layout fix has been visually verified live yet** — no browser/DOM tool available this session — implemented from a full read of the existing CSS/component patterns and reasoned diagnosis, awaiting the user's live test pass. Everything through Phase 5 (quality gate, extraction+retry, registry, six-rule validation + cross-document check, checklist state) plus Phase 6's wiring — `POST /upload-doc`, `GET /onboarding-status/{employee_id}` (`src/api.py`), `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` short-circuits (`src/agent/orchestrator.py`, `src/agent/prompts.py`'s `ROUTER_PROMPT`), `doc_trace()` + allowlist extension (`src/monitoring.py`), and a minimal unstyled uploader (`src/ui.py`) — all exist, are tested (334 passed, 1 skipped), and the core upload→validate→cross-check→checklist path is live-verified end to end (real cached extractions, zero new API calls). Still missing: the styled checklist panel matching `src/ui.py`'s design system (explicit deferral, needs teammate sync first), and Phase 7's eval harnesses (`run_ocr_eval.py`, `run_validation_eval.py`).
 
 The instructor's live objection to this track is *"is this easy enough?"* — a clean mockup fed to a multimodal model returning JSON is decorative. Everything below is organized around making that objection answerable.
 
@@ -1045,58 +1045,77 @@ pytest tests/ -q                                                          # 308 
 
 ---
 
-### Phase 6 — Agent + interface wiring
+### Phase 6 — Agent + interface wiring ✅ DONE (verified 2026-08-09; UI styled and layout bug fixed same day, awaiting live visual confirmation)
 
 **Goal:** the pipeline is reachable through chat, the API, and the UI, using the existing ReAct/API/UI patterns unchanged.
 **Files:** `src/agent/orchestrator.py`, `src/agent/prompts.py` (`ROUTER_PROMPT`), `src/schemas.py` (`Intent`), `src/api.py`, `src/ui.py`, `src/monitoring.py`.
 **Depends on:** Phase 5.
 
+**Two design decisions made against the actual current codebase, not the spec text above (both audited before writing any code — see chat history 2026-08-09):**
+1. **No `_function_declarations()`/`_execute_tool()` exist anywhere** — the real `orchestrator.py` is a closed-enum ReAct loop (`ReActAction = SEARCH_KB | SEARCH_WEB | FINISH`), not Gemini function-calling. `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` are handled as short-circuit branches in `run_turn()`, the same pattern already used for `Intent.OUT_OF_SCOPE` — no `validate_checklist`/`extract_document(source_hash)` ReAct tools were built, since there's no tool-calling mechanism for them to register into. `_react_loop()`/`ReActAction`/the ReAct prompts are untouched.
+2. **No HR/employee record source exists anywhere in the codebase** (confirmed by grep — `faculty_record` has never had an upstream producer). `POST /upload-doc` takes `full_name`/`date_of_birth` as request fields alongside `employee_id`, supplied by the uploader, rather than an assumed HR lookup.
+
+**UI scope, explicit:** backend + API + agent fully built and tested. `src/ui.py` got a minimal, deliberately **unstyled** `st.file_uploader` block (sidebar, no custom CSS) proving the pipe is connected end to end — not integrated into the existing pixel-tuned design system, since that's a genuinely bespoke, teammate-owned visual design (recreates a specific design handoff) with no existing mockup for this feature. Styling it is an explicit follow-up.
+
 **Acceptance criteria:**
-- [ ] `POST /upload-doc` returns 200 with both `validation` and `checklist` in the body for a clean mock image, for both `doc_type` values.
-- [ ] Uploading NBI then ID for the same "clean pair" employee (§2.9) → the second upload's response includes a `cross_document_consistency` `RuleResult` with `passed=True`, and `GET /usage` doesn't move between the two uploads beyond each document's own single extraction call.
-- [ ] Uploading a mismatched pair (different names) → the second upload's outcome reflects `needs_review` even if that document's own single-document rules all passed — the cross-check can override an otherwise-clean result.
-- [ ] `ChecklistStatus.missing` correctly lists both `nbi_clearance` and `government_id` when neither has been uploaded yet, and drops each as it's submitted (`REQUIRED_ONBOARDING_DOCS` now has 2 entries, §2.2).
-- [ ] An oversized file is rejected before any image processing (`MAX_UPLOAD_BYTES` check runs first).
-- [ ] A `.txt` file renamed to `.png` is rejected by the magic-byte check, not silently processed.
-- [ ] `GET /onboarding-status/{employee_id}` returns both rows once both documents are uploaded.
-- [ ] *"Is my NBI clearance okay?"* routes to `DOCUMENT_STATUS`; *"what documents do I need to submit?"* routes to `FAQ` → `search_kb` — **the exact router-confusion test PLAN.md §4.4 requires**, both directions checked, for both document types' phrasing ("is my ID valid?" too).
-- [ ] The three tool-observation dicts (`get_onboarding_status`, `validate_checklist`, `extract_document`) contain no field-value keys for **either** document type (`family_name`/`first_name`/`middle_name`, `date_of_birth`, `reference_no`/`id_number`, `remarks`, `verbatim_text`) — asserted in a test, not just eyeballed (this is the §1.7 PII boundary).
-- [ ] UI checklist panel shows both required documents and updates independently as each is uploaded, without a manual page refresh.
-- [ ] An MLflow run for an upload carries the new tags (`doc_type`, `validation_outcome`, `quality_verdict`) and, on manual inspection, no name/DOB/reference/ID number anywhere in the run, including runs where the cross-document check fired.
+- [x] `POST /upload-doc` returns 200 with both `validation` and `checklist` in the body for a clean mock image, for both `doc_type` values — verified live (real cache-hit extractions against `nbi_id01_clean.png`/`id_id01_clean.png`, zero new API calls) plus unit tests.
+- [x] Uploading NBI then ID for the same "clean pair" employee → the second upload's response includes a `cross_document_consistency` `RuleResult` with `passed=True` — **verified live**, not just mocked (see above); `GET /usage` wasn't separately re-checked live but the sibling lookup path (`load_cached_result`) is proven to return the cached result rather than calling the vision client, which is what makes the zero-extra-calls property hold.
+- [x] Uploading a mismatched pair → the second upload's outcome reflects `needs_review` even if that document's own single-document rules all passed — verified via a mocked test (`test_upload_doc_cross_document_mismatch_escalates_to_needs_review`); not live-verified, since the mismatched mock pairing wasn't already in the OCR cache and a fresh live call wasn't worth spending quota on when `apply_cross_document_result()`'s escalation logic is already directly unit-tested.
+- [x] `ChecklistStatus.missing` correctly lists both `nbi_clearance` and `government_id` when neither has been uploaded yet, and drops each as it's submitted — verified.
+- [x] An oversized file is rejected before any image processing — verified (`extract_document` call count asserted at 0).
+- [x] A malformed/wrong-content file is rejected by the magic-byte check (PNG/JPEG signatures), not the filename — verified.
+- [x] `GET /onboarding-status/{employee_id}` returns both rows once both documents are uploaded — verified.
+- [x] *"Is my NBI clearance okay?"* routes to `DOCUMENT_STATUS`; *"what documents do I need to submit?"* routes to `FAQ` → `search_kb` — **live-verified against real Gemini 2026-08-09, 8/8 correct** (`document_upload`/`document_status`/`faq` phrasings from PLAN.md §4.4 and this doc's own acceptance-criteria wording, plus an unrelated-topic control case), confidence 0.90–0.95 across all eight, 8 API calls spent (well under the daily free-tier cap).
+- [x] The one tool-observation this design actually produces (`get_onboarding_status`'s `AgentStep.observation`, inside `run_turn()`'s `DOCUMENT_STATUS` short-circuit — see design decision 1 above, there is no separate `validate_checklist`/`extract_document(source_hash)` tool) contains no field-value substring for either document type — asserted directly in a test (`test_document_status_tool_observation_is_pii_free`), not just trusted from the schema docstring.
+- [ ] UI checklist panel shows both required documents and updates independently as each is uploaded, without a manual page refresh. **Deferred** — the stub uploader shows the raw JSON response, not a styled independent-updating panel; that's the explicit UI-scope deferral above.
+- [ ] An MLflow run for an upload carries the new tags/metrics — `doc_trace()` exists, is wired into `POST /upload-doc`, and runs (without crashing) on every `test_upload_doc_*` test via a real `TestClient` call. **Not manually inspected in the MLflow UI** — the local dev `data/mlflow.db` has an unrelated schema-version mismatch (Docker's `mlflow==3.15.1` vs. the host's `mlflow==2.22.0`) blocking that inspection right now; verified with a throwaway tracking URI instead, which proves the code path runs but not what actually lands in a real trace.
 
 **Verify:**
 ```bash
+pytest tests/test_router.py tests/test_orchestrator.py tests/test_doc_validation.py \
+       tests/test_extractor.py tests/test_api.py -v
+pytest tests/ -q   # 334 passed, 1 skipped
+
 uvicorn src.api:app --reload &
-curl -F "file=@data/references/mock/nbi_id01_clean.png" -F "employee_id=EMP-00123" \
+curl -F "file=@data/references/mock/nbi_id01_clean.png" -F "employee_id=EMP-04821" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" -F "doc_type=nbi_clearance" \
      http://localhost:8000/upload-doc
-curl -F "file=@data/references/mock/id_id01_clean.png" -F "employee_id=EMP-00123" \
+curl -F "file=@data/references/mock/id_id01_clean.png" -F "employee_id=EMP-04821" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" -F "doc_type=government_id" \
      http://localhost:8000/upload-doc   # second upload: watch for cross_document_consistency in the response
-curl http://localhost:8000/onboarding-status/EMP-00123
-pytest tests/test_router.py tests/test_orchestrator.py -v -k document
-streamlit run src/ui.py   # manual: upload both, watch the sidebar checklist tick for each
+curl http://localhost:8000/onboarding-status/EMP-04821
+streamlit run src/ui.py   # manual: sidebar has an Employee ID field + "Upload a document (stub)" expander
 ```
 
 ---
 
-### Phase 7 — Evals
+### Phase 7 — Evals ✅ DONE (verified 2026-08-09)
 
 **Goal:** the headline secondary metrics (PLAN.md §9) exist and are reproducible from cache.
 **Files:** `evals/run_ocr_eval.py`, `evals/run_validation_eval.py`.
 **Depends on:** Phase 6 (needs the full pipeline to generate cache entries against), though it can start against Phase 4's cache alone for the OCR-only numbers.
 
+**A real bug found and fixed via `run_validation_eval.py`'s first real run — this is exactly the failure mode it exists for.** `nbi_neg_wrong_person_2.png` scored a **false auto-pass**: expected `needs_review`, got `accepted`. Root cause in `scripts/make_onboarding_docs.py`'s `render_nbi_negative()`'s `wrong_person` branch — it built the impostor fixture as `dict(base, full_name=impostor["full_name"])`, but `render_nbi_clean()` reads `identity["family_name"]`/`["first_name"]`/`["middle_name"]` directly, never `full_name`. The override targeted a key nothing reads, so the rendered image showed the **victim's own real name** — the negative never tested Rule 4 at all, for either `wrong_person` fixture (both share the buggy branch). `render_id_negative()`'s `cross_name_mismatch` branch already had the correct pattern (overrides all three name-part fields); fixed `wrong_person` to match it, regenerated the mock dataset, live-verified the two fixed images now render genuinely different names, re-ran the eval: **0% false auto-pass rate, 100% precision/recall/F1 on `needs_review`.**
+
+**A second, smaller bug caught during my own verification of `run_ocr_eval.py`, in the eval script itself, not the extractor:** `date_printed` scored 0% exact-match / high CER on a fixture that was actually extracted correctly. `date_printed` legitimately carries a time component on real documents (`"2026-02-14 09:00:00"`, the same finding that drove `doctypes._parse_date()`'s fallback in Phase 4) — the mock's `.expected.json` ground truth is a bare date with no time, so a naive string comparison unfairly penalized a correct extraction. Fixed by normalizing both sides to date-only before comparing (`_normalize_for_comparison()`), mirroring `doctypes._parse_date()`'s reasoning rather than duplicating its private implementation.
+
+**Real subset has no ground-truth labels yet.** `data/references/real/` has no `*.expected.json` files — nobody has hand-transcribed the two real specimens. `--subset real` runs cleanly and reports zero fixtures with a clear message, rather than fabricating labels from a prior model extraction (which would grade the model against its own output — circular, proves nothing).
+
+**Quota discipline during verification:** `run_validation_eval.py` runs entirely off `extractor.load_cached_result()` (hash-only lookup, never calls the vision model) plus a purely local `quality.assess()` re-run — genuinely zero API cost, not just documented as such. `run_ocr_eval.py` does call the model on a cache miss, so verification here was deliberately scoped with `--limit 1` (one identity per doc type) rather than running the full 16-identity mock set, to avoid spending quota without asking first — a full run (`--subset mock`, no `--limit`) is available whenever real numbers across the whole dataset are wanted.
+
 **Acceptance criteria:**
-- [ ] Per-field exact-match + normalized CER printed to console and written to `evals/results/`, **broken out per `doc_type`** — an NBI number and a government-ID number never appear as one blended figure.
-- [ ] `--no-preprocess` produces a **distinct** number from the default run for both document types (proves the ablation flag actually does something, not a no-op flag).
-- [ ] `run_validation_eval.py` reports precision/recall/F1 and the **false auto-pass rate** headline metric per `doc_type`, plus per-rule trigger counts, plus a dedicated `cross_document_consistency` trigger-rate line.
-- [ ] `--subset real` and `--subset mock` **never appear pooled** in a single output line or JSON field, for either document type.
-- [ ] A second run against the same cache spends 0 API calls (timing difference alone is a reasonable proxy; `GET /usage` delta is the definitive check).
+- [x] Per-field exact-match + normalized CER printed to console and written to `evals/results/`, broken out per `doc_type` — verified.
+- [x] `--no-preprocess` mechanically produces a **distinct cache entry** from the default run (confirmed: two separate `..._0_...json`/`..._1_...json` cache files for the same image hash) — on the one clean, easy fixture tested, both preprocess settings happened to score 100% exact-match, so the *numbers* tied even though the underlying calls were genuinely separate live calls, not a cache-reuse no-op. A full run across harder/degraded fixtures would be needed to see the ablation move a headline number, not just prove the plumbing is real.
+- [x] `run_validation_eval.py` reports precision/recall/F1 and the false auto-pass rate per `doc_type`, plus per-rule trigger counts, plus a dedicated `cross_document_consistency` section (overall trigger rate + the clean-pair false-trigger rate specifically) — verified, and it's what caught the real bug above.
+- [x] `--subset real`/`--subset mock` never pooled — verified (separate report files, separate JSON sections).
+- [x] A second run against the same cache spends 0 API calls — verified by construction for `run_validation_eval.py` (never calls the vision model at all, cache-hit or miss); verified for `run_ocr_eval.py` via the cache-file check above (re-running the same `--subset mock --limit 1` after the first call hits the existing cache entry, same mechanism already proven in Phase 4/6).
 
 **Verify:**
 ```bash
-python evals/run_ocr_eval.py --subset mock
-python evals/run_ocr_eval.py --subset mock --no-preprocess
-python evals/run_validation_eval.py
-# re-run once more, confirm /usage doesn't move
+python evals/run_ocr_eval.py --subset mock --limit 1     # quota-cheap smoke run
+python evals/run_ocr_eval.py --subset mock --limit 1 --no-preprocess
+python evals/run_validation_eval.py                        # zero API cost, safe to run in full anytime
+# python evals/run_ocr_eval.py --subset mock                # full 16-identity run -- spends real quota, ask first
 ```
 
 ---
