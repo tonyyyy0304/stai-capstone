@@ -57,6 +57,29 @@ class _FakeClient:
         self.models = _FakeModels(**kwargs)
 
 
+class _SequentialFakeModels:
+    """Returns a different canned result on each successive call — for
+    testing the retry path, where the first and second attempts genuinely
+    differ (this is what actually happened live: a real document's
+    middle_name came back null on one call, correct on the next)."""
+
+    def __init__(self, results: list):
+        self.results = list(results)
+        self.call_count = 0
+
+    def generate_content(self, model, contents, config):
+        self.call_count += 1
+        result = self.results[min(self.call_count, len(self.results)) - 1]
+        if isinstance(result, Exception):
+            raise result
+        return SimpleNamespace(parsed=result, usage_metadata=None)
+
+
+class _SequentialFakeClient:
+    def __init__(self, results: list):
+        self.models = _SequentialFakeModels(results)
+
+
 def _canned_nbi_result() -> NbiExtractionResult:
     return NbiExtractionResult(
         doc_type=DocType.NBI_CLEARANCE,
@@ -265,6 +288,177 @@ def test_field_hint_block_lists_all_id_fields():
     block = extractor._field_hint_block(DocType.GOVERNMENT_ID)
     for name in ("id_type", "family_name", "first_name", "date_of_birth", "id_number"):
         assert name in block
+
+
+# --- Retry on low confidence -------------------------------------------------
+# Added after a live run where a real document's middle_name came back null
+# at confidence 0.1, then correct at confidence 0.99 on an immediate
+# identical re-call — Gemini's temperature=0.0 reduces but does not
+# guarantee run-to-run determinism (CV_INTEGRATION.md Phase 4/5 note).
+
+def _low_confidence_nbi_result() -> NbiExtractionResult:
+    """Mirrors the actual live miss: every field confident except
+    middle_name, null at 0.1 — exactly the shape that should trigger a retry."""
+    good = _canned_nbi_result()
+    return good.model_copy(update={"middle_name": ExtractedField(value=None, model_confidence=0.1)})
+
+
+def test_retry_triggers_on_null_field_with_low_confidence(tmp_path, monkeypatch):
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([_low_confidence_nbi_result(), _canned_nbi_result()])
+
+    result, _ = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 2  # first attempt + one retry
+    assert result.middle_name.value == "SANTOS"  # recovered from the retry
+
+
+def test_retry_prefers_higher_confidence_attempt_as_base(tmp_path, monkeypatch):
+    """The merge picks the more-confident attempt as the base and only fills
+    ITS gaps — it doesn't just blindly prefer the retry."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    # Retry comes back with an even better middle_name reading than the
+    # base — but the base's OTHER fields (all 0.9-0.95) should be preserved,
+    # not overwritten, since the merge only fills nulls.
+    fake_client = _SequentialFakeClient([_low_confidence_nbi_result(), _canned_nbi_result()])
+
+    result, _ = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert result.family_name.value == "REYES"
+    assert result.family_name.model_confidence == 0.95  # untouched by the merge
+
+
+def test_retry_does_not_trigger_for_structurally_absent_national_id_expiry(tmp_path, monkeypatch):
+    """expiry_date=None at confidence 0.0 is CORRECT for a National ID, not
+    a miss — must not waste a retry on it."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([_canned_id_result(id_type=IdType.NATIONAL_ID)])
+
+    result, _ = extractor.extract_document(
+        _bytes("id_id01_clean.png"), "image/png", DocType.GOVERNMENT_ID,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 1  # no retry spent
+    assert result.expiry_date.value is None
+
+
+def test_retry_does_trigger_for_missing_expiry_on_drivers_license(tmp_path, monkeypatch):
+    """The same null+low-confidence expiry_date IS retry-worthy for a
+    license/passport, where expiry_date is required and always printed."""
+    _requires_mock_dataset()
+    license_missing_expiry = _canned_id_result(id_type=IdType.DRIVERS_LICENSE).model_copy(
+        update={"expiry_date": ExtractedField(value=None, model_confidence=0.1)}
+    )
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([license_missing_expiry, _canned_id_result(id_type=IdType.DRIVERS_LICENSE)])
+
+    result, _ = extractor.extract_document(
+        _bytes("id_id04_clean.png"), "image/png", DocType.GOVERNMENT_ID,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 2
+
+
+def test_retry_triggers_on_low_overall_confidence_even_if_all_fields_present(tmp_path, monkeypatch):
+    low_overall = _canned_nbi_result().model_copy(update={"overall_confidence": 0.3})
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([low_overall, _canned_nbi_result()])
+
+    extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 2
+
+
+def test_retry_spends_at_most_one_extra_call_even_if_retry_also_uncertain(tmp_path, monkeypatch):
+    """No retry loop — one attempt, one retry, done, whatever the outcome."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([_low_confidence_nbi_result(), _low_confidence_nbi_result()])
+
+    result, _ = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 2
+    assert result is not None  # still returns best-effort, never None just because retry didn't help either
+
+
+def test_retry_disabled_via_param_skips_it_even_when_warranted(tmp_path, monkeypatch):
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([_low_confidence_nbi_result(), _canned_nbi_result()])
+
+    result, _ = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False, retry=False,
+    )
+
+    assert fake_client.models.call_count == 1
+    assert result.middle_name.value is None  # not recovered — retry was explicitly off
+
+
+def test_retry_disabled_via_config_default(tmp_path, monkeypatch):
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(config, "OCR_ENABLE_RETRY", False)
+    fake_client = _SequentialFakeClient([_low_confidence_nbi_result(), _canned_nbi_result()])
+
+    extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,  # retry=None -> falls back to config, now False
+    )
+
+    assert fake_client.models.call_count == 1
+
+
+def test_confident_result_never_retries(tmp_path, monkeypatch):
+    """The existing canned fixtures (used throughout the rest of this file)
+    must not accidentally trigger a retry — pins that down explicitly."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([_canned_nbi_result()])
+
+    extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert fake_client.models.call_count == 1
+
+
+def test_retry_failed_api_call_keeps_first_attempt(tmp_path, monkeypatch):
+    """If the retry call itself errors out, don't lose the first attempt's
+    (partial but real) result."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _SequentialFakeClient([
+        _low_confidence_nbi_result(),
+        APIError(503, {"error": {"message": "unavailable"}}),
+    ])
+
+    result, _ = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert result is not None
+    assert result.family_name.value == "REYES"  # first attempt's good fields survive
+    assert result.middle_name.value is None      # the field that prompted the retry stays null — honest, not fabricated
 
 
 # --- Optional live test — real Gemini call, skipped by default --------------

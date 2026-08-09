@@ -4,7 +4,7 @@
 >
 > Scope note: this file lists **implemented features and plans only** — no architecture rationale (that's [PLAN.md](PLAN.md)) and no problem framing (that's [SCOPE.md](SCOPE.md)).
 
-_Last updated: 2026-08-09 · branch: `final-capstone`_
+_Last updated: 2026-08-09 · branch: `feat/final-capstone-cv`_
 
 ---
 
@@ -53,21 +53,31 @@ Agentic RAG that answers **DLSU Faculty Manual 2021** onboarding questions with 
 - **Central config** (`src/config.py`): all models, paths, thresholds, and a **deployment profile** (org/corpus/audience specifics externalized) — retarget by config + data.
 - **Docker**: `Dockerfile.api`, `Dockerfile.ui`, `Dockerfile.mlflow`, `docker-compose.yml`; Render start scripts under `scripts/`.
 
+### CV/DS: NBI Clearance + Government ID verification (secondary track — Component 14)
+Full design doc: [CV_INTEGRATION.md](CV_INTEGRATION.md). Phases 0–5 of 9 done; RAG remains primary per CLAUDE.md's priority.
+- **Config/schemas** (`src/config.py` CV/OCR block, `src/schemas.py`) — vision provider/model selection (Gemini primary, Ollama switchable fallback), quality thresholds, `DocType`/`IdType`/`ImageQualityReport`/`ExtractedField`/`NbiExtractionResult`/`IdExtractionResult`/`ValidationResult`/`ChecklistStatus`.
+- **Mock dataset** (`data/references/mock/`) — 100 images, 2 document types (NBI Clearance + Government ID covering National ID/Driver's License/Passport), 5 degradation variants × 16 identities + 26 negatives (including cross-document mismatch fixtures); `data/references/real/` (gitignored, consented) and `data/references/samples/` (gitignored, layout reference) are separate, never-pooled subsets.
+- **Layer 1 — quality gate** (`src/ocr/quality.py`) — OpenCV deterministic blur/skew/exposure/resolution check; a `reject` verdict short-circuits before any API call (the quota mechanism).
+- **Layer 2 — extraction** (`src/ocr/extractor.py`) — one Gemini multimodal call per document, SHA-256-keyed disk cache (`evals/results/ocr_cache/`), one conditional retry on low-confidence fields (`OCR_ENABLE_RETRY`). Detection only — never decides accept/reject.
+- **Document registry** (`src/ocr/doctypes.py`) — declarative field/validator spec per doc type, shared by extraction prompts and validation.
+- **Layer 3 — validation** (`src/guardrails/doc_validation.py`) — `validate_document()` (NBI) / `validate_id_document()` (Government ID), same six-rule shape (type match, completeness, format, identity, validity window, fail-safe); `validate_cross_document()` (NBI↔ID name/DOB consistency). Rule 4 (identity) and Rule 6 (fail-safe) structurally can only ever escalate to `needs_review`, never auto-reject.
+- **Checklist state** (`src/memory/onboarding_status.py`) — durable per-employee `(doc_type → status)` in SQLite; never stores an extracted field value, only status/outcome/source_hash.
+
 ### Evals & tests
 - **Golden set** (`evals/golden_set.jsonl`, 32 rows) — per-topic + per-tier.
 - **Retrieval eval** (`evals/run_retrieval_eval.py`) — per-topic/per-tier hit-rate.
 - **Guardrail eval** (`evals/run_guardrail_eval.py`) + red-team set (`evals/guardrail_redteam.jsonl`).
-- **Unit tests** (`tests/`, 14 files) — api, chunking, guardrails, hybrid, ingest, llm_client, memory, orchestrator, pdf_to_md, retrieval, router, schemas, tools, usage.
+- **Unit tests** (`tests/`, 19 files, 308 passed / 1 skipped) — api, chunking, doc_validation, doctypes, extractor, guardrails, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
 
 ---
 
 ## Planned / not yet implemented
 
-### NBI Clearance verification (secondary track — CV/DS mandatory component)
-- `src/ocr/` — OpenCV deterministic quality gate + one Gemini multimodal field-extraction call.
-- `src/guardrails/doc_validation.py` — deterministic validation rules 1–6 (type match, completeness, format validity, identity match, validity window, fail-safe). Fails toward "needs human review".
-- API: `POST /upload-doc` (NBI submission), `GET /onboarding-status/{employee_id}` (per-hire checklist state).
-- Memory: onboarding-status / checklist state in SQLite.
+### CV/DS Component 14 — Phase 6 onward (agent + API + UI wiring)
+- Agent wiring: `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` exist in `schemas.py` but `ROUTER_PROMPT` doesn't classify into them yet, and `orchestrator.py`'s `run_turn()`/`_react_loop()` has no handling branch for either — see `CV_INTEGRATION.md` Phase 6 note on the ReAct loop being a closed-enum design, not Gemini function-calling.
+- API: `POST /upload-doc`, `GET /onboarding-status/{employee_id}` — neither exists in `src/api.py` yet.
+- UI: no `st.file_uploader` or checklist panel in `src/ui.py` yet; `employee_id` isn't threaded through the chat payload yet either.
+- Monitoring: `doc_trace()` sibling to `chat_trace()`, plus tag/metric allowlist extension, not yet added to `src/monitoring.py`.
 - Evals: `evals/run_ocr_eval.py`, `run_validation_eval.py` — reported per subset (**real** vs **mock**, never pooled).
 
 ### End-to-end / answer evals

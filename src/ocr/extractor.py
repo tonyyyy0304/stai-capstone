@@ -8,6 +8,12 @@ re-running the same image spends zero calls. DETECTION ONLY: this module
 proposes field values, never decides accept/reject; that decision lives
 entirely in src/guardrails/doc_validation.py (Layer 3).
 
+Up to one retry (config.OCR_ENABLE_RETRY) is spent when the model itself
+signals real uncertainty — see _should_retry()'s docstring. Gemini's
+temperature=0.0 reduces but does not guarantee run-to-run determinism; a
+real document's middle_name came back null at 0.1 confidence, then correct
+at 0.99 on an immediate identical re-call, which is what motivated this.
+
 extract_document()'s prompt/response_schema are selected by expected_doc_type
 (NBI_CLEARANCE -> NbiExtractionResult, GOVERNMENT_ID -> IdExtractionResult) —
 same call site, same generate_content() contract as every other structured
@@ -26,7 +32,7 @@ import cv2
 from src import config
 from src.agent import prompts, usage
 from src.ocr import doctypes, quality
-from src.schemas import DocType, IdExtractionResult, ImageQualityReport, NbiExtractionResult, QualityVerdict
+from src.schemas import DocType, IdExtractionResult, IdType, ImageQualityReport, NbiExtractionResult, QualityVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +105,8 @@ def _should_retry(result, expected_doc_type: DocType) -> bool:
         return True
     id_type = getattr(result, "id_type", None)
     for name in _retryable_field_names(expected_doc_type):
-        if expected_doc_type == DocType.GOVERNMENT_ID and name == "expiry_date" and id_type is not None:
-            from src.schemas import IdType
-            if id_type == IdType.NATIONAL_ID:
-                continue  # structurally absent, not a miss
+        if expected_doc_type == DocType.GOVERNMENT_ID and name == "expiry_date" and id_type == IdType.NATIONAL_ID:
+            continue  # structurally absent, not a miss
         field = getattr(result, name, None)
         if field is None:
             continue

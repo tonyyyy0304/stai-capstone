@@ -28,3 +28,4 @@ python-multipart==0.0.20            # FastAPI UploadFile — POST /upload-doc
 # CV/OCR document verification (Component 14) — see CV_INTEGRATION.md
 opencv-python-headless==4.11.0.86   # headless: slim Docker base lacks libGL — src/ocr/quality.py
 rapidfuzz==3.13.0                   # Rule 4 name matching — src/guardrails/doc_validation.py
+python-dateutil==2.9.0.post0        # relativedelta — Rule 5 validity window, src/guardrails/doc_validation.py

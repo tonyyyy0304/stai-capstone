@@ -356,7 +356,11 @@ NBI_VALIDITY_MONTHS = 6         # EMPLOYER freshness policy, layered on top of
 # Normalized clean-status strings for the `remarks` field (Rule 3). Deliberately
 # incomplete and tunable — extend as real samples show more phrasing variants.
 # Anything NOT in this tuple fails Rule 3 outright; never assumed clean by default.
-NBI_CLEAN_REMARKS = ("NO DEROGATORY", "NO DEROGATORY RECORD", "NO RECORD")
+# "NO RECORD ON FILE" added 2026-08-09: a second real specimen
+# (data/references/real/real2.jpg) prints exactly this phrasing, confirmed via
+# its cached extraction (model_confidence 0.99-1.0 across two live calls) —
+# would otherwise fail Rule 3 on a genuinely clean document.
+NBI_CLEAN_REMARKS = ("NO DEROGATORY", "NO DEROGATORY RECORD", "NO RECORD", "NO RECORD ON FILE")
 # Government ID (CV_INTEGRATION.md §1.4a) — one required id_number pattern per
 # sub-type, each from exactly one specimen sample, none confirmed. See doctypes.py.
 ID_NUMBER_PATTERNS = {
