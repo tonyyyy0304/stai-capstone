@@ -2,9 +2,8 @@
 
 Describes the *workflow* a DLSU faculty candidate walks through between a
 verbal job offer and their first day of teaching -- the sequence, timing,
-and offices involved. This is process content the Faculty Manual does not
-cover in detail (it states hiring *criteria*, not the pre-boarding
-workflow); see PLAN.md T1 gap and Faculty Manual Hiring Procedure p.24.
+and offices involved. Process content stated on its own terms as an HRMO
+pre-boarding guide.
 """
 
 DOC = {
@@ -22,14 +21,12 @@ BLOCKS = [
  ("p",
  "This guide describes the sequence of steps a candidate for a DLSU faculty "
  "position walks through between receiving a conditional job offer and "
- "reporting for their first day of classes. It is a supplementary, "
- "process-focused companion to the DLSU Faculty Manual 2021, which states "
- "hiring criteria and the general hiring procedure (see Faculty Manual, "
- "Hiring Procedure, p.24, and the per-rank Criteria for Hiring, pp.16-23) "
- "but does not itself lay out the week-by-week pre-boarding workflow. "
- "Where this guide and the Faculty Manual overlap, the Faculty Manual is "
- "the controlling document for hiring criteria and academic policy; this "
- "guide is controlling for process, timing, and document routing."),
+ "reporting for their first day of classes. It covers the pre-boarding "
+ "workflow -- the sequence, timing, and offices involved -- and works "
+ "alongside its companion document 'DLSU Faculty Pre-employment "
+ "Requirements Checklist' (the full document set a candidate must "
+ "submit). This guide is the controlling document for process, timing, "
+ "and document routing."),
  ("note",
  "Scope note: this document covers Full-time Academic Faculty, Part-time "
  "Academic Faculty, and Academic Service Faculty (ASF). Each track has a "
@@ -48,7 +45,7 @@ BLOCKS = [
  ["1. Screening & shortlisting", "Application, credential screening, initial interview with the Department Chair.", "Department / College"],
  ["2. Teaching demonstration & panel interview", "Candidate delivers a teaching demonstration and is interviewed by the College hiring panel.", "College Dean's Office"],
  ["3. Conditional job offer", "Dean's Office issues a conditional offer contingent on document submission and clearance results.", "College Dean's Office / HRMO"],
- ["4. Document submission & verification", "Candidate submits the pre-employment document set (Faculty Manual criteria + statutory documents); HRMO verifies completeness.", "HRMO"],
+ ["4. Document submission & verification", "Candidate submits the pre-employment document set (faculty-specific + statutory documents); HRMO verifies completeness.", "HRMO"],
  ["5. Clearance & contract finalization", "Background and government clearances are confirmed; employment contract or appointment paper is signed.", "HRMO / Legal Affairs"],
  ["6. Onboarding orientation & first day", "New-hire orientation, ID issuance, systems access, and first day of teaching or service.", "HRMO / Department"],
  ], [2.6, 4.2, 2.4])),
@@ -57,13 +54,13 @@ BLOCKS = [
 
  ("h3", "2.1 Screening and Shortlisting"),
  ("p",
- "The Department Chair reviews applications against the per-rank Criteria "
- "for Hiring (Faculty Manual pp.16-23), which set minimum educational "
- "attainment, relevant experience, and licensure requirements by academic "
- "rank (Instructor through Professor). Shortlisted candidates are invited "
- "for an initial interview. At this stage candidates are asked to submit "
- "a biodata or curriculum vitae and unofficial transcripts only; original "
- "documents are not yet required."),
+ "The Department Chair reviews applications against the per-rank hiring "
+ "criteria, which set minimum educational attainment, relevant "
+ "experience, and licensure requirements by academic rank (Instructor "
+ "through Professor; see the pre-employment requirements checklist, §2). "
+ "Shortlisted candidates are invited for an initial interview. At this "
+ "stage candidates are asked to submit a biodata or curriculum vitae and "
+ "unofficial transcripts only; original documents are not yet required."),
 
  ("h3", "2.2 Teaching Demonstration and Panel Interview"),
  ("p",
@@ -88,13 +85,12 @@ BLOCKS = [
  ("h3", "2.4 Document Submission and Verification"),
  ("p",
  "The candidate submits the full pre-employment document set to HRMO. "
- "The complete list of faculty-specific documents (per Faculty Manual "
- "hiring criteria) and national statutory documents is maintained "
- "separately -- see the companion documents 'DLSU Faculty Pre-employment "
- "Requirements' and 'Philippine Statutory Pre-employment Requirements'. "
- "HRMO logs each submitted document against a per-candidate checklist and "
- "flags missing or defective items back to the candidate, typically "
- "within 3 to 5 working days of submission."),
+ "The complete list of faculty-specific and national statutory documents "
+ "is maintained separately -- see the companion document 'DLSU Faculty "
+ "Pre-employment Requirements Checklist'. HRMO logs each submitted "
+ "document against a per-candidate checklist and flags missing or "
+ "defective items back to the candidate, typically within 3 to 5 working "
+ "days of submission."),
  ("note",
  "A document is treated as 'received' only once HRMO confirms it is the "
  "correct type, legible, and complete on its face -- receipt is not the "
@@ -105,8 +101,7 @@ BLOCKS = [
  ("p",
  "HRMO confirms that the NBI Clearance shows no derogatory record (a "
  "'hit' requiring further verification triggers a hold, not an automatic "
- "rejection -- see the statutory requirements document §1 for how NBI hits "
- "are resolved), that the clearance from the candidate's previous "
+ "rejection), that the clearance from the candidate's previous "
  "employer is on file, and that the physical fitness certification is "
  "current. Once all clearances are confirmed, Legal Affairs prepares the "
  "employment contract (for full-time and part-time Academic Faculty) or "
@@ -115,49 +110,48 @@ BLOCKS = [
 
  ("h3", "2.6 Onboarding Orientation and First Day"),
  ("p",
- "New hires attend a one-day HRMO orientation covering the Faculty "
- "Manual's General Functions and academic responsibilities (Faculty "
- "Manual §1.1, p.8), the Code of Conduct, benefits enrollment, and campus "
- "systems access (email, learning management system, library, ID "
- "issuance). Department-level orientation with the Chair -- covering "
- "course assignments, syllabus expectations, and consultation "
- "scheduling -- follows on or before the first day of classes."),
+ "New hires attend a one-day HRMO orientation covering general faculty "
+ "functions and academic responsibilities, the Code of Conduct, benefits "
+ "enrollment, and campus systems access (email, learning management "
+ "system, library, ID issuance). Department-level orientation with the "
+ "Chair -- covering course assignments, syllabus expectations, and "
+ "consultation scheduling -- follows on or before the first day of "
+ "classes."),
 
  ("h2", "3. Differences by Faculty Class"),
  ("p",
- "The Faculty Manual maintains three parallel structures for Full-time "
- "Academic Faculty, Part-time Academic Faculty, and Academic Service "
- "Faculty, each with its own hiring, leave, and benefits provisions. "
- "Pre-boarding timing and document load differ accordingly."),
+ "DLSU maintains three parallel tracks for Full-time Academic Faculty, "
+ "Part-time Academic Faculty, and Academic Service Faculty, each with its "
+ "own hiring, leave, and benefits provisions. Pre-boarding timing and "
+ "document load differ accordingly."),
 
  ("h3", "3.1 Full-time Academic Faculty"),
  ("p",
  "Full-time candidates undergo the complete six-stage process described "
  "in §2, including a teaching demonstration. Because a full-time "
- "appointment carries a probationary period governed by the Faculty "
- "Manual, HRMO also opens a probation-tracking record at Stage 5 that "
- "runs independently of the pre-boarding checklist."),
+ "appointment carries a probationary period, HRMO also opens a "
+ "probation-tracking record at Stage 5 that runs independently of the "
+ "pre-boarding checklist."),
 
  ("h3", "3.2 Part-time Academic Faculty"),
  ("p",
  "Part-time hiring follows the same six stages but on a compressed "
  "timeline, reflecting the semester-bound nature of part-time load "
- "assignment (Faculty Manual, part-time provisions, p.67). Document "
- "submission and clearance (Stages 4-5) are typically compressed into a "
- "single combined step, and the conditional-offer window in Stage 3 is "
- "shortened to 10 working days given the closer proximity to the start "
- "of term. Part-time faculty are not required to complete a full "
- "orientation day; a condensed half-day session covering the Code of "
- "Conduct and systems access substitutes for it."),
+ "assignment. Document submission and clearance (Stages 4-5) are "
+ "typically compressed into a single combined step, and the "
+ "conditional-offer window in Stage 3 is shortened to 10 working days "
+ "given the closer proximity to the start of term. Part-time faculty are "
+ "not required to complete a full orientation day; a condensed half-day "
+ "session covering the Code of Conduct and systems access substitutes "
+ "for it."),
 
  ("h3", "3.3 Academic Service Faculty (ASF)"),
  ("p",
- "ASF roles (Faculty Manual ASF provisions, p.83) support academic units "
- "in non-teaching capacities -- for example laboratory supervision, "
- "curriculum support, or academic program coordination. Stage 2 replaces "
- "the teaching demonstration with a competency interview relevant to the "
- "specific ASF role. Document requirements otherwise mirror full-time "
- "Academic Faculty (§3.1)."),
+ "ASF roles support academic units in non-teaching capacities -- for "
+ "example laboratory supervision, curriculum support, or academic "
+ "program coordination. Stage 2 replaces the teaching demonstration with "
+ "a competency interview relevant to the specific ASF role. Document "
+ "requirements otherwise mirror full-time Academic Faculty (§3.1)."),
 
  ("h2", "4. Roles and Responsibilities"),
  ("table", ([
@@ -191,13 +185,13 @@ BLOCKS = [
  "If a candidate cannot complete the document set by the deadline in "
  "§2.4, HRMO may grant a contingent start on a case-by-case basis, "
  "approved by the Dean's Office, provided that: (a) all faculty-specific "
- "Faculty Manual documents are complete, (b) the NBI Clearance has been "
- "applied for and a valid application reference is on file even if the "
- "clearance itself is pending, and (c) no more than two statutory "
- "documents remain outstanding. A contingent start is time-boxed to 30 "
- "calendar days; if outstanding documents are not resolved within that "
- "window, HRMO refers the case to the Dean's Office for a decision on "
- "continued contingent status."),
+ "documents are complete, (b) the NBI Clearance has been applied for and "
+ "a valid application reference is on file even if the clearance itself "
+ "is pending, and (c) no more than two statutory documents remain "
+ "outstanding. A contingent start is time-boxed to 30 calendar days; if "
+ "outstanding documents are not resolved within that window, HRMO refers "
+ "the case to the Dean's Office for a decision on continued contingent "
+ "status."),
  ("note",
  "A contingent start is never granted for a missing or unresolved NBI "
  "Clearance 'hit' (a positive match requiring further verification) or "
@@ -208,10 +202,9 @@ BLOCKS = [
  ("bullets", [
  "A conditional offer is not a signed contract -- either party may still "
  "withdraw before Stage 5 if clearance results are unacceptable.",
- "The NBI Clearance's printed validity is one year from issuance, but "
- "DLSU applies its own freshness policy for pre-employment purposes; "
- "see the statutory requirements document for the exact window used "
- "at submission time.",
+ "DLSU applies its own freshness policy to the NBI Clearance for "
+ "pre-employment purposes; see the requirements checklist, §2, for the "
+ "exact window used at submission time.",
  "Orientation (Stage 6) is separate from and does not substitute for "
  "the probationary period tracked for full-time faculty -- the two run "
  "on independent timelines.",
@@ -225,8 +218,7 @@ BLOCKS = [
  "Process questions (status of a submitted document, timeline, "
  "contingent-start eligibility) go to HRMO. Questions about hiring "
  "criteria, rank, or teaching load go to the Department Chair or College "
- "Dean's Office. Questions about a specific statutory document (where to "
- "apply, what an NBI 'hit' means, how to correct a name mismatch) are "
- "answered in the companion document 'Philippine Statutory "
- "Pre-employment Requirements'."),
+ "Dean's Office. For the full list of required documents and their "
+ "format rules, see the companion document 'DLSU Faculty Pre-employment "
+ "Requirements Checklist'."),
 ]

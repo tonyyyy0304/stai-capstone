@@ -4,7 +4,7 @@ from src import config
 from src.rag.chunking import (
     Section,
     chunk_document,
-    detect_section_class,
+    detect_section_audience,
     estimate_tokens,
     is_table,
     merge_tiny_sections,
@@ -16,20 +16,20 @@ from src.rag.chunking import (
 
 # --- Faculty-class positional detection (Phase 2) ---------------------------
 
-def test_detect_section_class_transitions_and_appendix_lock():
-    cls, locked = detect_section_class("FULL-TIME ACADEMIC FACULTY", "", False)
+def test_detect_section_audience_transitions_and_appendix_lock():
+    cls, locked = detect_section_audience("FULL-TIME ACADEMIC FACULTY", "", False)
     assert (cls, locked) == ("full_time_academic", False)
     # a subsection heading inside the region keeps the class
-    cls, locked = detect_section_class("8. Leaves", cls, locked)
+    cls, locked = detect_section_audience("8. Leaves", cls, locked)
     assert cls == "full_time_academic"
-    cls, locked = detect_section_class("PART-TIME ACADEMIC FACULTY", cls, locked)
+    cls, locked = detect_section_audience("PART-TIME ACADEMIC FACULTY", cls, locked)
     assert cls == "part_time_academic"
-    cls, locked = detect_section_class("ACADEMIC SERVICE FACULTY", cls, locked)
+    cls, locked = detect_section_audience("ACADEMIC SERVICE FACULTY", cls, locked)
     assert cls == "academic_service"
     # first appendix locks to class-agnostic and stays there
-    cls, locked = detect_section_class("Appendix D Dress Code", cls, locked)
+    cls, locked = detect_section_audience("Appendix D Dress Code", cls, locked)
     assert (cls, locked) == ("", True)
-    cls, locked = detect_section_class("Rank for Academic Service Faculty", cls, locked)
+    cls, locked = detect_section_audience("Rank for Academic Service Faculty", cls, locked)
     assert (cls, locked) == ("", True)  # locked: appendix grids don't re-trigger
 
 
@@ -42,7 +42,7 @@ def test_split_sections_tags_class_positionally():
         "### Appendix D Dress Code\n\napplies to all\n"
     )
     secs = split_sections(body, "Faculty Manual 2021")
-    by_text = {s.text.split("\n")[0]: s.faculty_class for s in secs}
+    by_text = {s.text.split("\n")[0]: s.audience_class for s in secs}
     assert by_text["full time leaves"] == "full_time_academic"
     assert by_text["asf leaves"] == "academic_service"
     assert by_text["applies to all"] == ""  # appendix = class-agnostic
@@ -50,12 +50,40 @@ def test_split_sections_tags_class_positionally():
 
 def test_chunk_document_puts_class_in_header():
     doc = (
-        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n---\n\n"
+        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n"
+        "detect_audience_class: true\n---\n\n"
         "### FULL-TIME ACADEMIC FACULTY\n\n" + ("full time leave detail. " * 40) + "\n"
     )
     chunks = chunk_document(doc)
-    assert chunks[0].faculty_class == "full_time_academic"
+    assert chunks[0].audience_class == "full_time_academic"
     assert "Full-time Academic Faculty" in chunks[0].text.split("\n\n")[0]
+
+
+def test_page_markers_set_page_start_and_are_not_embedded():
+    doc = (
+        "---\ndoc_id: fm\ntitle: Faculty Manual 2021\ncategory: faculty_manual\n---\n\n"
+        "<!--page:23-->\n### C. Hiring Procedure\n\n" + ("hiring detail. " * 40) + "\n\n"
+        "<!--page:24-->\n### D. Probation\n\n" + ("probation detail. " * 40) + "\n"
+    )
+    chunks = chunk_document(doc)
+    hiring = next(c for c in chunks if "hiring detail" in c.text)
+    probation = next(c for c in chunks if "probation detail" in c.text)
+    assert hiring.page_start == 23
+    assert probation.page_start == 24
+    assert "<!--page:" not in hiring.text  # marker stripped, never embedded
+
+
+def test_companion_doc_class_comparison_does_not_positionally_tag():
+    """A companion doc that merely *lists* the three classes in a comparison
+    subsection must NOT get positionally tagged (no detect_audience_class flag) —
+    otherwise everything after '3.3 Academic Service' is mistagged as ASF."""
+    doc = (
+        "---\ndoc_id: pre\ntitle: Preboarding\ncategory: onboarding\n---\n\n"
+        "### 3.3 Academic Service Faculty\n\n" + ("asf note. " * 20) + "\n\n"
+        "### 5. Where to Get Help\n\n" + ("contact the office. " * 20) + "\n"
+    )
+    chunks = chunk_document(doc)
+    assert all(c.audience_class == "" for c in chunks)
 
 SAMPLE_DOC = """---
 doc_id: test-policy

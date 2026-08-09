@@ -34,7 +34,7 @@ Core technologies:
 
 - **LLM:** Google Gemini via `google-genai` by default, optional Ollama (`LLM_PROVIDER`).
 - **Embeddings:** Gemini by default, optional Ollama (`EMBEDDING_PROVIDER`).
-- **Corpus:** `data/faculty-manual-2021.pdf` + a small supplementary statutory-requirements doc.
+- **Corpus:** `data/faculty-manual-2021.pdf` + two small supplementary PDFs (a consolidated pre-employment requirements checklist and a pre-boarding process guide).
 - **Vector store:** ChromaDB. **Structured data:** SQLite. **API:** FastAPI. **UI:** Streamlit. **Monitoring:** MLflow. **Deployment:** Docker Compose.
 
 ## Architecture Diagram
@@ -119,7 +119,7 @@ Note: don't mix host and Docker ingestion against the same `data/chroma/` — ch
 - `POST /upload-doc` — **planned**: NBI Clearance submission (PLAN.md §4.4).
 - `GET /onboarding-status/{employee_id}` — **planned**: per-hire checklist state (PLAN.md §4.3–§4.4).
 
-`src.monitoring.chat_trace()` logs sanitized MLflow telemetry (latency, source/citation/action/token counts, route, request size) via fail-closed allowlists, and never logs raw messages, model answers, or extracted document field values.
+`src.monitoring.chat_trace()` records each chat turn as an **MLflow 3.x trace** (a `chat_turn` span whose duration is the turn latency / agent response time), with sanitized telemetry — token usage, latency, and source/citation/action counts as span attributes; route, status, and models as searchable trace tags — via fail-closed allowlists. It never logs raw messages, model answers, or extracted document field values. Traces appear under the **Traces** tab of the MLflow UI (`http://localhost:5000`); the eval harnesses log separately as MLflow runs.
 
 ## Useful Checks
 

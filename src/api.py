@@ -1,4 +1,4 @@
-"""FastAPI interface for the DLSU Faculty Onboarding Concierge.
+"""FastAPI interface for the assistant (branding/scope from src/config.py).
 
 Member 4 owns this boundary: HTTP contracts, request validation, sanitized
 monitoring, and API-shaped responses for the Streamlit UI. When Member 2's
@@ -88,9 +88,9 @@ class UsageResponse(BaseModel):
 
 
 app = FastAPI(
-    title="E.Z.R.A. API",
+    title=f"{config.ASSISTANT_NAME} API",
     version="0.1.0",
-    description="REST API for grounded faculty onboarding & Faculty Manual answers.",
+    description=f"REST API for grounded answers about {config.SCOPE_PHRASE}.",
     lifespan=lifespan,
 )
 

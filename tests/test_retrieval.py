@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from src import config
-from src.rag.answerer import answer_question, detect_stated_class, no_answer, verify_citations
+from src.rag.answerer import answer_question, detect_stated_audience, no_answer, verify_citations
 from src.rag.chunking import chunk_document
 from src.rag.retriever import RetrievedChunk, apply_floor, rerank_by_category
 from src.schemas import AnswerSource, Citation, GroundedAnswer
@@ -55,6 +55,23 @@ def test_rerank_by_category_preserves_similarity_and_noop_without_category():
     assert rerank_by_category(chunks, None) == chunks
     ranked = rerank_by_category(chunks, "leave", boost=0.05)
     assert next(c for c in ranked if c.chunk_id == "b").similarity == 0.78
+
+
+def test_verify_citations_stamps_page_from_chunk():
+    """The citation's page comes from chunk metadata, not the model — even if the
+    model returned page=0 (or a wrong value), verify_citations overwrites it."""
+    chunk = RetrievedChunk(
+        chunk_id="faculty-manual-2021#050", text="dress code text", similarity=0.8,
+        doc_id="faculty-manual-2021", title="Faculty Manual 2021",
+        section_path="Attire and Grooming", category="faculty_manual", page_start=131,
+    )
+    answer = GroundedAnswer(
+        answer="Dress neatly.",
+        citations=[Citation(chunk_id="faculty-manual-2021#050", title="Faculty Manual 2021",
+                            section_path="Attire and Grooming", page=0)],
+    )
+    verified = verify_citations(answer, [chunk])
+    assert verified.citations[0].page == 131
 
 
 def test_verify_citations_drops_hallucinated_ids():
@@ -135,11 +152,11 @@ def test_answer_question_returns_chunks_when_answer_is_grounded():
 
 # --- Faculty-class disambiguation (Phase 2) ---------------------------------
 
-def _class_chunk(chunk_id, faculty_class, similarity=0.7):
+def _class_chunk(chunk_id, audience_class, similarity=0.7):
     return RetrievedChunk(
         chunk_id=chunk_id, text="Faculty Manual 2021 > x\n\nleave text", similarity=similarity,
         doc_id="faculty-manual-2021", title="Faculty Manual 2021",
-        section_path="Leaves", category="faculty_manual", faculty_class=faculty_class,
+        section_path="Leaves", category="faculty_manual", audience_class=audience_class,
     )
 
 
@@ -160,8 +177,8 @@ class RaisingClient:
     ("ASF vacation leave?", "academic_service"),
     ("am I full-time or part-time eligible?", None),  # contradictory → None
 ])
-def test_detect_stated_class(msg, expected):
-    assert detect_stated_class(msg) == expected
+def test_detect_stated_audience(msg, expected):
+    assert detect_stated_audience(msg) == expected
 
 
 def test_multi_class_evidence_triggers_clarification_without_llm():
@@ -177,6 +194,37 @@ def test_multi_class_evidence_triggers_clarification_without_llm():
     assert "faculty class" in answer.clarifying_question.lower()
 
 
+def test_disambiguation_disabled_when_no_segments_configured(monkeypatch):
+    """A deployment with no audience taxonomy must never ask a segment question,
+    even against an index whose chunks still carry (now-unknown) segment tags —
+    and must not KeyError building a clarification from an empty label map."""
+    monkeypatch.setattr(config, "AUDIENCE_CLASSES", ())
+    monkeypatch.setattr(config, "AUDIENCE_ORDER", ())
+    monkeypatch.setattr(config, "AUDIENCE_LABELS", {})
+    retriever = FakeRetriever([
+        _class_chunk("m#1", "full_time_academic"),
+        _class_chunk("m#2", "academic_service"),
+    ])
+    grounded = GroundedAnswer(answer="ok.", source=AnswerSource.INTERNAL_KB)
+    answer, _ = answer_question("leave?", retriever=retriever, client=FakeShapeClient(grounded))
+    assert answer.requires_clarification is False
+
+
+def test_second_class_below_top_n_does_not_clarify(monkeypatch):
+    """A class-split only among lower-ranked chunks (lexical noise) must NOT
+    trigger clarification — the strong (top-N) evidence is a single class."""
+    monkeypatch.setattr(config, "DISAMBIG_TOP_N", 3)
+    retriever = FakeRetriever([
+        _class_chunk("m#1", "full_time_academic", similarity=0.70),
+        _class_chunk("m#2", "", similarity=0.69),
+        _class_chunk("m#3", "full_time_academic", similarity=0.68),
+        _class_chunk("m#4", "academic_service", similarity=0.60),  # rank 4, below top-3
+    ])
+    grounded = GroundedAnswer(answer="answer.", source=AnswerSource.INTERNAL_KB)
+    answer, _ = answer_question("some question", retriever=retriever, client=FakeShapeClient(grounded))
+    assert answer.requires_clarification is False
+
+
 def test_stated_class_does_not_clarify_and_reranks_to_top():
     retriever = FakeRetriever([
         _class_chunk("m#ft", "full_time_academic", similarity=0.70),
@@ -187,7 +235,7 @@ def test_stated_class_does_not_clarify_and_reranks_to_top():
         "as an ASF, how much vacation leave?", retriever=retriever, client=FakeShapeClient(grounded)
     )
     assert answer.requires_clarification is False
-    assert chunks[0].faculty_class == "academic_service"  # boosted above the FT chunk
+    assert chunks[0].audience_class == "academic_service"  # boosted above the FT chunk
 
 
 def test_entire_raw_corpus_chunks_cleanly():

@@ -79,6 +79,92 @@ def _save_to_cache(cache_path, result) -> None:
         logger.warning("ocr_cache_write_failed path=%s", cache_path)
 
 
+def _retryable_field_names(doc_type: DocType) -> list[str]:
+    """All ExtractedField-typed field names for `doc_type` — reuses the
+    doctypes registry so this list can never drift from what's actually on
+    the schema. Excludes id_type, which is a classification, not an
+    ExtractedField."""
+    spec = doctypes.get_spec(doc_type)
+    if spec is None:
+        return []
+    return [field.name for field in spec.fields if field.name != "id_type"]
+
+
+def _should_retry(result, expected_doc_type: DocType) -> bool:
+    """One retry is spent when the model itself signaled real uncertainty —
+    not on every null field, since some are legitimately absent by design
+    (a National ID's expiry_date, per doctypes.py's Rule 5 carve-out) rather
+    than a miss. See config.OCR_ENABLE_RETRY's comment for why this exists."""
+    if result.overall_confidence < config.OCR_RETRY_CONFIDENCE_FLOOR:
+        return True
+    id_type = getattr(result, "id_type", None)
+    for name in _retryable_field_names(expected_doc_type):
+        if expected_doc_type == DocType.GOVERNMENT_ID and name == "expiry_date" and id_type is not None:
+            from src.schemas import IdType
+            if id_type == IdType.NATIONAL_ID:
+                continue  # structurally absent, not a miss
+        field = getattr(result, name, None)
+        if field is None:
+            continue
+        if not field.value and field.model_confidence < config.OCR_RETRY_CONFIDENCE_FLOOR:
+            return True
+    return False
+
+
+def _merge_results(first, second, doc_type: DocType):
+    """Picks whichever attempt has the higher overall_confidence as the
+    base, then fills any of its null fields from the other attempt. Never
+    discards a good field from either attempt to prefer a worse one."""
+    primary, secondary = (first, second) if first.overall_confidence >= second.overall_confidence else (second, first)
+    updates = {}
+    for name in _retryable_field_names(doc_type):
+        primary_field = getattr(primary, name, None)
+        if primary_field is not None and primary_field.value:
+            continue
+        secondary_field = getattr(secondary, name, None)
+        if secondary_field is not None and secondary_field.value:
+            updates[name] = secondary_field
+    return primary.model_copy(update=updates) if updates else primary
+
+
+def _call_gemini(vision_client, model: str, prompt: str, schema, image_bytes: bytes, mime_type: str, session_id: str | None):
+    """One generate_content() call. Returns the parsed result, or None on
+    any failure — API error, backend error, or an unparseable response.
+    Never raises; every caller already treats None as "try again or fail
+    toward needs_review downstream", so this keeps that contract in one
+    place instead of duplicated at each call site."""
+    from google.genai import types
+    from google.genai.errors import APIError
+
+    from src.agent.llm_client import LLMBackendError
+
+    try:
+        response = vision_client.models.generate_content(
+            model=model,
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=0.0,
+            ),
+        )
+    except (APIError, LLMBackendError) as exc:
+        # Both exceptions, matching the pattern used everywhere else
+        # get_llm_client()'s output is called — vision can come from either
+        # backend (VISION_PROVIDER), so the catch clause must too.
+        logger.warning("session=%s ocr_api_error status=%s", session_id, getattr(exc, "code", "?"))
+        return None
+
+    usage.record_usage(model, usage.extract_usage(response), session_id=session_id)
+    result = response.parsed
+    if result is None:
+        # Unparseable response — fails toward needs_review downstream, never
+        # toward accept. More likely on the Ollama path (small local models
+        # are less reliable at strict response_schema conformance).
+        logger.warning("session=%s ocr_unparseable", session_id)
+    return result
+
+
 def extract_document(
     image_bytes: bytes,
     mime_type: str,
@@ -87,6 +173,7 @@ def extract_document(
     session_id: str | None = None,
     use_cache: bool = True,
     preprocess: bool | None = None,
+    retry: bool | None = None,
 ) -> tuple[NbiExtractionResult | IdExtractionResult | None, ImageQualityReport]:
     if expected_doc_type not in _SCHEMA_BY_DOC_TYPE:
         raise ValueError(f"extract_document: unsupported expected_doc_type={expected_doc_type!r}")
@@ -126,41 +213,27 @@ def extract_document(
         if cached is not None:
             return cached, report
 
-    from google.genai import types
-    from google.genai.errors import APIError
-
-    from src.agent.llm_client import LLMBackendError
-
     vision_client = client or config.get_vision_client()
-    try:
-        response = vision_client.models.generate_content(
-            model=config.ACTIVE_VISION_MODEL,
-            contents=[
-                types.Part.from_bytes(data=processed_bytes, mime_type=send_mime_type),
-                prompt_template.format(fields=_field_hint_block(expected_doc_type)),
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=0.0,
-            ),
-        )
-    except (APIError, LLMBackendError) as exc:
-        # Both exceptions, matching the pattern used everywhere else
-        # get_llm_client()'s output is called — vision can come from either
-        # backend (VISION_PROVIDER), so the catch clause must too.
-        logger.warning("session=%s ocr_api_error status=%s", session_id, getattr(exc, "code", "?"))
-        return None, report
+    prompt = prompt_template.format(fields=_field_hint_block(expected_doc_type))
 
-    usage.record_usage(config.ACTIVE_VISION_MODEL, usage.extract_usage(response), session_id=session_id)
-
-    result = response.parsed
+    result = _call_gemini(
+        vision_client, config.ACTIVE_VISION_MODEL, prompt, schema,
+        processed_bytes, send_mime_type, session_id,
+    )
     if result is None:
-        # Unparseable response — fails toward needs_review downstream, never
-        # toward accept. More likely on the Ollama path (small local models
-        # are less reliable at strict response_schema conformance).
-        logger.warning("session=%s ocr_unparseable", session_id)
         return None, report
+
+    do_retry = config.OCR_ENABLE_RETRY if retry is None else retry
+    if do_retry and _should_retry(result, expected_doc_type):
+        logger.info("session=%s ocr_retry_low_confidence", session_id)
+        retry_result = _call_gemini(
+            vision_client, config.ACTIVE_VISION_MODEL, prompt, schema,
+            processed_bytes, send_mime_type, session_id,
+        )
+        # A failed retry (API error, unparseable) means _call_gemini returns
+        # None — just keep the first attempt rather than losing it.
+        if retry_result is not None:
+            result = _merge_results(result, retry_result, expected_doc_type)
 
     if use_cache:
         _save_to_cache(cache_path, result)

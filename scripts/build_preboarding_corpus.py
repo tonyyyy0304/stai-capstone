@@ -1,17 +1,14 @@
 """Build the supplementary pre-boarding corpus PDFs into data/raw/.
 
-The Faculty Manual 2021 covers hiring *criteria* and a one-page hiring
-procedure, but it does not describe the pre-boarding workflow a new hire
-actually walks through, and it never mentions the national statutory documents
-(verified: "NBI" appears zero times in the Manual). These documents fill that
-gap so T1 questions have real, citable corpus text.
+These documents give T1 (pre-employment) questions real, citable corpus text:
+a single consolidated pre-employment requirements checklist and the
+pre-boarding process guide.
 
 Output (each PDF gets a sibling <name>.meta.yaml, which scripts/ingest.py
 requires for non-Markdown sources):
 
     data/raw/dlsu-faculty-preboarding-process.pdf
     data/raw/dlsu-faculty-preemployment-requirements.pdf
-    data/raw/ph-statutory-preemployment.pdf
 
 Layout is deliberately tuned for src/rag/pdf_to_md.py: single column, three
 heading tiers set well above the body font size, ruled tables, and running
@@ -19,7 +16,7 @@ page chrome that the parser drops.
 
 Usage:
     python scripts/build_preboarding_corpus.py
-    python scripts/build_preboarding_corpus.py --out data/raw --only statutory
+    python scripts/build_preboarding_corpus.py --out data/raw --only requirements
 """
 
 import argparse
@@ -47,7 +44,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from scripts.corpus_content import doc_process, doc_requirements, doc_statutory
+from scripts.corpus_content import doc_process, doc_requirements
 
 # --- Typography ---------------------------------------------------------------
 # Body 10.5pt; heading tiers at 17/13.5/11.5pt. pdf_to_md.py treats any line
@@ -214,7 +211,6 @@ def build(module, out_dir: Path) -> Path:
 MODULES = {
     "process": doc_process,
     "requirements": doc_requirements,
-    "statutory": doc_statutory,
 }
 
 

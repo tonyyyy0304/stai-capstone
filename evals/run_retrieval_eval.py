@@ -11,8 +11,13 @@ where the ceiling is. Rows are handled by tier:
   - lookup / multihop / near_miss / disambiguation → scored on hit-rate@k + MRR
     (they have an expected chunk in the corpus).
   - negative (expected_doc_id is null, expect_abstention=true) → scored on the
-    **abstention signal**: the top similarity must fall below SIMILARITY_FLOOR so
-    the agent would answer "I don't know" instead of retrieving a false positive.
+    **answer-level abstention signal** (default): the answerer is run end-to-end and
+    the row counts as correct when it declines — i.e. GroundedAnswer.insufficient_context
+    is true, or the reply is the templated "I don't know". The retrieval similarity floor
+    is reported alongside as a *diagnostic only*: for in-vocabulary-but-unanswerable
+    questions the top chunk sits above SIMILARITY_FLOOR, so the floor cannot gate them and
+    must not be read as the abstention metric. Pass --abstention floor to score on the
+    floor alone (legacy behaviour).
 
 Each run writes two files to evals/results/, stamped with a UTC timestamp:
     retrieval_eval_<stamp>.log   — human-readable summary of the important metrics
@@ -37,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import config
 from src.rag.retriever import RetrievedChunk, Retriever
 from src.rag.hybrid import HybridRetriever
+from src.rag.answerer import answer_question, IDK_ANSWER
 
 GOLDEN_SET = Path(__file__).parent / "golden_set.jsonl"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -87,7 +93,25 @@ def _make_retriever(mode: str):
     return Retriever()
 
 
-def evaluate(mode: str, golden: list[dict], top_k: int) -> dict:
+def _answer_abstained(question: str) -> tuple[bool, dict]:
+    """Run the answerer end-to-end and decide whether it correctly declined.
+
+    A negative is "correctly abstained" when the answerer signals it cannot answer
+    the question from the corpus — either GroundedAnswer.insufficient_context is true,
+    or the reply is the templated IDK response (the floor/no-context path). This is the
+    layer where abstention is actually decided; the retrieval floor cannot see it.
+    """
+    ans, _ = answer_question(question)
+    abstained = bool(ans.insufficient_context) or ans.answer.strip() == IDK_ANSWER.strip()
+    detail = {
+        "insufficient_context": bool(ans.insufficient_context),
+        "n_citations": len(ans.citations),
+        "answer_preview": ans.answer[:240],
+    }
+    return abstained, detail
+
+
+def evaluate(mode: str, golden: list[dict], top_k: int, abstention_mode: str = "answer") -> dict:
     retriever = _make_retriever(mode)
     scored = []          # rows with an expected chunk (retrieval-scored tiers)
     negatives = []       # expect_abstention rows (abstention-scored)
@@ -108,7 +132,16 @@ def evaluate(mode: str, golden: list[dict], top_k: int) -> dict:
             ],
         }
         if item.get("expect_abstention"):
-            record["abstained_correctly"] = top_sim < config.SIMILARITY_FLOOR
+            # Retrieval-floor gate is a diagnostic only — it cannot separate
+            # in-vocabulary-but-unanswerable questions (their top chunk is above
+            # the floor). Abstention is judged at the answer layer by default.
+            record["floor_gate_below"] = top_sim < config.SIMILARITY_FLOOR
+            if abstention_mode == "answer":
+                abstained, detail = _answer_abstained(item["question"])
+                record.update(detail)
+                record["abstained_correctly"] = abstained
+            else:
+                record["abstained_correctly"] = record["floor_gate_below"]
             negatives.append(record)
         else:
             record["expected_doc_id"] = item["expected_doc_id"]
@@ -131,8 +164,11 @@ def evaluate(mode: str, golden: list[dict], top_k: int) -> dict:
     abstention = {}
     if negatives:
         abstention = {
+            "mode": abstention_mode,
             "abstention_rate": sum(1 for r in negatives if r["abstained_correctly"]) / len(negatives),
             "n": len(negatives),
+            # diagnostic: how many the retrieval floor alone would have caught
+            "floor_gate_rate": sum(1 for r in negatives if r.get("floor_gate_below")) / len(negatives),
         }
 
     return {
@@ -175,8 +211,15 @@ def _report_lines(report: dict) -> list[str]:
 
     if report["abstention"]:
         a = report["abstention"]
-        lines.append(f"\nAbstention (negative tier): {a['abstention_rate']:.3f} "
-                     f"correctly below floor {report['similarity_floor']} (n={a['n']})")
+        if a.get("mode") == "answer":
+            lines.append(f"\nAbstention (negative tier, answer-level): {a['abstention_rate']:.3f} "
+                         f"correctly declined (n={a['n']})")
+            lines.append(f"  [diagnostic] retrieval-floor gate <{report['similarity_floor']}: "
+                         f"{a.get('floor_gate_rate', 0):.3f} — non-discriminative for "
+                         f"in-vocabulary questions, not the abstention metric")
+        else:
+            lines.append(f"\nAbstention (negative tier, floor gate <{report['similarity_floor']}): "
+                         f"{a['abstention_rate']:.3f} (n={a['n']})")
 
     misses = [r for r in report["scored"] if r["first_relevant_rank"] is None]
     if misses:
@@ -193,6 +236,10 @@ def main() -> None:
     parser.add_argument("--retriever", choices=("dense", "hybrid", "both"),
                         default=config.RETRIEVER_MODE, help="which retriever(s) to evaluate")
     parser.add_argument("--mlflow", action="store_true", help="log the run(s) to MLflow")
+    parser.add_argument("--abstention", choices=("answer", "floor"), default="answer",
+                        help="how to score the negative tier: 'answer' (default) runs the "
+                             "answerer end-to-end and checks the decline signal; 'floor' uses "
+                             "only the retrieval similarity floor (legacy diagnostic)")
     args = parser.parse_args()
 
     golden = load_golden_set()
@@ -201,7 +248,8 @@ def main() -> None:
     n_neg = sum(1 for g in golden if g.get("expect_abstention"))
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    reports = [evaluate(mode, golden, top_k=args.top_k) for mode in modes]
+    reports = [evaluate(mode, golden, top_k=args.top_k, abstention_mode=args.abstention)
+               for mode in modes]
 
     # Build a single human-readable summary shared by the console and the .log file.
     log_lines = [
@@ -212,6 +260,7 @@ def main() -> None:
         f"embedding_model: {config.ACTIVE_EMBEDDING_MODEL}",
         f"rrf_k:           {config.RRF_K}",
         f"golden set:      {len(golden)} questions ({n_scored} scored, {n_neg} negatives)",
+        f"abstention:      {args.abstention}-level scoring",
     ]
     for report in reports:
         log_lines.extend(_report_lines(report))
@@ -245,6 +294,7 @@ def main() -> None:
                     flat[f"{topic}_hit_rate_at_1"] = m.get("hit_rate_at_1", 0)
                 if report["abstention"]:
                     flat["abstention_rate"] = report["abstention"]["abstention_rate"]
+                    flat["abstention_floor_gate_rate"] = report["abstention"].get("floor_gate_rate", 0)
                 mlflow.log_metrics(flat)
                 mlflow.log_artifact(str(out_path))
         print("Logged to MLflow experiment 'retrieval-eval'.")

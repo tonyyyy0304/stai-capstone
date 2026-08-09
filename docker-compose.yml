@@ -42,7 +42,10 @@ services:
 
   mlflow:
     build: .
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /app/data/mlruns
+    # SQLite backend (four slashes = absolute path in the container). Enables the
+    # trace-metrics aggregates the 3.x Traces UI needs; the DB lives in the shared
+    # ./data volume alongside the app.
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////app/data/mlflow.db
     ports:
       - "5000:5000"
     volumes:

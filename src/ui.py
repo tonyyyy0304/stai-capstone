@@ -1,4 +1,4 @@
-"""Streamlit chat UI for the HR assistant — E.Z.R.A.
+"""Streamlit chat UI for the assistant (branding from config.ASSISTANT_NAME).
 
 Recreates the design in docs/ui-design-revision-request/ (collapsible sidebar,
 header "New chat", inline citation/source/web pills, privacy consent gate)
@@ -85,6 +85,32 @@ a:hover { text-decoration: underline; }
 /* Message list */
 .st-key-message_list { max-width: 680px; margin: 0 auto; padding: 32px 24px 20px 24px; }
 div[class*="st-key-msg_"] { margin-bottom: 30px; }
+
+/* Assistant message: avatar + Markdown body laid out as a flex row. The body is
+   a real st.markdown() block (so bold/lists/tables render), not escaped text. */
+div[class*="st-key-msg_row_"] [data-testid="stVerticalBlock"] {
+  flex-direction: row; gap: 10px; align-items: flex-start;
+}
+div[class*="st-key-msg_row_"] [data-testid="stVerticalBlock"] > div:first-child { flex: 0 0 auto; }
+div[class*="st-key-msg_row_"] [data-testid="stVerticalBlock"] > div:last-child { flex: 1 1 auto; min-width: 0; }
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] {
+  font-size: 15px; line-height: 1.55; color: oklch(20% 0.015 255);
+}
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] p:first-child { margin-top: 0; }
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] p:last-child { margin-bottom: 0; }
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] ul,
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] ol { margin: 6px 0; padding-left: 22px; }
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] li { margin: 2px 0; }
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] table {
+  border-collapse: collapse; font-size: 13.5px; margin: 8px 0;
+}
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] th,
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] td {
+  border: 1px solid oklch(90% 0.006 250); padding: 6px 10px; text-align: left;
+}
+div[class*="st-key-msg_row_"] [data-testid="stMarkdownContainer"] th {
+  background: oklch(97% 0.004 250); font-weight: 600;
+}
 
 /* Citation / source / web pills */
 div[class*="st-key-pill_"] button {
@@ -342,7 +368,7 @@ def _render_declined_screen() -> None:
         )
         st.markdown(
             '<div style="font-size:14px;line-height:1.6;color:oklch(45% 0.012 250);">'
-            "E.Z.R.A. can't store your messages without your consent. You can review the "
+            f"{config.ASSISTANT_NAME} can't store your messages without your consent. You can review the "
             "notice again if you'd like to proceed.</div>",
             unsafe_allow_html=True,
         )
@@ -355,7 +381,7 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
             f'''<div style="display:flex;flex-direction:column;min-width:260px;">
   <div style="display:flex;align-items:center;gap:8px;padding:6px 8px 18px 8px;">
     <div style="width:22px;height:22px;border-radius:6px;background:{accent};flex-shrink:0;"></div>
-    <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">E.Z.R.A.</div>
+    <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">{config.ASSISTANT_NAME}</div>
   </div>
   <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:oklch(55% 0.012 250);padding:4px 8px 8px 8px;">Recent</div>
   <div style="display:flex;flex-direction:column;gap:1px;padding:9px 8px;border-radius:8px;background:oklch(92% 0.012 250);">
@@ -414,8 +440,8 @@ def _render_header() -> None:
         with col2:
             st.markdown(
                 '<div style="display:flex;flex-direction:column;gap:1px;">'
-                '<div style="font-size:15px;font-weight:600;color:oklch(24% 0.015 255);">E.Z.R.A.</div>'
-                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded faculty onboarding &amp; Faculty Manual answers, with citations</div>'
+                f'<div style="font-size:15px;font-weight:600;color:oklch(24% 0.015 255);">{config.ASSISTANT_NAME}</div>'
+                '<div style="font-size:12px;color:oklch(52% 0.012 250);">Grounded answers, with citations</div>'
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -637,22 +663,26 @@ def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
 
 def _render_message(i: int, msg: dict, accent: str) -> None:
     with st.container(key=f"msg_{i}"):
-        content = html.escape(msg["content"])
         if msg["role"] == "assistant":
-            st.markdown(
-                '<div style="display:flex;gap:10px;align-items:flex-start;">'
-                f'<div style="width:26px;height:26px;border-radius:7px;background:{accent};'
-                'flex-shrink:0;margin-top:2px;display:flex;align-items:center;justify-content:center;">'
-                '<div style="width:8px;height:8px;border-radius:2px;background:oklch(99% 0 0);"></div>'
-                "</div>"
-                '<div style="font-size:15px;line-height:1.55;color:oklch(20% 0.015 255);'
-                f'white-space:pre-wrap;min-width:0;">{content}</div>'
-                "</div>",
-                unsafe_allow_html=True,
-            )
+            # Avatar + Markdown body as two children of a flex-row container (styled
+            # in the global CSS). The body goes through st.markdown so bold, lists,
+            # and tables render; it is NOT html.escape'd here — the model's answer is
+            # trusted Markdown, and Streamlit sanitizes it (no raw HTML passthrough).
+            with st.container(key=f"msg_row_{i}"):
+                st.markdown(
+                    f'<div style="width:26px;height:26px;border-radius:7px;background:{accent};'
+                    'flex-shrink:0;margin-top:2px;display:flex;align-items:center;justify-content:center;">'
+                    '<div style="width:8px;height:8px;border-radius:2px;background:oklch(99% 0 0);"></div>'
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(msg["content"])
             _render_actions(msg.get("actions") or [])
             _render_pills_and_panels(i, msg, accent)
         else:
+            # User messages stay escaped — a user's text must never be interpreted
+            # as Markdown or HTML.
+            content = html.escape(msg["content"])
             st.markdown(
                 '<div style="display:flex;justify-content:flex-end;">'
                 '<div style="font-size:15px;line-height:1.55;padding:11px 15px;border-radius:14px;'
@@ -669,7 +699,7 @@ def _render_messages(accent: str) -> None:
             _render_message(i, message, accent)
 
 
-st.set_page_config(page_title="E.Z.R.A.", page_icon="💬", layout="wide")
+st.set_page_config(page_title=config.ASSISTANT_NAME, page_icon="💬", layout="wide")
 _init_state()
 
 _dev_mode = st.query_params.get("dev") == "1"
