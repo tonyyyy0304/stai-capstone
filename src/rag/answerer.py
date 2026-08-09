@@ -60,9 +60,8 @@ def _clarification_answer(question: str) -> GroundedAnswer:
 
 
 IDK_ANSWER = (
-    f"I couldn't find this in the {config.CORPUS_TITLE} or the companion documents I have, "
-    f"so I don't want to guess. You may want to consult the {config.CORPUS_TITLE} directly "
-    f"or {config.HELP_CONTACT} for this one."
+    "I couldn't find a reliable answer to this in the documents I have, so I don't want "
+    f"to guess. You may want to consult {config.HELP_CONTACT} for this one."
 )
 
 # The segment-disambiguation rule is only included when the deployment defines
@@ -102,9 +101,12 @@ questions about {config.SCOPE_PHRASE} using ONLY the excerpts below.
 Rules:
 - Base every claim on the excerpts; never use outside knowledge or another organization's \
 policy. A confident wrong answer about someone's employment terms is worse than no answer.
-- Cite every excerpt you used by its exact chunk_id, title, and section_path. Each excerpt \
-header includes a page number — state it in your answer (e.g. "p.131") so the reader can \
-check the source. When a section_path names an appendix (e.g. "Appendix F"), keep that too.
+- For every excerpt you actually used, add one entry to the `citations` field with its exact \
+chunk_id, title, and section_path — that structured list is what the reader sees as sources, \
+so it must be complete. Do NOT write chunk_ids or section_path labels inline in the `answer` \
+text: the prose must read cleanly for a human. The only source marker allowed inline is a bare \
+page number where it helps the reader check a specific fact (e.g. "p.131"); use it sparingly, \
+not after every sentence.
 - Quote specific numbers, durations, deadlines, form names, and codes exactly as written \
 (e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}{_FORMAT_RULE}
 - Answer only the specific question asked. If the excerpts do not answer THAT question, set \
