@@ -50,6 +50,7 @@ class GeminiEmbedder:
         return self._client
 
     def _embed_batch_with_retry(self, batch: list[str], task_type: str):
+        import httpx
         from google.genai import types
         from google.genai.errors import APIError
 
@@ -63,14 +64,21 @@ class GeminiEmbedder:
                         output_dimensionality=config.EMBEDDING_DIM,
                     ),
                 )
-            except APIError as exc:
+            except (APIError, httpx.TimeoutException) as exc:
+                # httpx.TimeoutException added 2026-08-10 alongside
+                # config.GEMINI_REQUEST_TIMEOUT_MS -- a stalled request now
+                # fails with a real timeout instead of hanging forever, and
+                # a timeout is exactly as transient/retryable as a 429 here.
+                is_rate_limited = isinstance(exc, APIError) and getattr(exc, "code", None) == 429
+                is_timeout = isinstance(exc, httpx.TimeoutException)
                 is_last_attempt = attempt == _EMBED_MAX_RETRIES - 1
-                if getattr(exc, "code", None) != 429 or is_last_attempt:
+                if not (is_rate_limited or is_timeout) or is_last_attempt:
                     raise
                 delay = _EMBED_BASE_DELAY_S * (2**attempt)
+                reason = "rate-limited" if is_rate_limited else "timed out"
                 logger.warning(
-                    "embed_content rate-limited, retrying in %.0fs (attempt %d/%d)",
-                    delay, attempt + 1, _EMBED_MAX_RETRIES,
+                    "embed_content %s, retrying in %.0fs (attempt %d/%d)",
+                    reason, delay, attempt + 1, _EMBED_MAX_RETRIES,
                 )
                 print(f"  embed_content rate-limited, retrying in {delay:.0f}s "
                       f"(attempt {attempt + 1}/{_EMBED_MAX_RETRIES})...")

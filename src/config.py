@@ -397,11 +397,26 @@ def get_gemini_api_key() -> str:
     return key
 
 
+GEMINI_REQUEST_TIMEOUT_MS = 120_000  # 2 minutes
+# Found 2026-08-10: a real Gemini vision call intermittently hung
+# indefinitely (reproduced repeatedly, isolated to the actual network call --
+# quality gate, preprocessing, and cache lookup all measured instant) with
+# NO timeout configured anywhere on the client, meaning a stalled request
+# would hang the whole process (a FastAPI worker on POST /upload-doc, in
+# production). google.genai.types.HttpOptions.timeout is in milliseconds.
+# 120s is generous relative to observed real-call latency (11-25s including
+# preprocessing) to avoid cutting off legitimate slow calls, while still
+# failing fast instead of hanging forever.
+
+
 def get_gemini_client():
     """Create a google-genai client. Kept as a function so tests can mock it."""
     from google import genai
 
-    return genai.Client(api_key=get_gemini_api_key())
+    return genai.Client(
+        api_key=get_gemini_api_key(),
+        http_options=genai.types.HttpOptions(timeout=GEMINI_REQUEST_TIMEOUT_MS),
+    )
 
 
 def get_tavily_api_key() -> str:

@@ -288,6 +288,12 @@ def _init_state() -> None:
     # resolve to a checklist lookup, and so the uploader below knows who
     # it's uploading for.
     st.session_state.setdefault("employee_id", "")
+    # Hidden until the conversation actually calls for it -- flipped True
+    # when an assistant message carries an "unlock_document_flow" action
+    # (Intent.DOCUMENT_UPLOAD/DOCUMENT_STATUS, src/agent/orchestrator.py).
+    # Persists for the rest of the session once unlocked (by design, not an
+    # oversight) -- an unrelated question later shouldn't re-hide it.
+    st.session_state.setdefault("show_upload_flow", False)
     # Remembered across the two uploads so the user doesn't retype identity
     # fields for the second document.
     st.session_state.setdefault("upload_full_name", "")
@@ -308,6 +314,7 @@ def _start_new_chat() -> None:
     st.session_state.expanded_panels = {}
     st.session_state.awaiting_response = False
     st.session_state.pending_request = None
+    st.session_state.show_upload_flow = False  # re-lock; a new conversation hasn't asked for it yet
 
 
 def _accept_privacy() -> None:
@@ -588,18 +595,24 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
 </div>''',
             unsafe_allow_html=True,
         )
-        st.markdown(
-            '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
-            'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;border-top:1px solid oklch(90% 0.006 250);'
-            'margin-top:10px;">Employee ID</div>',
-            unsafe_allow_html=True,
-        )
-        st.session_state.employee_id = st.text_input(
-            "Employee ID", value=st.session_state.employee_id, key="employee_id_input",
-            label_visibility="collapsed", placeholder="e.g. EMP-04821",
-        )
+        # Employee ID + checklist are hidden until the conversation actually
+        # calls for document verification (Intent.DOCUMENT_UPLOAD/
+        # DOCUMENT_STATUS flips show_upload_flow -- see _fetch_pending_
+        # response) rather than sitting there with no context, then persist
+        # for the rest of the session once revealed.
+        if st.session_state.show_upload_flow:
+            st.markdown(
+                '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
+                'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;border-top:1px solid oklch(90% 0.006 250);'
+                'margin-top:10px;">Employee ID</div>',
+                unsafe_allow_html=True,
+            )
+            st.session_state.employee_id = st.text_input(
+                "Employee ID", value=st.session_state.employee_id, key="employee_id_input",
+                label_visibility="collapsed", placeholder="e.g. EMP-04821",
+            )
 
-        _render_checklist()
+            _render_checklist()
 
         if dev_mode:
             with st.expander("Developer tools", expanded=False):
@@ -724,6 +737,7 @@ def _fetch_pending_response() -> None:
             "token_usage": {},
         }
 
+    actions = data.get("actions", [])
     st.session_state.messages.append(
         {
             "role": "assistant",
@@ -731,10 +745,16 @@ def _fetch_pending_response() -> None:
             "citations": data.get("citations", []),
             "sources": data.get("sources", []),
             "web_citations": data.get("web_citations", []),
-            "actions": data.get("actions", []),
+            "actions": actions,
             "token_usage": data.get("token_usage", {}),
         }
     )
+    # Reveals the Employee ID field, checklist, and uploader once the
+    # conversation actually asks for document verification -- persists for
+    # the rest of the session (see _init_state's note), so this only ever
+    # flips False -> True here, never back.
+    if any(a.get("type") == "unlock_document_flow" for a in actions):
+        st.session_state.show_upload_flow = True
     st.session_state.pending_request = None
     st.session_state.awaiting_response = False
 
@@ -922,7 +942,6 @@ if _privacy_status != "agreed":
 
 _render_sidebar(_accent, _dev_mode)
 _render_header()
-_render_uploader()
 _render_messages(_accent)
 
 if st.session_state.awaiting_response:
@@ -935,6 +954,8 @@ if st.session_state.awaiting_response:
     st.rerun()
 
 _render_quick_prompts()
+if st.session_state.show_upload_flow:
+    _render_uploader()
 
 _prompt = st.chat_input("Ask about faculty onboarding or the Faculty Manual…")
 if _prompt:

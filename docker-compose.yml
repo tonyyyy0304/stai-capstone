@@ -10,7 +10,12 @@ services:
 
   api:
     build: .
-    command: uvicorn src.api:app --host 0.0.0.0 --port 8000
+    # --reload: without a source mount + this flag, every code change needs a
+    # full `docker compose up --build` to take effect -- the image bakes in
+    # src/ via COPY . . at build time, so a host edit alone does nothing
+    # until the container is rebuilt. --reload makes uvicorn watch the
+    # mounted src/ below and restart the worker on change, no rebuild needed.
+    command: uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - path: .env
         required: false
@@ -21,6 +26,7 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      - ./src:/app/src
     depends_on:
       ingest:
         condition: service_completed_successfully
@@ -29,6 +35,10 @@ services:
 
   ui:
     build: .
+    # Streamlit has its own built-in file-watcher (server.fileWatcherType,
+    # "auto" by default) and reruns the script on save -- but only if the
+    # container can actually see host edits, which the ./src mount below is
+    # what makes possible. Same underlying issue as api's --reload above.
     command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
     env_file:
       - path: .env
@@ -37,6 +47,8 @@ services:
       API_URL: http://api:8000
     ports:
       - "8501:8501"
+    volumes:
+      - ./src:/app/src
     depends_on:
       - api
 

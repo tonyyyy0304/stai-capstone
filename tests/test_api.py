@@ -69,6 +69,27 @@ def test_chat_routes_through_agent_when_available(monkeypatch):
     assert body["actions"] == []
 
 
+def test_chat_surfaces_unlock_document_flow_action(monkeypatch):
+    """The Component 14 sidebar reveal (Employee ID field/checklist/uploader,
+    src/ui.py) depends on this action surviving the full round trip from
+    run_turn() -> handle_message() -> ChatResponse -> JSON. Previously
+    handle_message() hardcoded actions=[] unconditionally, which would have
+    silently swallowed this."""
+    scripted = orchestrator.AgentResponse(
+        reply="You can now enter your Employee ID and upload documents in the sidebar.",
+        actions=[{"type": "unlock_document_flow", "label": "...", "status": "completed"}],
+    )
+    monkeypatch.setattr(orchestrator, "run_turn", lambda *args, **kwargs: scripted)
+
+    client = TestClient(api.app)
+    response = client.post("/chat", json={"message": "I need to verify my documents"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["actions"][0]["type"] == "unlock_document_flow"
+    assert body["actions"][0]["status"] == "completed"
+
+
 def test_chat_threads_session_history_across_turns(monkeypatch, tmp_path):
     """History now comes from src/memory/ (SQLite), not an in-process dict in
     api.py — handle_message() loads/saves it internally since _try_agent_

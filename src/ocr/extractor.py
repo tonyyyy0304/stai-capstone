@@ -160,6 +160,7 @@ def _call_gemini(vision_client, model: str, prompt: str, schema, image_bytes: by
     Never raises; every caller already treats None as "try again or fail
     toward needs_review downstream", so this keeps that contract in one
     place instead of duplicated at each call site."""
+    import httpx
     from google.genai import types
     from google.genai.errors import APIError
 
@@ -175,10 +176,16 @@ def _call_gemini(vision_client, model: str, prompt: str, schema, image_bytes: by
                 temperature=0.0,
             ),
         )
-    except (APIError, LLMBackendError) as exc:
-        # Both exceptions, matching the pattern used everywhere else
+    except (APIError, LLMBackendError, httpx.TimeoutException) as exc:
+        # Three exception families, matching the pattern used everywhere else
         # get_llm_client()'s output is called — vision can come from either
         # backend (VISION_PROVIDER), so the catch clause must too.
+        # httpx.TimeoutException added 2026-08-10: a real vision call
+        # intermittently hung indefinitely with no client-side timeout
+        # configured (config.get_gemini_client() now sets one); the timeout
+        # itself raises httpx.ConnectTimeout/ReadTimeout, NOT APIError, so it
+        # needs its own place in this tuple or it fails toward an unhandled
+        # crash instead of the (None, report) fail-safe path.
         logger.warning("session=%s ocr_api_error status=%s", session_id, getattr(exc, "code", "?"))
         return None
 

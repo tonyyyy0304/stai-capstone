@@ -58,6 +58,7 @@ def judge_input(
     """One structured Gemini call classifying `message` across the five
     guardrail dimensions. Returns None (fail-open — caller should allow) on any
     API/backend error or unparseable response; never raises."""
+    import httpx
     from google.genai import types
     from google.genai.errors import APIError
 
@@ -75,7 +76,7 @@ def judge_input(
                 thinking_config=config.thinking_config(),
             ),
         )
-    except (APIError, LLMBackendError) as exc:
+    except (APIError, LLMBackendError, httpx.TimeoutException) as exc:
         logger.warning("session=%s llm_judge_error status=%s", session_id, getattr(exc, "code", "?"))
         return None
 

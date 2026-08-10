@@ -17,6 +17,7 @@ import hashlib
 import os
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from google.genai.errors import APIError
@@ -213,6 +214,25 @@ def test_api_error_returns_none_report_not_raise(tmp_path, monkeypatch):
 
     assert result is None
     assert report.verdict.value in ("pass", "warn")  # quality was fine; the API call is what failed
+
+
+def test_request_timeout_returns_none_report_not_raise(tmp_path, monkeypatch):
+    """Found 2026-08-10: a real vision call intermittently hung
+    indefinitely with no client-side timeout configured. A timeout raises
+    httpx.ConnectTimeout/ReadTimeout, NOT google.genai.errors.APIError --
+    needs its own place in the except tuple or it crashes instead of
+    failing toward the (None, report) fail-safe path everything else uses."""
+    _requires_mock_dataset()
+    monkeypatch.setattr(config, "OCR_CACHE_DIR", tmp_path)
+    fake_client = _FakeClient(raise_exc=httpx.ReadTimeout("timed out"))
+
+    result, report = extractor.extract_document(
+        _bytes("nbi_id01_clean.png"), "image/png", DocType.NBI_CLEARANCE,
+        client=fake_client, use_cache=False,
+    )
+
+    assert result is None
+    assert report.verdict.value in ("pass", "warn")
 
 
 def test_llm_backend_error_returns_none_report_not_raise(tmp_path, monkeypatch):

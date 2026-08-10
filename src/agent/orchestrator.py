@@ -115,6 +115,21 @@ class AgentResponse:
     insufficient_context: bool = False
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     steps: list[AgentStep] = field(default_factory=list)
+    # Dict-shaped to match api.py's ActionResponse (type/label/status) without
+    # importing that Pydantic model here — api.py adapts orchestrator output
+    # to the HTTP contract, not the other way around. Only ever populated by
+    # the DOCUMENT_UPLOAD/DOCUMENT_STATUS short-circuits below, with
+    # type="unlock_document_flow" -- src/ui.py watches for that specific
+    # type to reveal the Employee ID field, checklist, and uploader, which
+    # are otherwise hidden until the conversation actually calls for them.
+    actions: list[dict] = field(default_factory=list)
+
+
+_UNLOCK_DOCUMENT_FLOW_ACTION = {
+    "type": "unlock_document_flow",
+    "label": "You can now enter your Employee ID and upload documents in the sidebar.",
+    "status": "completed",
+}
 
 
 @dataclass
@@ -221,6 +236,7 @@ def run_turn(
     if not guardrail_result.allowed:
         return AgentResponse(reply=guardrail_result.reason, steps=steps)
 
+    import httpx
     from google.genai.errors import APIError
 
     from src.agent.llm_client import LLMBackendError
@@ -266,6 +282,7 @@ def run_turn(
                 reply=DOCUMENT_UPLOAD_REPLY,
                 steps=steps,
                 token_usage=_turn_token_usage(turn_started_at, session_id),
+                actions=[_UNLOCK_DOCUMENT_FLOW_ACTION],
             )
 
         if classification.intent == Intent.DOCUMENT_STATUS:
@@ -273,13 +290,18 @@ def run_turn(
                 reply=_handle_document_status(employee_id, steps),
                 steps=steps,
                 token_usage=_turn_token_usage(turn_started_at, session_id),
+                actions=[_UNLOCK_DOCUMENT_FLOW_ACTION],
             )
 
         reply, run_state = _react_loop(
             message, classification, steps, client, session_id, history
         )
-    except (APIError, LLMBackendError) as exc:
-        logger.warning("session=%s llm_api_error status=%s", session_id, exc.code)
+    except (APIError, LLMBackendError, httpx.TimeoutException) as exc:
+        # httpx.TimeoutException added 2026-08-10: a real request timeout
+        # raises httpx.ConnectTimeout/ReadTimeout, not APIError, and doesn't
+        # carry a .code attribute -- getattr avoids crashing this handler
+        # on exactly the case it exists to handle gracefully.
+        logger.warning("session=%s llm_api_error status=%s", session_id, getattr(exc, "code", "timeout"))
         return AgentResponse(
             reply=API_ERROR_REPLY,
             steps=steps,
@@ -577,7 +599,7 @@ def handle_message(
         "citations": result.citations,
         "sources": [_source_dict_from_chunk(chunk) for chunk in result.chunks],
         "web_citations": result.web_citations,
-        "actions": [],
+        "actions": result.actions,
         "insufficient_context": result.insufficient_context,
         "token_usage": result.token_usage,
     }

@@ -179,6 +179,48 @@ def test_document_status_without_employee_id_asks_for_it_not_a_lookup(monkeypatc
     assert all(step.tool is None for step in result.steps)  # never reaches the DB lookup
 
 
+def test_document_upload_carries_unlock_action(monkeypatch):
+    """src/ui.py watches AgentResponse.actions for this specific type to
+    reveal the Employee ID field/checklist/uploader -- otherwise hidden
+    until the conversation actually calls for document verification."""
+    mock_classification(monkeypatch, Intent.DOCUMENT_UPLOAD)
+    result = orchestrator.run_turn("s-up2", "how do I upload my NBI clearance?", client=FakeClient([]))
+    assert {"type": "unlock_document_flow", "status": "completed"}.items() <= result.actions[0].items()
+
+
+def test_document_status_carries_unlock_action_even_without_employee_id(monkeypatch):
+    """The reveal should happen regardless of whether employee_id is set
+    yet -- that's exactly the case where the newly-revealed Employee ID
+    field is what the user needs next."""
+    mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
+    result = orchestrator.run_turn("s-st0", "what's the status of my documents?", client=FakeClient([]))
+    assert any(a.get("type") == "unlock_document_flow" for a in result.actions)
+
+
+def test_unrelated_faq_never_carries_unlock_action(monkeypatch):
+    mock_classification(monkeypatch, Intent.FAQ, category="leave")
+    monkeypatch.setattr(tools, "retrieve_kb", lambda question, category=None: ([fake_chunk("chunk1")], None))
+    import src.rag.answerer as answerer_mod
+    monkeypatch.setattr(
+        answerer_mod, "generate_grounded_answer",
+        lambda message, chunks, client=None, session_id=None, history=None: GroundedAnswer(
+            answer="15 days.", source=AnswerSource.INTERNAL_KB
+        ),
+    )
+    client = FakeClient([
+        react_step_response("look it up in the KB", ReActAction.SEARCH_KB, query="leave days"),
+        react_step_response("the excerpt answers it", ReActAction.FINISH),
+    ])
+    result = orchestrator.run_turn("s-faq", "how many leave days do I get?", client=client)
+    assert result.actions == []
+
+
+def test_out_of_scope_never_carries_unlock_action(monkeypatch):
+    mock_classification(monkeypatch, Intent.OUT_OF_SCOPE, confidence=0.9)
+    result = orchestrator.run_turn("s-oos", "what's the weather today?", client=FakeClient([]))
+    assert result.actions == []
+
+
 def test_document_status_with_employee_id_looks_up_checklist(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "SQLITE_PATH", tmp_path / "test_hr_agent.db")
     mock_classification(monkeypatch, Intent.DOCUMENT_STATUS)
@@ -472,6 +514,22 @@ def test_gemini_api_error_returns_graceful_fallback(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "classify_intent", raise_unavailable)
     result = orchestrator.run_turn("s8", "how many vacation days do I get?", client=FakeClient([]))
+    assert result.reply == orchestrator.API_ERROR_REPLY
+
+
+def test_request_timeout_returns_graceful_fallback_not_raise(monkeypatch):
+    """Found 2026-08-10: a real Gemini call hung indefinitely with no
+    client-side timeout previously configured. A timeout raises
+    httpx.ConnectTimeout/ReadTimeout, NOT google.genai.errors.APIError, and
+    doesn't carry a .code attribute -- needs its own place in run_turn's
+    except tuple or it crashes the turn instead of degrading gracefully."""
+    import httpx
+
+    def raise_timeout(message, history, client=None, session_id=None):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(orchestrator, "classify_intent", raise_timeout)
+    result = orchestrator.run_turn("s-timeout", "how many vacation days do I get?", client=FakeClient([]))
     assert result.reply == orchestrator.API_ERROR_REPLY
 
 

@@ -5,6 +5,7 @@ these run instantly, not for real seconds."""
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from google.genai.errors import APIError
 
@@ -115,6 +116,30 @@ def test_multiple_batches_each_get_their_own_retry_budget(no_real_sleep):
 
     assert len(vectors) == 4
     assert client.models.call_count == 3
+
+
+def test_retries_on_timeout_then_succeeds(no_real_sleep):
+    """Found 2026-08-10: a real embed_content call intermittently hung
+    indefinitely with no client-side timeout configured (config.
+    GEMINI_REQUEST_TIMEOUT_MS now sets one). A timeout is exactly as
+    transient/retryable as a 429 here -- same backoff loop handles both."""
+    client = _FakeClient([httpx.ReadTimeout("timed out"), _FakeEmbedContentResponse(2)])
+    embedder = GeminiEmbedder(client=client)
+
+    vectors = embedder.embed_documents(["a", "b"])
+
+    assert len(vectors) == 2
+    assert client.models.call_count == 2
+
+
+def test_timeout_gives_up_after_max_retries(no_real_sleep):
+    client = _FakeClient([httpx.ReadTimeout("timed out")] * 10)
+    embedder = GeminiEmbedder(client=client)
+
+    with pytest.raises(httpx.TimeoutException):
+        embedder.embed_documents(["a", "b"])
+
+    assert client.models.call_count == embeddings_mod._EMBED_MAX_RETRIES
 
 
 def test_embed_query_also_retries(no_real_sleep):
