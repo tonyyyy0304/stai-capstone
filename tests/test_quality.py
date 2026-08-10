@@ -184,3 +184,44 @@ def test_assess_has_no_network_dependency(monkeypatch):
 def test_load_image_rejects_garbage_bytes():
     with pytest.raises(ValueError):
         quality.load_image(b"not an image")
+
+
+def test_load_image_applies_exif_orientation():
+    """Phone photos store pixels in sensor-native orientation plus an EXIF
+    Orientation tag saying how to rotate for display -- cv2.imdecode() never
+    reads that tag, so a sideways photo stayed sideways all the way through
+    the pipeline. Builds a landscape image with a red marker block in its
+    top-left corner, tags it EXIF orientation=6 (rotate 90 CW to display
+    upright), and checks load_image() both swaps the dimensions AND actually
+    moves the marker to where it belongs post-rotation -- not just a
+    coincidental shape swap."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    raw = Image.new("RGB", (100, 60), color=(0, 0, 0))
+    for x in range(20):
+        for y in range(20):
+            raw.putpixel((x, y), (255, 0, 0))  # red marker, top-left of raw pixels
+
+    exif = raw.getexif()
+    exif[0x0112] = 6  # Orientation tag: rotate 90 CW to display upright
+    buf = BytesIO()
+    raw.save(buf, format="jpeg", exif=exif.tobytes())
+
+    loaded = quality.load_image(buf.getvalue())
+
+    assert loaded.shape[:2] == (100, 60)  # portrait: height/width swapped from raw (60, 100)
+    # Independently re-derive the expected pixels via PIL directly, rather than
+    # hand-deriving where orientation=6 should move the marker.
+    from PIL import ImageOps
+
+    expected = ImageOps.exif_transpose(Image.open(BytesIO(buf.getvalue())))
+    expected_rgb = np.array(expected.convert("RGB"))
+    assert loaded.shape[:2] == expected_rgb.shape[:2]
+    # BGR vs RGB: red marker is channel-swapped, so check the blue channel (index 2) is hot
+    # at the same location the independently-computed expected image has it.
+    marker_rows, marker_cols = np.where(expected_rgb[:, :, 0] > 200)
+    assert marker_rows.size > 0
+    sample_row, sample_col = marker_rows[0], marker_cols[0]
+    assert loaded[sample_row, sample_col, 2] > 200
