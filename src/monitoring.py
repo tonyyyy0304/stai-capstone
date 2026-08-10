@@ -166,17 +166,30 @@ def chat_trace(session_id: str, message: str) -> Iterator[dict[str, Any]]:
 
 
 @contextmanager
-def doc_trace(session_id: str, doc_type: str) -> Iterator[dict[str, Any]]:
+def doc_trace(doc_type: str) -> Iterator[dict[str, Any]]:
     """Record one document-upload pipeline run (Component 14, Phase 6) as an
     MLflow trace. Same shape/contract as chat_trace — a mutable trace_state
     dict for metrics/tags, filtered through the same fail-closed allowlists,
     a no-op yield when MLflow is unavailable. Callers populate trace_state
     from ImageQualityReport/ValidationResult fields, never from an
-    ExtractedField's .value."""
+    ExtractedField's .value.
+
+    Deliberately does NOT take a session_id/employee_id, unlike chat_trace.
+    An earlier version tagged this with the applicant's employee_id (reusing
+    chat_trace's session_id slot) — unlike chat's random per-turn UUID, that
+    was a stable, real per-person identifier, giving MLflow a queryable
+    cross-upload history keyed to a real employee. onboarding_status.py's
+    SQLite table (record_result(), keyed by employee_id) is already the
+    authoritative per-employee record; duplicating that correlation into
+    MLflow — a system meant for aggregate latency/outcome observability, not
+    per-person audit trail — added a PII-adjacent surface this component
+    doesn't actually need. Removed rather than hashed: nothing else in this
+    function depends on a per-upload identifier for correlation, so there
+    was no need for a replacement value either."""
     trace_state: dict[str, Any] = {
         "metrics": {},
         "tags": {},
-        "attributes": {"session_id": session_id, "doc_type": doc_type},
+        "attributes": {"doc_type": doc_type},
     }
 
     mlflow = _safe_import_mlflow()
@@ -212,7 +225,6 @@ def doc_trace(session_id: str, doc_type: str) -> Iterator[dict[str, Any]]:
                 if key in _ALLOWED_TAG_KEYS
             }
             tags["status"] = status
-            tags["session_id"] = session_id
             tags["doc_type"] = doc_type
             mlflow.update_current_trace(tags=tags)
 

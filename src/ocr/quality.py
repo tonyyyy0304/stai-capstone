@@ -148,7 +148,7 @@ def _verdict(signals: dict) -> tuple[QualityVerdict, list[str], float]:
 
     if not signals["quad_found"]:
         reasons.append("no document-shaped contour found (quad_found=False)")
-        scores.append(0.5)  # not a hard fail alone, but a real confidence hit
+        scores.append(config.QUAD_NOT_FOUND_QUALITY_SCORE)
     else:
         scores.append(1.0)
 

@@ -45,7 +45,17 @@ services:
     # SQLite backend (four slashes = absolute path in the container). Enables the
     # trace-metrics aggregates the 3.x Traces UI needs; the DB lives in the shared
     # ./data volume alongside the app.
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////app/data/mlflow.db
+    # --allowed-hosts: mlflow 3.x's DNS-rebinding protection rejects any request
+    # whose Host header isn't allowlisted -- the api container talks to this
+    # over the compose network as http://mlflow:5000, so that host:port needs
+    # to be explicitly allowed or every /chat and /upload-doc call fails API
+    # startup with a 403 from configure_mlflow(). Two things that aren't
+    # obvious from the flag name alone: (1) matching is exact-string on the
+    # WHOLE "host:port" Host header, not hostname-only, so "mlflow" alone
+    # never matches "mlflow:5000" -- needs the wildcard or the literal port;
+    # (2) passing --allowed-hosts REPLACES mlflow's default allowlist
+    # entirely rather than adding to it, so localhost has to be re-listed too.
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////app/data/mlflow.db --allowed-hosts "mlflow:*,localhost:*,localhost"
     ports:
       - "5000:5000"
     volumes:

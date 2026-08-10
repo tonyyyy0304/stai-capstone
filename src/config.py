@@ -330,6 +330,18 @@ SKEW_WARN_DEG = 5.0
 MIN_IMAGE_DIM_PX = 400          # shorter side, px; below = reject
 MIN_IMAGE_DIM_WARN = 640        # below = warn
 EXPOSURE_CLIP_CEILING = 0.10    # fraction of pixels at 0 or 255 before warn
+# Recalibrated 2026-08-10: was a hardcoded 0.5 in quality.py, "not a hard
+# fail alone, but a real confidence hit" -- never checked against real data.
+# 3/3 real specimens tested (nbi-clearance-real.WEBP, real2.jpg, real3.jpg)
+# hit quad_found=False, and since normalized_quality = min(scores), 0.5
+# became the dominant score every time -- capping composite_confidence at
+# 0.5 regardless of extraction quality, which is below OCR_CONFIDENCE_FLOOR
+# unconditionally. Real photos never produced the clean rectangular contour
+# the mock dataset's synthetic renders trivially do, so this one signal was
+# silently forcing every real submission to needs_review no matter how
+# confident the extraction was. Softened, not removed -- still a real
+# confidence hit, just no longer alone enough to guarantee sub-floor.
+QUAD_NOT_FOUND_QUALITY_SCORE = 0.75
 OCR_PREPROCESS = True           # ablated off via --no-preprocess in the eval
 
 # One retry when the model itself signals genuine uncertainty (low

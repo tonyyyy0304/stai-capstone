@@ -136,6 +136,17 @@ def test_no_quad_found_is_not_a_hard_reject_alone():
     assert score < 1.0
 
 
+def test_no_quad_found_score_matches_recalibrated_config_value():
+    """Recalibrated 2026-08-10 from a hardcoded 0.5 to
+    config.QUAD_NOT_FOUND_QUALITY_SCORE (0.75) after 3/3 real specimens
+    (nbi-clearance-real.WEBP, real2.jpg, real3.jpg) all hit quad_found=False
+    -- the old 0.5 unconditionally capped every real submission's composite
+    confidence below OCR_CONFIDENCE_FLOOR regardless of extraction quality."""
+    _, _, score = quality._verdict(_signals(quad_found=False))
+    assert score == config.QUAD_NOT_FOUND_QUALITY_SCORE
+    assert score > 0.5  # the old value -- pins down that this was actually raised, not just renamed
+
+
 def test_all_signals_clean_yields_pass_with_no_reasons():
     verdict, reasons, score = quality._verdict(_signals())
     assert verdict == QualityVerdict.PASS

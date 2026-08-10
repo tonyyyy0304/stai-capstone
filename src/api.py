@@ -260,7 +260,7 @@ async def upload_doc(
     """
     raw_bytes = await file.read()
 
-    with doc_trace(session_id=employee_id, doc_type=doc_type) as trace:
+    with doc_trace(doc_type=doc_type) as trace:
         if len(raw_bytes) > config.MAX_UPLOAD_BYTES:
             validation = _rejected_before_processing(
                 "file exceeds maximum upload size", "This file is too large. Please upload a smaller image."

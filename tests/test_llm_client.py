@@ -239,3 +239,70 @@ def test_non_200_raises_llm_backend_error(monkeypatch):
     with pytest.raises(LLMBackendError) as exc_info:
         client.models.generate_content(model="x", contents="q", config=types.GenerateContentConfig())
     assert exc_info.value.code == 500
+
+
+# --- Multimodal (Phase 4a, CV_INTEGRATION.md -- src/ocr/extractor.py's call shape) --
+
+def test_image_contents_encoded_onto_ollama_images_field(monkeypatch):
+    """extract_document() calls generate_content with
+    contents=[types.Part.from_bytes(...), prompt_string] -- a flat list, not
+    the [Content(...), ...] shape every other call site uses. Must become
+    one user message with the prompt as .content and the image base64-onto
+    Ollama's `images` field."""
+    import base64
+
+    client, captured = make_client(
+        monkeypatch,
+        response=FakeHTTPResponse(
+            json_data={"message": {"content": '{"doc_type":"nbi_clearance"}'}, "prompt_eval_count": 1, "eval_count": 1}
+        ),
+    )
+    image_bytes = b"\x89PNG\r\n\x1a\nfakeimagebytes"
+    client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/png"), "extract these fields"],
+        config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.0),
+    )
+    messages = captured["json"]["messages"]
+    assert messages == [
+        {
+            "role": "user",
+            "content": "extract these fields",
+            "images": [base64.b64encode(image_bytes).decode("ascii")],
+        }
+    ]
+
+
+def test_image_contents_response_still_parses_against_schema(monkeypatch):
+    from src.schemas import NbiExtractionResult
+
+    client, _ = make_client(
+        monkeypatch,
+        response=FakeHTTPResponse(
+            json_data={
+                "message": {"content": '{"doc_type": "unknown_document", "family_name": {}, "first_name": {}, '
+                                        '"middle_name": {}, "date_of_birth": {}, "reference_no": {}, '
+                                        '"date_printed": {}, "valid_until": {}, "purpose": {}, "remarks": {}}'},
+                "prompt_eval_count": 1, "eval_count": 1,
+            }
+        ),
+    )
+    result = client.models.generate_content(
+        model="x",
+        contents=[types.Part.from_bytes(data=b"fake", mime_type="image/png"), "prompt"],
+        config=types.GenerateContentConfig(response_schema=NbiExtractionResult),
+    )
+    assert result.parsed is not None
+    assert result.parsed.doc_type.value == "unknown_document"
+
+
+def test_text_only_content_list_shape_still_works_alongside_flat_shape(monkeypatch):
+    """Guards against the flat-list detection accidentally swallowing the
+    normal [Content(...), ...] shape used by the ReAct loop/router."""
+    client, captured = make_client(
+        monkeypatch,
+        response=FakeHTTPResponse(json_data={"message": {"content": "hi"}, "prompt_eval_count": 1, "eval_count": 1}),
+    )
+    contents = [types.Content(role="user", parts=[types.Part(text="hello")])]
+    client.models.generate_content(model="x", contents=contents, config=types.GenerateContentConfig())
+    assert captured["json"]["messages"] == [{"role": "user", "content": "hello"}]

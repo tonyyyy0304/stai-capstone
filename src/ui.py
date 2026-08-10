@@ -104,6 +104,11 @@ a:hover { text-decoration: underline; }
   background: color-mix(in oklab, __ACCENT__ 88%, black) !important;
 }
 
+/* Document uploader (Component 14) -- lives in the main chat column, not
+   the sidebar (which is checklist-only), aligned to the same centered
+   width as the message list below it. */
+.st-key-uploader_section { max-width: 680px; margin: 0 auto; padding: 16px 24px 0 24px; }
+
 /* Message list */
 .st-key-message_list { max-width: 680px; margin: 0 auto; padding: 32px 24px 20px 24px; }
 div[class*="st-key-msg_"] { margin-bottom: 30px; }
@@ -491,66 +496,80 @@ def _render_checklist() -> None:
 
 
 def _render_uploader() -> None:
-    """Document upload flow (Component 14) -- posts to POST /upload-doc and
-    defers rendering the result to the NEXT run (matching
-    _queue_message/_fetch_pending_response's deferred pattern) so the result
-    banner survives the rerun a successful submission triggers, which is
-    also what makes the checklist above refresh without a manual reload."""
-    with st.expander("Upload a document", expanded=False):
-        upload_doc_type = st.selectbox(
-            "Document type", list(_DOC_TYPE_LABELS), format_func=lambda v: _DOC_TYPE_LABELS[v],
-            key="upload_doc_type",
-        )
-        st.session_state.upload_full_name = st.text_input(
-            "Full name (as printed on the document)",
-            value=st.session_state.upload_full_name, key="upload_full_name_input",
-        )
-        st.session_state.upload_dob = st.text_input(
-            "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
-        )
-        upload_file = st.file_uploader("File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key="upload_file")
+    """Document upload flow (Component 14) -- posts to POST /upload-doc.
+    Lives in the main chat column (not the sidebar, which is checklist-only)
+    so it sits alongside the conversation rather than off to the side.
 
-        if st.button("Submit document", key="upload_submit_btn", use_container_width=True):
-            employee_id = st.session_state.employee_id.strip()
-            if not (employee_id and st.session_state.upload_full_name and st.session_state.upload_dob and upload_file):
-                st.error("Employee ID, full name, date of birth, and a file are all required.")
-            else:
-                try:
-                    response = requests.post(
-                        f"{st.session_state.api_url.rstrip('/')}/upload-doc",
-                        data={
-                            "employee_id": employee_id,
-                            "doc_type": upload_doc_type,
-                            "full_name": st.session_state.upload_full_name,
-                            "date_of_birth": st.session_state.upload_dob,
-                        },
-                        files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
-                        timeout=90,
+    The request runs inside st.spinner(), which blocks and animates in place
+    during the call -- extraction genuinely takes a few seconds (a real
+    Gemini vision call), and without this the UI just looked frozen. This is
+    a different mechanism from the chat composer's typing-indicator pattern:
+    that one defers rendering to the NEXT script run because the reply needs
+    to appear as a new message row after a rerun; here nothing needs to
+    survive a rerun mid-request, so the simpler synchronous st.spinner is
+    the right tool, not a duplicate of that pattern.
+
+    The result banner IS deferred to the next run (session_state +
+    st.rerun() after a successful submit) -- that part still needs it, so
+    the banner survives the rerun a successful submission triggers, which
+    is also what makes the checklist above refresh without a manual reload."""
+    with st.container(key="uploader_section"):
+        with st.expander("Upload a document", expanded=False):
+            upload_doc_type = st.selectbox(
+                "Document type", list(_DOC_TYPE_LABELS), format_func=lambda v: _DOC_TYPE_LABELS[v],
+                key="upload_doc_type",
+            )
+            st.session_state.upload_full_name = st.text_input(
+                "Full name (as printed on the document)",
+                value=st.session_state.upload_full_name, key="upload_full_name_input",
+            )
+            st.session_state.upload_dob = st.text_input(
+                "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
+            )
+            upload_file = st.file_uploader("File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key="upload_file")
+
+            if st.button("Submit document", key="upload_submit_btn", use_container_width=True):
+                employee_id = st.session_state.employee_id.strip()
+                if not (employee_id and st.session_state.upload_full_name and st.session_state.upload_dob and upload_file):
+                    st.error("Employee ID, full name, date of birth, and a file are all required.")
+                else:
+                    with st.spinner("Verifying document — this can take a few seconds…"):
+                        try:
+                            response = requests.post(
+                                f"{st.session_state.api_url.rstrip('/')}/upload-doc",
+                                data={
+                                    "employee_id": employee_id,
+                                    "doc_type": upload_doc_type,
+                                    "full_name": st.session_state.upload_full_name,
+                                    "date_of_birth": st.session_state.upload_dob,
+                                },
+                                files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
+                                timeout=90,
+                            )
+                            response.raise_for_status()
+                            st.session_state.last_upload_result = response.json()
+                        except requests.RequestException as exc:
+                            st.session_state.last_upload_result = {"error": str(exc)}
+                    st.rerun()
+
+            result = st.session_state.last_upload_result
+            if result:
+                if "error" in result:
+                    st.markdown(
+                        f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                        f'background:oklch(96% 0.03 25);border:1px solid oklch(87% 0.06 25);'
+                        f'color:oklch(45% 0.15 25);font-size:13px;">Upload failed: {html.escape(result["error"])}</div>',
+                        unsafe_allow_html=True,
                     )
-                    response.raise_for_status()
-                    st.session_state.last_upload_result = response.json()
-                except requests.RequestException as exc:
-                    st.session_state.last_upload_result = {"error": str(exc)}
-                st.rerun()
-
-        result = st.session_state.last_upload_result
-        if result:
-            if "error" in result:
-                st.markdown(
-                    f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
-                    f'background:oklch(96% 0.03 25);border:1px solid oklch(87% 0.06 25);'
-                    f'color:oklch(45% 0.15 25);font-size:13px;">Upload failed: {html.escape(result["error"])}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                validation = result["validation"]
-                text_color, bg_color, border_color = _status_badge_style(validation["outcome"])
-                st.markdown(
-                    f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
-                    f'background:{bg_color};border:1px solid {border_color};color:{text_color};'
-                    f'font-size:13px;">{html.escape(validation["message"])}</div>',
-                    unsafe_allow_html=True,
-                )
+                else:
+                    validation = result["validation"]
+                    text_color, bg_color, border_color = _status_badge_style(validation["outcome"])
+                    st.markdown(
+                        f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                        f'background:{bg_color};border:1px solid {border_color};color:{text_color};'
+                        f'font-size:13px;">{html.escape(validation["message"])}</div>',
+                        unsafe_allow_html=True,
+                    )
 
 
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
@@ -581,7 +600,6 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
         )
 
         _render_checklist()
-        _render_uploader()
 
         if dev_mode:
             with st.expander("Developer tools", expanded=False):
@@ -904,6 +922,7 @@ if _privacy_status != "agreed":
 
 _render_sidebar(_accent, _dev_mode)
 _render_header()
+_render_uploader()
 _render_messages(_accent)
 
 if st.session_state.awaiting_response:
