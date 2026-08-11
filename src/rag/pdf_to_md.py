@@ -30,6 +30,11 @@ MAX_HEADING_LEVEL = 3
 PARAGRAPH_GAP_MIN = 4.0       # vertical gap (pt) that forces a paragraph break
 
 PAGE_NUMBER_RE = re.compile(r"^(page\s+)?\d+(\s+of\s+\d+)?$", re.IGNORECASE)
+# A running head/footer often carries the page number on the same extracted line
+# (e.g. "Faculty Requirements -- 2025   3"), so the raw text differs per page and
+# never trips the repeat detector. Strip a leading/trailing page-number token
+# before comparing so those collapse to one repeated key.
+_EDGE_PAGE_NUMBER_RE = re.compile(r"^(?:\d+\s+)?(.*?)(?:\s+\d+)?$", re.DOTALL)
 
 
 @dataclass
@@ -63,6 +68,22 @@ def _inside(raw_line: dict, bbox: tuple) -> bool:
     return top - 1 <= center <= bottom + 1
 
 
+def _page_number_from_tables(tables, page_height: float):
+    """The Manual prints each page number in a boxed footer that pdfplumber
+    extracts as a tiny table with a single numeric cell (e.g. rows=[[''],['42']]).
+    Return (printed_number, that_table) so the caller can both record the page
+    number and exclude the box from content. Restricted to a lone 1–3 digit cell
+    in the bottom margin so a stray numeric cell in body content isn't mistaken
+    for a page number."""
+    for t in tables:
+        nonempty = [(c or "").strip() for row in t.extract() for c in row if (c or "").strip()]
+        if len(nonempty) == 1 and nonempty[0].isdigit() and len(nonempty[0]) <= 3:
+            center = (t.bbox[1] + t.bbox[3]) / 2
+            if center >= page_height * (1 - MARGIN_FRACTION):
+                return int(nonempty[0]), t
+    return None, None
+
+
 def _table_to_markdown(rows: list[list]) -> str:
     clean = [
         [(cell or "").replace("\n", " ").strip() for cell in row]
@@ -84,22 +105,29 @@ def _in_margin(line: _Line, page_height: float) -> bool:
     return line.bottom <= zone or line.top >= page_height - zone
 
 
+def _chrome_key(text: str) -> str:
+    """Normalize a margin line for repeat detection: drop a leading/trailing page
+    number so a running head that embeds the page number collapses across pages."""
+    match = _EDGE_PAGE_NUMBER_RE.match(text.strip())
+    return (match.group(1) if match else text).strip().casefold()
+
+
 def _drop_page_chrome(pages: list[dict]) -> None:
     """Remove headers/footers repeated across pages, and bare page numbers."""
     counts: Counter[str] = Counter()
     for page in pages:
         for line in page["lines"]:
             if _in_margin(line, page["height"]):
-                counts[line.text.casefold()] += 1
+                counts[_chrome_key(line.text)] += 1
     threshold = max(2, REPEAT_FRACTION * len(pages))
-    repeated = {text for text, n in counts.items() if n >= threshold}
+    repeated = {text for text, n in counts.items() if text and n >= threshold}
     for page in pages:
         page["lines"] = [
             line
             for line in page["lines"]
             if not (
                 _in_margin(line, page["height"])
-                and (line.text.casefold() in repeated or PAGE_NUMBER_RE.match(line.text))
+                and (_chrome_key(line.text) in repeated or PAGE_NUMBER_RE.match(line.text))
             )
         ]
 
@@ -142,12 +170,23 @@ def _render(pages: list[dict], body_size: float, levels: dict[float, int]) -> st
     blocks: list[str] = []
     paragraph = ""
     prev: _Line | None = None
+    last_marked_page: int | None = None
 
     def flush() -> None:
         nonlocal paragraph
         if paragraph.strip():
             blocks.append(paragraph.strip())
         paragraph = ""
+
+    def mark_page(page_index: int) -> None:
+        """Emit a `<!--page:N-->` marker (printed page number) before a heading so
+        chunking can stamp each section's page_start. Skipped when the page number
+        wasn't detected, or hasn't changed since the last marker."""
+        nonlocal last_marked_page
+        number = pages[page_index].get("number")
+        if number is not None and number != last_marked_page:
+            blocks.append(f"<!--page:{number}-->")
+            last_marked_page = number
 
     for page_index, page in enumerate(pages):
         items = [("line", line.top, line) for line in page["lines"]]
@@ -162,6 +201,7 @@ def _render(pages: list[dict], body_size: float, levels: dict[float, int]) -> st
             level = _heading_level(line, body_size, levels)
             if level is not None:
                 flush()
+                mark_page(line.page)
                 blocks.append(f"{'#' * level} {line.text}")
                 prev = None
                 continue
@@ -189,7 +229,10 @@ def convert_pdf_to_markdown(path) -> str:
     with pdfplumber.open(path) as pdf:
         for index, page in enumerate(pdf.pages):
             tables = page.find_tables()
-            table_items = [(t.bbox[1], _table_to_markdown(t.extract())) for t in tables]
+            page_number, page_box = _page_number_from_tables(tables, page.height)
+            table_items = [
+                (t.bbox[1], _table_to_markdown(t.extract())) for t in tables if t is not page_box
+            ]
             lines = []
             for raw in page.extract_text_lines(return_chars=True):
                 if any(_inside(raw, t.bbox) for t in tables):
@@ -197,7 +240,9 @@ def convert_pdf_to_markdown(path) -> str:
                 line = _make_line(raw, index)
                 if line.text:
                     lines.append(line)
-            pages.append({"height": page.height, "lines": lines, "tables": table_items})
+            pages.append(
+                {"height": page.height, "lines": lines, "tables": table_items, "number": page_number}
+            )
 
     _drop_page_chrome(pages)
     body_size = _body_font_size(pages)

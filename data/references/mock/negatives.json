@@ -1,0 +1,146 @@
+[
+  {
+    "category": "non_nbi_document",
+    "expected_doc_type": "unknown_document",
+    "expected_outcome": "rejected",
+    "reason": "wrong document type in the NBI Clearance slot",
+    "filename": "nbi_neg_non_nbi_document_1.png"
+  },
+  {
+    "category": "non_nbi_document",
+    "expected_doc_type": "unknown_document",
+    "expected_outcome": "rejected",
+    "reason": "wrong document type in the NBI Clearance slot",
+    "filename": "nbi_neg_non_nbi_document_2.png"
+  },
+  {
+    "category": "non_document_photo",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "not a document at all",
+    "filename": "nbi_neg_non_document_photo_1.png"
+  },
+  {
+    "category": "non_document_photo",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "not a document at all",
+    "filename": "nbi_neg_non_document_photo_2.png"
+  },
+  {
+    "category": "blank_page",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "blank page, nothing to extract",
+    "filename": "nbi_neg_blank_page_1.png"
+  },
+  {
+    "category": "blank_page",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "blank page, nothing to extract",
+    "filename": "nbi_neg_blank_page_2.png"
+  },
+  {
+    "category": "wrong_person",
+    "expected_doc_type": "nbi_clearance",
+    "expected_outcome": "needs_review",
+    "reason": "name on document does not match faculty record for EMP-05991 (Rule 4)",
+    "filename": "nbi_neg_wrong_person_1.png"
+  },
+  {
+    "category": "wrong_person",
+    "expected_doc_type": "nbi_clearance",
+    "expected_outcome": "needs_review",
+    "reason": "name on document does not match faculty record for EMP-04821 (Rule 4)",
+    "filename": "nbi_neg_wrong_person_2.png"
+  },
+  {
+    "category": "expired",
+    "expected_doc_type": "nbi_clearance",
+    "expected_outcome": "rejected",
+    "reason": "valid_until / date_printed+NBI_VALIDITY_MONTHS both outside the validity window (Rule 5)",
+    "filename": "nbi_neg_expired_1.png"
+  },
+  {
+    "category": "expired",
+    "expected_doc_type": "nbi_clearance",
+    "expected_outcome": "rejected",
+    "reason": "valid_until / date_printed+NBI_VALIDITY_MONTHS both outside the validity window (Rule 5)",
+    "filename": "nbi_neg_expired_2.png"
+  },
+  {
+    "category": "non_id_document",
+    "expected_doc_type": "unknown_document",
+    "expected_outcome": "rejected",
+    "reason": "wrong document type in the government ID slot",
+    "filename": "id_neg_non_id_document_1.png"
+  },
+  {
+    "category": "non_id_document",
+    "expected_doc_type": "unknown_document",
+    "expected_outcome": "rejected",
+    "reason": "wrong document type in the government ID slot",
+    "filename": "id_neg_non_id_document_2.png"
+  },
+  {
+    "category": "blank_page",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "blank page, nothing to extract",
+    "filename": "id_neg_blank_page_1.png"
+  },
+  {
+    "category": "blank_page",
+    "expected_doc_type": "not_a_document",
+    "expected_outcome": "rejected",
+    "reason": "blank page, nothing to extract",
+    "filename": "id_neg_blank_page_2.png"
+  },
+  {
+    "category": "cross_name_mismatch",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "needs_review",
+    "reason": "cross-document name mismatch vs. paired NBI Clearance (and vs. employee record)",
+    "pairs_with": "nbi_id08",
+    "filename": "id_neg_cross_name_mismatch_1.png"
+  },
+  {
+    "category": "cross_name_mismatch",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "needs_review",
+    "reason": "cross-document name mismatch vs. paired NBI Clearance (and vs. employee record)",
+    "pairs_with": "nbi_id01",
+    "filename": "id_neg_cross_name_mismatch_2.png"
+  },
+  {
+    "category": "cross_dob_mismatch",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "needs_review",
+    "reason": "cross-document date_of_birth mismatch vs. paired NBI Clearance",
+    "pairs_with": "nbi_id02",
+    "filename": "id_neg_cross_dob_mismatch_1.png"
+  },
+  {
+    "category": "cross_dob_mismatch",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "needs_review",
+    "reason": "cross-document date_of_birth mismatch vs. paired NBI Clearance",
+    "pairs_with": "nbi_id03",
+    "filename": "id_neg_cross_dob_mismatch_2.png"
+  },
+  {
+    "category": "expired_id",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "rejected",
+    "reason": "expiry_date outside the validity window (ID Rule 5)",
+    "filename": "id_neg_expired_id_1.png"
+  },
+  {
+    "category": "expired_id",
+    "expected_doc_type": "government_id",
+    "expected_outcome": "rejected",
+    "reason": "expiry_date outside the validity window (ID Rule 5)",
+    "filename": "id_neg_expired_id_2.png"
+  }
+]

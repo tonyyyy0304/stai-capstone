@@ -1,15 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.schemas import (
-    Citation,
-    ComplaintCategory,
-    ComplaintTicket,
-    GroundedAnswer,
-    Intent,
-    IntentClassification,
-    Severity,
-)
+from src.schemas import Citation, GroundedAnswer, Intent, IntentClassification
 
 
 def test_intent_classification_valid():
@@ -33,25 +25,9 @@ def test_intent_rejects_unknown_value():
 def test_grounded_answer_roundtrip():
     ga = GroundedAnswer(
         answer="You get 15 days.",
-        citations=[Citation(chunk_id="leave-policy#001", title="Leave Policy",
-                            section_path="Vacation Leave > Accrual")],
+        citations=[Citation(chunk_id="faculty-manual-2021#001", title="Faculty Manual 2021",
+                            section_path="Full-time Academic Faculty > Benefits > Leaves (p.42)")],
     )
     parsed = GroundedAnswer.model_validate_json(ga.model_dump_json())
-    assert parsed.citations[0].chunk_id == "leave-policy#001"
+    assert parsed.citations[0].chunk_id == "faculty-manual-2021#001"
     assert parsed.insufficient_context is False
-
-
-def test_complaint_ticket_valid():
-    ticket = ComplaintTicket(
-        category="harassment",
-        severity="high",
-        description="My teammate keeps sending me inappropriate messages.",
-        parties_involved=["J. Cruz"],
-    )
-    assert ticket.category is ComplaintCategory.HARASSMENT
-    assert ticket.severity is Severity.HIGH
-
-
-def test_complaint_ticket_requires_real_description():
-    with pytest.raises(ValidationError):
-        ComplaintTicket(category="other", severity="low", description="short")

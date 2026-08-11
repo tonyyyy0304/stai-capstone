@@ -8,42 +8,143 @@ we return the "I don't know" path without calling the model.
 Member 2's `search_kb` tool should call answer_question().
 """
 
+import re
+
 from src import config
-from src.rag.retriever import RetrievedChunk, Retriever, apply_floor
+from src.rag.retriever import (
+    RetrievedChunk,
+    Retriever,
+    apply_floor,
+    get_retriever,
+    rerank_by_audience,
+)
 from src.schemas import Citation, GroundedAnswer
 
+
+def detect_stated_audience(text: str) -> str | None:
+    """Extract the reader's audience segment from their message, or None if
+    unstated or contradictory (two segments mentioned → None). Config-driven
+    (config.AUDIENCE_CLASSES keywords); query-side counterpart to the positional
+    detection at ingest."""
+    t = text.lower()
+    hits = set()
+    for segment in config.AUDIENCE_CLASSES:
+        if any(re.search(rf"\b{re.escape(kw)}\b", t) for kw in segment["keywords"]):
+            hits.add(segment["slug"])
+    return hits.pop() if len(hits) == 1 else None
+
+
+def _clarification_question(present: set[str]) -> str:
+    """The segment-disambiguation question for evidence that spans >1 segment."""
+    # Order by the configured order first, then any leftover slugs (defensive:
+    # a slug in the index but not in current config still degrades gracefully).
+    ordered = [s for s in config.AUDIENCE_ORDER if s in present]
+    ordered += [s for s in present if s not in config.AUDIENCE_ORDER]
+    labels = [config.AUDIENCE_LABELS.get(s, s) for s in ordered]
+    options = ", ".join(labels[:-1]) + f", or {labels[-1]}" if len(labels) > 1 else labels[0]
+    return (
+        f"The answer depends on your {config.AUDIENCE_NOUN}. "
+        f"Which applies to you: {options}?"
+    )
+
+
+def _clarification_answer(question: str) -> GroundedAnswer:
+    """Wrap a clarifying question string as the segment-disambiguation response."""
+    return GroundedAnswer(
+        answer=question,
+        citations=[],
+        insufficient_context=False,
+        requires_clarification=True,
+        clarifying_question=question,
+    )
+
+
 IDK_ANSWER = (
-    "I couldn't find this in our HR policy documents, so I don't want to guess. "
-    "I can route your question to the HR team instead — would you like that?"
+    "I couldn't find a reliable answer to this in the documents I have, so I don't want "
+    f"to guess. You may want to consult {config.HELP_CONTACT} for this one."
 )
 
-ANSWER_PROMPT = """You are an HR policy assistant. Answer the employee's question using ONLY the policy excerpts below.
+# The segment-disambiguation rule is only included when the deployment defines
+# audience segments (config.AUDIENCE_CLASSES); a corpus with no segmentation skips it.
+_SEGMENT_RULE = (
+    "\n- Requirements often differ by "
+    f"{config.AUDIENCE_NOUN} ({', '.join(config.AUDIENCE_LABELS[s] for s in config.AUDIENCE_ORDER)}). "
+    "If the excerpts give segment-specific answers and the question does not say which "
+    "segment the reader is, do NOT guess: set insufficient_context to true and ask which "
+    f"{config.AUDIENCE_NOUN} they belong to."
+    if config.AUDIENCE_CLASSES
+    else ""
+)
+
+# Presentation-only rule: shapes how the answer string is formatted, never what it
+# claims. The table clause is only offered when the deployment has audience segments
+# (the faculty-class comparisons are where a table earns its place).
+_FORMAT_RULE = (
+    "\n- Format the answer in Markdown so it renders cleanly: put key terms, numbers, "
+    "deadlines, and form names in **bold**; use a bulleted list when you enumerate several "
+    "requirements or items, and a numbered list for ordered steps or a procedure"
+    + (
+        f"; use a Markdown table only when the answer compares the same fields across more "
+        f"than one {config.AUDIENCE_NOUN}"
+        if config.AUDIENCE_CLASSES
+        else ""
+    )
+    + ". Separate paragraphs with a blank line, and do not use headings. Keep formatting "
+    "minimal — a one- or two-sentence answer needs no list or table. Formatting is "
+    "presentation only: never add a fact that is not in the excerpts just to fill out a list "
+    "or table."
+)
+
+ANSWER_PROMPT = f"""You are the {config.ASSISTANT_NAME}. You answer a {config.READER_NOUN}'s \
+questions about {config.SCOPE_PHRASE} using ONLY the excerpts below.
 
 Rules:
-- Base every claim on the excerpts; never use outside knowledge.
-- Cite every excerpt you used by its exact chunk_id, title, and section_path.
-- If the excerpts do not contain the answer, set insufficient_context to true and say you don't know.
-- Be concise and direct; quote specific numbers, durations, and amounts exactly as written.
+- Base every claim on the excerpts; never use outside knowledge or another organization's \
+policy. A confident wrong answer about someone's employment terms is worse than no answer.
+- For every excerpt you actually used, add one entry to the `citations` field with its exact \
+chunk_id, title, and section_path — that structured list is what the reader sees as sources, \
+so it must be complete. Do NOT write chunk_ids or section_path labels inline in the `answer` \
+text: the prose must read cleanly for a human. The only source marker allowed inline is a bare \
+page number where it helps the reader check a specific fact (e.g. "p.131"); use it sparingly, \
+not after every sentence.
+- Quote specific numbers, durations, deadlines, form names, and codes exactly as written \
+(e.g. "15 working days", "BIR Form 1902", "Assistant Professor").{_SEGMENT_RULE}{_FORMAT_RULE}
+- Answer only the specific question asked. If the excerpts do not answer THAT question, set \
+insufficient_context to true and say you don't know — even when the excerpts contain related or \
+adjacent information. A partial, nearby, or "the documents only say X instead" fact is NOT an \
+answer: in that case set insufficient_context to true (you may briefly note what the excerpts do \
+cover). Never fill the gap from memory.
 
-Policy excerpts:
-{context}
+Excerpts:
+{{context}}
 
-Employee question: {question}"""
+Conversation so far (earlier turns in this chat, for resolving what "the question" refers to \
+when it is a terse follow-up — e.g. a bare "Part-time"; NOT evidence, never cite it):
+{{conversation}}
+
+{config.READER_NOUN.capitalize()}'s question: {{question}}"""
 
 
 def _format_context(chunks: list[RetrievedChunk]) -> str:
     parts = []
     for c in chunks:
+        page = f" | page: {c.page_start}" if c.page_start else ""
         parts.append(
-            f"[chunk_id: {c.chunk_id} | title: {c.title} | section_path: {c.section_path}]\n{c.text}"
+            f"[chunk_id: {c.chunk_id} | title: {c.title} | section_path: {c.section_path}{page}]\n{c.text}"
         )
     return "\n\n---\n\n".join(parts)
 
 
 def verify_citations(answer: GroundedAnswer, chunks: list[RetrievedChunk]) -> GroundedAnswer:
-    """Grounding guardrail: drop any citation whose chunk_id was not retrieved."""
-    retrieved_ids = {c.chunk_id for c in chunks}
-    verified = [c for c in answer.citations if c.chunk_id in retrieved_ids]
+    """Grounding guardrail: drop any citation whose chunk_id was not retrieved,
+    and stamp each surviving citation's page from the chunk metadata (deterministic
+    — the page never comes from the model)."""
+    by_id = {c.chunk_id: c for c in chunks}
+    verified = [
+        c.model_copy(update={"page": by_id[c.chunk_id].page_start})
+        for c in answer.citations
+        if c.chunk_id in by_id
+    ]
     return answer.model_copy(update={"citations": verified})
 
 
@@ -51,31 +152,106 @@ def no_answer() -> GroundedAnswer:
     return GroundedAnswer(answer=IDK_ANSWER, citations=[], insufficient_context=True)
 
 
+def _format_conversation(history: list[dict[str, str]] | None) -> str:
+    """Render prior turns for the answer prompt's follow-up-resolution slot.
+    Kept local so the rag layer doesn't import the agent layer."""
+    if not history:
+        return "(no prior turns)"
+    return "\n".join(f"{turn['role']}: {turn['content']}" for turn in history)
+
+
 def generate_grounded_answer(
-    question: str, chunks: list[RetrievedChunk], client=None
+    question: str,
+    chunks: list[RetrievedChunk],
+    client=None,
+    session_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
 ) -> GroundedAnswer:
-    """One Gemini call with response_schema=GroundedAnswer over the given chunks."""
+    """One Gemini call with response_schema=GroundedAnswer over the given chunks.
+
+    `history` (prior chat turns) is threaded only so the model can resolve a terse
+    follow-up question against what came before; it is explicitly not evidence and
+    is never cited (the grounding guardrail drops anything not in `chunks`)."""
     from google.genai import types
+
+    from src.agent import usage
 
     if not chunks:
         return no_answer()
-    client = client or config.get_llm_client() 
+    client = client or config.get_llm_client()
     response = client.models.generate_content(
         model=config.ACTIVE_CHAT_MODEL,
-        contents=ANSWER_PROMPT.format(context=_format_context(chunks), question=question),
+        contents=ANSWER_PROMPT.format(
+            context=_format_context(chunks),
+            question=question,
+            conversation=_format_conversation(history),
+        ),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=GroundedAnswer,
             temperature=0.2,
+            thinking_config=config.thinking_config(),
         ),
     )
+    # Account this call under the turn's session (previously unlogged, so per-turn
+    # token usage undercounted the answer call).
+    usage.record_usage(config.ACTIVE_CHAT_MODEL, usage.extract_usage(response), session_id=session_id)
     answer: GroundedAnswer = response.parsed
     if answer is None:  # model returned unparseable output — fail closed
         return no_answer()
     answer = verify_citations(answer, chunks)
+    # requires_clarification is a code-set signal (the disambiguation branch in
+    # answer_question), never the model's to raise — reset whatever it returned.
+    answer = answer.model_copy(
+        update={"requires_clarification": False, "clarifying_question": ""}
+    )
     if answer.insufficient_context and not answer.citations:
         return no_answer()
     return answer
+
+
+def retrieve_kb(
+    question: str,
+    category: str | None = None,
+    retriever: Retriever | None = None,
+) -> tuple[list[RetrievedChunk], str | None]:
+    """Retrieval half of the RAG pipeline — retrieve → floor check → audience
+    disambiguation — WITHOUT the grounded-answer LLM call.
+
+    Returns (chunks, clarifying_question). chunks is the floor-passing,
+    audience-reranked evidence ([] when nothing clears the floor). When the
+    evidence spans more than one audience segment and the reader hasn't said
+    which they are, chunks is [] and clarifying_question carries the segment
+    question — the caller must ask, not answer.
+
+    Split out of answer_question() so the ReAct loop can gather evidence across
+    several hops and shape ONE grounded answer at the end, instead of paying a
+    grounded-answer call on every hop (see src/agent/orchestrator.py)."""
+    retriever = retriever or get_retriever()
+    chunks = apply_floor(retriever.retrieve(question, category=category))
+    if not chunks:
+        return [], None
+
+    # Audience-segment disambiguation (the corpus's biggest hazard): if the
+    # evidence spans more than one segment and the reader hasn't said which they
+    # are, ask instead of answering — a merged answer across segments is a
+    # confident wrong answer about someone's terms. If they did state a segment,
+    # softly re-rank toward it. Entirely gated on config.AUDIENCE_CLASSES, so a
+    # deployment with no segmentation skips this cleanly (no clarifying question).
+    if config.AUDIENCE_CLASSES:
+        stated = detect_stated_audience(question)
+        # Only the top-N chunks (the strong evidence) count toward the segment
+        # split, so a lower-ranked lexical brush with a segment-specific section
+        # doesn't trigger a bogus clarification on an unanswerable question.
+        present = {
+            c.audience_class for c in chunks[: config.DISAMBIG_TOP_N] if c.audience_class
+        }
+        if stated is None and len(present) >= 2:
+            return [], _clarification_question(present)
+        if stated:
+            chunks = rerank_by_audience(chunks, stated)
+
+    return chunks, None
 
 
 def answer_question(
@@ -83,6 +259,7 @@ def answer_question(
     category: str | None = None,
     retriever: Retriever | None = None,
     client=None,
+    session_id: str | None = None,
 ) -> tuple[GroundedAnswer, list[RetrievedChunk]]:
     """End-to-end RAG: retrieve → floor check → grounded answer.
 
@@ -92,11 +269,13 @@ def answer_question(
     "I don't know" reply, which reads as contradictory even though those
     excerpts were exactly what the model just checked and rejected.
     """
-    retriever = retriever or Retriever()
-    chunks = apply_floor(retriever.retrieve(question, category=category))
+    chunks, clarification = retrieve_kb(question, category=category, retriever=retriever)
+    if clarification is not None:
+        return _clarification_answer(clarification), []
     if not chunks:
         return no_answer(), []
-    answer = generate_grounded_answer(question, chunks, client=client)
+
+    answer = generate_grounded_answer(question, chunks, client=client, session_id=session_id)
     if answer.insufficient_context:
         return answer, []
     return answer, chunks

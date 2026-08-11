@@ -1,0 +1,14 @@
+{
+  "identity_id": "id04",
+  "employee_id": "EMP-05477",
+  "doc_type": "government_id",
+  "id_type": "drivers_license",
+  "full_name": "GARCIA, PEDRO JR",
+  "family_name": "GARCIA",
+  "first_name": "PEDRO",
+  "middle_name": "JR",
+  "date_of_birth": "1987-10-04",
+  "id_number": "N04-12-000004",
+  "issue_date": "2017-11-24",
+  "expiry_date": "2028-10-04"
+}

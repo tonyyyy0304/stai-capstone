@@ -1,28 +1,53 @@
-"""FastAPI interface for the HR assistant.
+"""FastAPI interface for the assistant (branding/scope from src/config.py).
 
 Member 4 owns this boundary: HTTP contracts, request validation, sanitized
 monitoring, and API-shaped responses for the Streamlit UI. When Member 2's
 agent orchestrator is present it can be plugged in without changing clients;
 until then the endpoint serves grounded FAQ answers through the RAG module.
+
+POST /upload-doc / GET /onboarding-status/{employee_id} (Component 14, Phase 6)
+run the CV pipeline synchronously and separately from /chat's agent loop — raw
+image bytes never cross into the ReAct loop (CV_INTEGRATION.md §1.5). No HR
+record source exists anywhere in this codebase, so full_name/date_of_birth are
+supplied by the uploader alongside employee_id, not looked up.
 """
 
 from __future__ import annotations
 
-import sqlite3
+import hashlib
+import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src import config
-from src.monitoring import chat_trace, configure_mlflow
+from src.guardrails.doc_validation import (
+    apply_cross_document_result,
+    validate_cross_document,
+    validate_document,
+    validate_id_document,
+)
+from src.memory import onboarding_status
+from src.monitoring import chat_trace, configure_mlflow, doc_trace
+from src.ocr.extractor import extract_document, load_cached_result
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
-from src.schemas import Citation, EscalationFormSubmission, TokenUsage, WebCitation
+from src.schemas import (
+    ChecklistStatus,
+    Citation,
+    DocType,
+    RuleResult,
+    TokenUsage,
+    ValidationOutcome,
+    ValidationResult,
+    WebCitation,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -37,16 +62,7 @@ class ChatRequest(BaseModel):
     employee_id: str | None = Field(default=None, description="Optional stable employee ID")
     category: str | None = Field(
         default=None,
-        description="Optional retrieval filter: leave|benefits|payroll|conduct|complaints|onboarding",
-    )
-    escalation_form: EscalationFormSubmission | None = Field(
-        default=None,
-        description=(
-            "Structured intake-form submission (PLAN.md Sec 6.1, Step B). Only "
-            "meaningful when the session is already awaiting a form; ignored otherwise. "
-            "`message` must still be non-empty even when this is set -- send a short "
-            "placeholder like 'submitted the complaint form'."
-        ),
+        description="Optional retrieval filter: onboarding|conduct|leave|benefits",
     )
 
 
@@ -64,9 +80,6 @@ class ActionResponse(BaseModel):
     type: str
     label: str
     status: Literal["completed", "pending", "unavailable"] = "completed"
-    ticket_id: str | None = None
-    escalated: bool = False
-    trigger_rule: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -88,6 +101,11 @@ class HealthResponse(BaseModel):
     mlflow_tracking_uri: str
 
 
+class UploadDocResponse(BaseModel):
+    validation: ValidationResult
+    checklist: ChecklistStatus
+
+
 class UsageResponse(BaseModel):
     today: dict[str, int]
     all_time: dict[str, int]
@@ -102,9 +120,9 @@ class UsageResponse(BaseModel):
 
 
 app = FastAPI(
-    title="HR FAQ & Complaint Chatbot API",
+    title=f"{config.ASSISTANT_NAME} API",
     version="0.1.0",
-    description="REST API for grounded HR policy answers and complaint workflow actions.",
+    description=f"REST API for grounded answers about {config.SCOPE_PHRASE}.",
     lifespan=lifespan,
 )
 
@@ -132,21 +150,15 @@ def _source_from_chunk(chunk: RetrievedChunk) -> SourceResponse:
     )
 
 
-def _complaint_intake_pending(message: str) -> bool:
-    lowered = message.lower()
-    complaint_terms = ("complaint", "report", "harassment", "discrimination", "unsafe", "grievance")
-    return any(term in lowered for term in complaint_terms)
-
-
 def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatResponse | None:
-    """Use Member 2's orchestrator when it exists.
+    """Use the agent orchestrator when it exists.
 
-    Supported future shape: handle_message(message=..., session_id=...,
-    employee_id=...) returning either ChatResponse, dict, or object with
-    response-like attributes. `history` is deliberately not passed — leaving
-    it unset tells handle_message() to manage session/long-term memory
-    itself via src/memory/ (SQLite-backed, survives a restart), rather than
-    api.py maintaining its own in-process copy.
+    Supported shape: handle_message(message=..., session_id=..., employee_id=...)
+    returning either ChatResponse, dict, or object with response-like
+    attributes. `history` is deliberately not passed — leaving it unset tells
+    handle_message() to manage session/long-term memory itself via
+    src/memory/ (SQLite-backed, survives a restart), rather than api.py
+    maintaining its own in-process copy.
     """
     try:
         from src.agent.orchestrator import handle_message
@@ -157,7 +169,6 @@ def _try_agent_orchestrator(request: ChatRequest, session_id: str) -> ChatRespon
         message=request.message,
         session_id=session_id,
         employee_id=request.employee_id,
-        escalation_form=request.escalation_form,
     )
     if isinstance(result, ChatResponse):
         return result
@@ -181,34 +192,18 @@ def chat(request: ChatRequest) -> ChatResponse:
                 "completion_tokens": agent_response.token_usage.completion_tokens,
                 "total_tokens": agent_response.token_usage.total_tokens,
             }
-            complaint_action = next(
-                (a for a in agent_response.actions if a.type == "complaint_filed"), None
-            )
             trace["tags"] = {
                 "route": "agent",
                 "insufficient_context": agent_response.insufficient_context,
-                "escalated": complaint_action.escalated if complaint_action else False,
-                "trigger_rule": (complaint_action.trigger_rule or "") if complaint_action else "",
             }
             return agent_response
 
         answer, chunks = answer_question(request.message, category=request.category)
-        actions: list[ActionResponse] = []
-        if _complaint_intake_pending(request.message):
-            actions.append(
-                ActionResponse(
-                    type="complaint_intake",
-                    label="Complaint intake requires the agent/tool-use module.",
-                    status="pending",
-                )
-            )
-
         response = ChatResponse(
             session_id=session_id,
             reply=answer.answer,
             citations=answer.citations,
             sources=[_source_from_chunk(chunk) for chunk in chunks],
-            actions=actions,
             insufficient_context=answer.insufficient_context,
         )
         trace["metrics"] = {
@@ -220,36 +215,125 @@ def chat(request: ChatRequest) -> ChatResponse:
         return response
 
 
-def _fetch_ticket(ticket_id: str, db_path: Path = config.SQLITE_PATH) -> dict[str, Any] | None:
-    if not db_path.exists():
-        return None
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        table_rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tickets', 'complaint_tickets')"
-        ).fetchall()
-        for row in table_rows:
-            table = row["name"]
-            columns = {
-                column["name"]
-                for column in conn.execute(f"PRAGMA table_info({table})").fetchall()
-            }
-            id_columns = [column for column in ("ticket_id", "id") if column in columns]
-            for id_column in id_columns:
-                result = conn.execute(
-                    f"SELECT * FROM {table} WHERE {id_column} = ?", (ticket_id,)
-                ).fetchone()
-                if result:
-                    return dict(result)
+_OTHER_DOC_TYPE = {
+    "nbi_clearance": DocType.GOVERNMENT_ID,
+    "government_id": DocType.NBI_CLEARANCE,
+}
+
+
+def _sniff_image_mime(data: bytes) -> str | None:
+    """Magic-byte sniff, not the filename/declared content-type — a renamed
+    file shouldn't be able to claim a MIME type it isn't."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
     return None
 
 
-@app.get("/tickets/{ticket_id}")
-def get_ticket(ticket_id: str) -> dict[str, Any]:
-    ticket = _fetch_ticket(ticket_id)
-    if ticket is None:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    return ticket
+def _rejected_before_processing(detail: str, message: str) -> ValidationResult:
+    """A reject that never reached extraction — nothing to record against the
+    checklist, since there's no real document attempt behind it (oversized
+    file, wrong MIME)."""
+    return ValidationResult(
+        outcome=ValidationOutcome.REJECTED,
+        rules=[RuleResult(rule="fail_safe", passed=False, detail=detail)],
+        composite_confidence=0.0,
+        message=message,
+    )
+
+
+@app.post("/upload-doc", response_model=UploadDocResponse)
+async def upload_doc(
+    file: UploadFile,
+    employee_id: str = Form(...),
+    doc_type: Literal["nbi_clearance", "government_id"] = Form(...),
+    full_name: str = Form(...),
+    date_of_birth: str = Form(...),
+) -> UploadDocResponse:
+    """Runs the full CV pipeline synchronously (quality gate -> extraction ->
+    validation -> checklist record -> cross-document check against any
+    sibling document already on file), outside the agent's ReAct loop
+    entirely (CV_INTEGRATION.md §1.5). Degrades toward needs_review/rejected
+    rather than a 500 on any processing failure, matching
+    _try_agent_orchestrator's no-HTTPException convention.
+    """
+    raw_bytes = await file.read()
+
+    with doc_trace(doc_type=doc_type) as trace:
+        if len(raw_bytes) > config.MAX_UPLOAD_BYTES:
+            validation = _rejected_before_processing(
+                "file exceeds maximum upload size", "This file is too large. Please upload a smaller image."
+            )
+            trace["tags"] = {"validation_outcome": validation.outcome.value}
+            return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+        mime_type = _sniff_image_mime(raw_bytes)
+        if mime_type is None or mime_type not in config.ALLOWED_IMAGE_MIME:
+            validation = _rejected_before_processing(
+                "unsupported file type", "Please upload a JPEG or PNG image."
+            )
+            trace["tags"] = {"validation_outcome": validation.outcome.value}
+            return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+        doc_type_enum = DocType(doc_type)
+        faculty_record = {"employee_id": employee_id, "full_name": full_name, "date_of_birth": date_of_birth}
+
+        extracted, quality_report = None, None
+        try:
+            extracted, quality_report = extract_document(raw_bytes, mime_type, expected_doc_type=doc_type_enum)
+        except Exception:
+            logger.exception("upload_doc_extraction_failed employee_id=%s doc_type=%s", employee_id, doc_type)
+
+        if quality_report is None:
+            validation = ValidationResult(
+                outcome=ValidationOutcome.NEEDS_REVIEW,
+                rules=[RuleResult(rule="fail_safe", passed=False, detail="processing error")],
+                composite_confidence=0.0,
+                message="Something went wrong processing this document. It has been sent for manual review.",
+            )
+        elif doc_type_enum == DocType.NBI_CLEARANCE:
+            validation = validate_document(extracted, quality_report, faculty_record)
+        else:
+            validation = validate_id_document(extracted, quality_report, faculty_record)
+
+        source_hash = hashlib.sha256(raw_bytes).hexdigest()
+        onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
+
+        # Cross-document check: only runs when a sibling document is already on
+        # file, via a cache-hit re-extraction (extractor.load_cached_result) —
+        # zero new API calls, no new image bytes (CV_INTEGRATION.md §2.7).
+        other_type = _OTHER_DOC_TYPE[doc_type]
+        sibling = onboarding_status.get_document(employee_id, other_type)
+        if extracted is not None and sibling is not None and sibling.source_hash:
+            sibling_result = load_cached_result(sibling.source_hash, other_type)
+            if sibling_result is not None:
+                nbi_result = extracted if doc_type_enum == DocType.NBI_CLEARANCE else sibling_result
+                id_result = sibling_result if doc_type_enum == DocType.NBI_CLEARANCE else extracted
+                cross_rule = validate_cross_document(nbi_result, id_result)
+                validation = apply_cross_document_result(validation, cross_rule)
+                onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
+
+        # Sanitized shape only — never a field value (blur_score/skew_deg from
+        # the deterministic quality gate; extraction_confidence/fields_* from
+        # the validation outcome, not from any ExtractedField.value).
+        trace["metrics"] = {
+            "extraction_confidence": validation.composite_confidence,
+            "fields_extracted": sum(1 for r in validation.rules if r.rule == "completeness" and r.passed),
+            "fields_missing": sum(1 for r in validation.rules if r.rule == "completeness" and not r.passed),
+        }
+        trace["tags"] = {"validation_outcome": validation.outcome.value}
+        if quality_report is not None:
+            trace["metrics"]["blur_score"] = quality_report.blur_score
+            trace["metrics"]["skew_deg"] = quality_report.skew_deg
+            trace["tags"]["quality_verdict"] = quality_report.verdict.value
+
+        return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+
+
+@app.get("/onboarding-status/{employee_id}", response_model=ChecklistStatus)
+def onboarding_status_endpoint(employee_id: str) -> ChecklistStatus:
+    return onboarding_status.get_status(employee_id)
 
 
 @app.get("/usage", response_model=UsageResponse)

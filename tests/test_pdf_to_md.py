@@ -1,6 +1,7 @@
-"""PDF -> Markdown conversion, exercised against the real corpus PDF
-(data/raw/data-privacy-policy.pdf, generated with distinct font sizes, a ruled
-table, and repeated page headers/footers)."""
+"""PDF -> Markdown conversion, exercised against a real corpus PDF
+(data/raw/dlsu-faculty-preemployment-requirements.pdf, built by
+scripts/build_preboarding_corpus.py with three heading tiers set above the body
+font, ruled tables, and a running head/footer that embeds the page number)."""
 
 import pytest
 
@@ -9,50 +10,63 @@ from src import config
 from src.rag.chunking import chunk_document
 from src.rag.pdf_to_md import _table_to_markdown, convert_pdf_to_markdown
 
-PDF_PATH = config.RAW_DIR / "data-privacy-policy.pdf"
+PDF_PATH = config.RAW_DIR / "dlsu-faculty-preemployment-requirements.pdf"
 
 
 @pytest.fixture(scope="module")
 def markdown():
-    assert PDF_PATH.exists(), "corpus PDF missing; regenerate per data/raw"
+    assert PDF_PATH.exists(), (
+        "corpus PDF missing; run `python scripts/build_preboarding_corpus.py`"
+    )
     return convert_pdf_to_markdown(PDF_PATH)
 
 
 def test_headings_reconstructed_from_font_sizes(markdown):
-    assert "# Data Privacy Policy" in markdown
-    for section in ("Purpose and Scope", "Employee Rights", "Breach Reporting",
-                    "Data Protection Officer"):
+    # H1 title, numbered H2 sections, and a nested H3 all reconstruct from the
+    # three font-size tiers the corpus builder uses.
+    assert "# DLSU Faculty Pre-employment Requirements Checklist" in markdown
+    for section in ("1. Faculty-Specific Documents -- All Faculty Classes",
+                    "4. Requirements by Faculty Class",
+                    "5. Document Format Rules"):
         assert f"## {section}" in markdown
+    assert "### 4.2 Part-time Academic Faculty" in markdown
 
 
 def test_page_chrome_removed(markdown):
-    assert "Internal Use Only" not in markdown  # repeated page header
-    assert "Page 1" not in markdown             # footer page numbers
-    assert "Page 2" not in markdown
+    # The running head/footer carries the page number on the same extracted line
+    # ("... -- 2025  3"), so it differs per page; it must still be dropped.
+    assert "DLSU Faculty Pre-employment Requirements Checklist -- 2025" not in markdown
+    # No stranded bare page-number lines either.
+    assert not any(line.strip().isdigit() for line in markdown.splitlines())
 
 
 def test_table_rendered_as_markdown(markdown):
-    assert "| Data Category | Examples | Retention Period |" in markdown
-    assert "| Payroll records | Payslips, tax withholding, loans | 10 years |" in markdown
+    assert "| Document | Format requirement |" in markdown
+    assert (
+        "| Diploma (highest relevant degree) | Original or notarized true copy. |"
+    ) in markdown
     # table cell text must not leak into prose as duplicate plain lines
-    assert markdown.count("Payroll records") == 1
+    assert markdown.count("Original or notarized true copy.") == 1
 
 
 def test_wrapped_paragraphs_rejoined(markdown):
-    # this sentence wraps across lines (and the section spans the page break) in the PDF
-    assert "applicant data on personal devices or personal cloud accounts" in markdown
+    # this sentence wraps across several physical lines in the PDF
+    assert (
+        "format specifications HRMO uses to determine whether a submitted "
+        "document is acceptable"
+    ) in markdown
 
 
 def test_pdf_flows_through_pipeline_to_chunks():
     doc = parse_raw_file(PDF_PATH)  # stitches in the .meta.yaml sidecar
     chunks = chunk_document(doc)
     assert chunks
-    assert all(c.doc_id == "data-privacy-policy" for c in chunks)
-    assert all(c.category == "conduct" for c in chunks)
+    assert all(c.doc_id == "dlsu-faculty-preemployment-requirements" for c in chunks)
+    assert all(c.category == "onboarding" for c in chunks)
     paths = {c.section_path for c in chunks}
-    assert any("Breach Reporting" in p for p in paths)
-    # the retention table survives inside a chunk
-    assert any("| Payroll records |" in c.text for c in chunks)
+    assert any("Requirements by Faculty Class" in p for p in paths)
+    # the core document-set table survives inside a chunk
+    assert any("| Document | Format requirement |" in c.text for c in chunks)
 
 
 def test_table_to_markdown_handles_ragged_rows():

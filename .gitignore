@@ -6,6 +6,31 @@ data/processed/
 data/chroma/
 data/index_manifest.json
 
+# Real consented documents (NBI + government ID) — PII, never committed
+# (SCOPE.md §8, PLAN.md §3.5, CV_INTEGRATION.md §1.8)
+data/references/real/
+
+# Specimen/demo layout-reference images (data/references/samples/) — found-online
+# or hand-provided, PII-shaped content even when fictional, unclear license/
+# provenance. Never committed (CV_INTEGRATION.md Part 5 §6/§9). Directory-level
+# ignore is primary; filename patterns below are a repo-root safety net in case
+# a sample lands outside data/references/ before someone notices.
+data/references/samples/
+NBI-Clearance*
+*clearance*.jpg
+*clearance*.jpeg
+*clearance*.png
+*Clearance*.jpg
+*Clearance*.jpeg
+*Clearance*.png
+National_id*
+national_id*
+drivers_license*
+passport_ph*
+passport_*.jpg
+passport_*.jpeg
+passport_*.png
+
 # Eval outputs
 evals/results/
 mlruns/

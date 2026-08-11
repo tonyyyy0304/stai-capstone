@@ -71,6 +71,31 @@ def test_format_history_empty_and_populated():
     assert formatted == "user: hi"
 
 
+def test_router_prompt_mentions_new_document_intents():
+    """The Intent enum has had document_upload/document_status since the
+    earlier merge, but ROUTER_PROMPT never mentioned them -- classify_intent
+    would never actually produce them. Pins down that the prompt text
+    actually offers these as options now (Phase 6)."""
+    from src.agent import prompts
+
+    assert "document_upload" in prompts.ROUTER_PROMPT
+    assert "document_status" in prompts.ROUTER_PROMPT
+
+
+def test_classify_intent_passes_through_document_upload():
+    parsed = IntentClassification(intent=Intent.DOCUMENT_UPLOAD, confidence=0.9)
+    result = classify_intent("how do I upload my NBI clearance?", client=FakeClient(parsed))
+    assert result.intent is Intent.DOCUMENT_UPLOAD
+    assert not needs_clarification(result)
+
+
+def test_classify_intent_passes_through_document_status():
+    parsed = IntentClassification(intent=Intent.DOCUMENT_STATUS, confidence=0.9)
+    result = classify_intent("what's the status of my NBI clearance?", client=FakeClient(parsed))
+    assert result.intent is Intent.DOCUMENT_STATUS
+    assert not needs_clarification(result)
+
+
 def test_classify_intent_records_token_usage():
     parsed = IntentClassification(intent=Intent.FAQ, confidence=0.9)
     client = FakeClient(parsed, usage_metadata=FakeUsageMetadata(prompt=12, candidates=6, total=18))

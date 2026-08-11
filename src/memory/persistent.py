@@ -12,10 +12,7 @@ existing summary (one incremental call) rather than re-summarizing the whole
 conversation from scratch.
 
 Scope: only ever reads from session_turns (src/memory/session.py), which only
-holds general FAQ/chat message text. It never reads complaint-form PII
-payloads — those live in the separate `tickets` table (src/agent/tools.py),
-a different table entirely, so there's no path for this summarizer to see
-ComplaintTicket fields (parties_involved, description, etc.).
+holds general FAQ/chat message text.
 """
 
 import sqlite3
@@ -145,6 +142,7 @@ def _summarize(existing_summary: str, evicted_turns: list[dict], client=None) ->
             response_mime_type="application/json",
             response_schema=SessionSummary,
             temperature=0.0,
+            thinking_config=config.thinking_config(),
         ),
     )
     result: SessionSummary | None = response.parsed

@@ -1,0 +1,14 @@
+{
+  "identity_id": "id05",
+  "employee_id": "EMP-05602",
+  "doc_type": "government_id",
+  "id_type": "drivers_license",
+  "full_name": "MENDOZA, CARLA B",
+  "family_name": "MENDOZA",
+  "first_name": "CARLA",
+  "middle_name": "B",
+  "date_of_birth": "1992-03-15",
+  "id_number": "N05-12-000005",
+  "issue_date": "2019-06-01",
+  "expiry_date": "2029-06-01"
+}

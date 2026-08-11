@@ -20,6 +20,7 @@ Wire format reference (Ollama /api/chat, non-streamed):
   (not nested under a "usage" key)
 """
 
+import base64
 import json
 
 import requests
@@ -143,6 +144,37 @@ class OllamaClient:
         self.models = _OllamaModels(base_url, model)
 
 
+def _is_flat_part_list(contents) -> bool:
+    """src/ocr/extractor.py's extract_document() calls generate_content with
+    contents=[types.Part.from_bytes(...), prompt_string] -- a flat list
+    mixing a raw Part and a plain string, not the [Content(...), ...] shape
+    every other call site (router/ReAct/search_web) uses. Content objects
+    carry .parts; a bare Part or str doesn't, which is what distinguishes
+    the two shapes here."""
+    return not any(hasattr(item, "parts") for item in contents)
+
+
+def _flat_parts_to_message(contents) -> dict:
+    """Builds one Ollama user message from extract_document()'s flat
+    [Part(image), prompt] shape (Phase 4a, CV_INTEGRATION.md) -- the image's
+    inline bytes are base64-encoded onto Ollama's `images` field, which is
+    how /api/chat expects multimodal input for vision-capable models
+    (llama3.2-vision, llava, ...)."""
+    text_chunks = []
+    images = []
+    for item in contents:
+        if isinstance(item, str):
+            text_chunks.append(item)
+        elif getattr(item, "inline_data", None) is not None:
+            images.append(base64.b64encode(item.inline_data.data).decode("ascii"))
+        elif getattr(item, "text", None):
+            text_chunks.append(item.text)
+    message: dict = {"role": "user", "content": "\n".join(text_chunks)}
+    if images:
+        message["images"] = images
+    return message
+
+
 def _contents_to_messages(contents, system_instruction: str | None) -> list[dict]:
     messages = []
     if system_instruction:
@@ -150,6 +182,10 @@ def _contents_to_messages(contents, system_instruction: str | None) -> list[dict
 
     if isinstance(contents, str):
         messages.append({"role": "user", "content": contents})
+        return messages
+
+    if _is_flat_part_list(contents):
+        messages.append(_flat_parts_to_message(contents))
         return messages
 
     for content in contents:

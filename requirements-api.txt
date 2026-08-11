@@ -6,6 +6,9 @@ tavily-python==0.7.26
 
 # Vector store
 chromadb==1.0.13
+# chromadb pulls posthog>=2.4.0 (unbounded); posthog 6.0 changed capture()'s
+# signature and breaks chromadb 1.0.13's telemetry call. Pin below 6.
+posthog==5.4.0
 
 # Schemas / validation
 pydantic==2.11.7
@@ -20,3 +23,9 @@ python-docx==1.1.2
 fastapi==0.115.12
 uvicorn==0.34.2
 requests==2.32.3
+python-multipart==0.0.20            # FastAPI UploadFile — POST /upload-doc
+
+# CV/OCR document verification (Component 14) — see CV_INTEGRATION.md
+opencv-python-headless==4.11.0.86   # headless: slim Docker base lacks libGL — src/ocr/quality.py
+rapidfuzz==3.13.0                   # Rule 4 name matching — src/guardrails/doc_validation.py
+python-dateutil==2.9.0.post0        # relativedelta — Rule 5 validity window, src/guardrails/doc_validation.py

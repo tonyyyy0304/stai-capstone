@@ -17,19 +17,18 @@ without spending a request on them.
 check_injection_semantic() is the backstop for phrasings the regex patterns
 don't cover — it reads IntentClassification.is_injection_attempt, a field the
 router's already-mandatory LLM call fills in, so it costs nothing beyond that
-call. Unlike toxicity, injection detection has no "legitimate quoting" false-
-positive risk (nobody has a real reason to say "ignore all previous
-instructions" as part of an HR complaint), so the combined check is a
-straightforward OR of both layers, no complaint-intent carve-out needed.
+call.
 """
 
 import re
 
 from src.schemas import GuardrailResult, IntentClassification
 
+from src import config
+
 DECLINE_MESSAGE = (
     "I can't follow instructions that try to change how I operate. "
-    "I can help with company policy questions, DOLE labor law questions, or filing a complaint."
+    f"I can help with {config.SCOPE_PHRASE}."
 )
 
 _INJECTION_PATTERNS = (
@@ -50,5 +49,14 @@ def check_topic_and_injection(message: str) -> GuardrailResult:
 
 def check_injection_semantic(classification: IntentClassification) -> GuardrailResult:
     if classification.is_injection_attempt:
+        return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
+    return GuardrailResult(allowed=True)
+
+
+def check_jailbreak_semantic(classification: IntentClassification) -> GuardrailResult:
+    """Reads the router's is_jailbreak signal. A jailbreak is 'trying to change
+    how I operate' from the user's side, same as injection, so it reuses the
+    injection decline copy. Free — the router LLM call already ran."""
+    if classification.is_jailbreak:
         return GuardrailResult(allowed=False, reason=DECLINE_MESSAGE)
     return GuardrailResult(allowed=True)

@@ -18,11 +18,19 @@ from src.schemas import Citation
 def verify_response_citations(
     citations: list[Citation], chunks: list[RetrievedChunk]
 ) -> list[Citation]:
-    """Strips any citation whose chunk_id wasn't actually retrieved this turn."""
+    """Strips any citation whose chunk_id wasn't actually retrieved this turn, and
+    (re)stamps each surviving citation's page from the chunk metadata so the final
+    citation is always page-checkable — a citation into a 203-page manual isn't
+    verifiable without its page (CLAUDE.md). The page is authoritative from the
+    chunk, never the model's."""
     if not citations:
         return []
-    retrieved_ids = {c.chunk_id for c in chunks}
-    return [c for c in citations if c.chunk_id in retrieved_ids]
+    by_id = {c.chunk_id: c for c in chunks}
+    return [
+        c.model_copy(update={"page": by_id[c.chunk_id].page_start})
+        for c in citations
+        if c.chunk_id in by_id
+    ]
 
 
 def check_grounding(

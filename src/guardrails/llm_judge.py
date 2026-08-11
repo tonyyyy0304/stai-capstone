@@ -36,8 +36,8 @@ from src.schemas import GuardrailResult, LLMJudgeVerdict
 logger = logging.getLogger(__name__)
 
 OFF_TOPIC_DECLINE_MESSAGE = (
-    "I can only help with company policy, DOLE labor law questions, and filing a "
-    "complaint. For anything else, please reach out to the right team directly."
+    f"I can only help with {config.SCOPE_PHRASE}. For anything else, please reach out to "
+    f"{config.HELP_CONTACT} directly."
 )
 
 # User-facing decline copy per blocking violation. Jailbreak reuses the
@@ -58,6 +58,7 @@ def judge_input(
     """One structured Gemini call classifying `message` across the five
     guardrail dimensions. Returns None (fail-open — caller should allow) on any
     API/backend error or unparseable response; never raises."""
+    import httpx
     from google.genai import types
     from google.genai.errors import APIError
 
@@ -72,9 +73,10 @@ def judge_input(
                 response_mime_type="application/json",
                 response_schema=LLMJudgeVerdict,
                 temperature=0.0,
+                thinking_config=config.thinking_config(),
             ),
         )
-    except (APIError, LLMBackendError) as exc:
+    except (APIError, LLMBackendError, httpx.TimeoutException) as exc:
         logger.warning("session=%s llm_judge_error status=%s", session_id, getattr(exc, "code", "?"))
         return None
 

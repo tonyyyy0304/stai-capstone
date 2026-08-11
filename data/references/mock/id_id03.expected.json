@@ -1,0 +1,14 @@
+{
+  "identity_id": "id03",
+  "employee_id": "EMP-05310",
+  "doc_type": "government_id",
+  "id_type": "national_id",
+  "full_name": "SANTOS, ANA LIZA M",
+  "family_name": "SANTOS",
+  "first_name": "ANA LIZA",
+  "middle_name": "M",
+  "date_of_birth": "1995-11-20",
+  "id_number": "1234-5678-9103-0003",
+  "issue_date": "2020-01-10",
+  "expiry_date": null
+}

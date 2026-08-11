@@ -1,0 +1,16 @@
+doc_id: faculty-manual-2021
+title: DLSU Faculty Manual 2021
+category: faculty_manual
+effective_date: 2021
+version: 2021
+# Enable positional audience-segment detection: the Manual's three faculty classes
+# are large contiguous regions (unlike the companion docs' short comparison lists).
+# Only the Manual sets this. See src/rag/chunking.py split_sections(detect_class=...)
+# and the config.AUDIENCE_CLASSES taxonomy that defines the segment markers.
+detect_audience_class: true
+# Drop the cover + Table-of-Contents front matter: keep everything from this
+# marker (the first real preamble content heading, case-sensitive) onward. The
+# title-case ToC entries don't match this all-caps body heading, so the ToC is
+# excluded while genuine content (Diversity Statement, Code of Ethics, and all
+# following sections) is kept. See scripts/ingest.py parse_raw_file().
+content_start_marker: STATEMENT ON DIVERSITY AND INCLUSIVITY

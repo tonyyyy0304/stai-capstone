@@ -12,25 +12,18 @@ Two layers:
    creative-spelling abuse the wordlist misses, at no incremental LLM cost
    (the router call happens regardless).
 
-check_toxicity_with_context() combines both, but NOT as a simple OR — for
-COMPLAINT intent, the wordlist layer is skipped entirely and only the semantic
-signal is trusted. This matters: a harassment complaint that quotes what was
-said to the employee ("my coworker called me a bitch") legitimately contains
-wordlist hits without being abusive language from the employee. Auto-blocking
-on the wordlist alone would prevent exactly the complaints this system exists
-to let through. The router prompt (src/agent/prompts.py) is explicitly
-instructed to set is_toxic=false for quoted/reported abuse and only true for
-the employee's own hostile language — see ROUTER_PROMPT.
+check_toxicity_with_context() combines both as a straightforward OR — either
+layer blocking is enough.
 """
 
 import re
 
 from src import config
-from src.schemas import GuardrailResult, Intent, IntentClassification
+from src.schemas import GuardrailResult, IntentClassification
 
 DECLINE_MESSAGE = (
     "I'm not able to continue this conversation given the language used. "
-    "Please reach out to HR directly if you need help."
+    f"Please contact {config.HELP_CONTACT} directly if you need help."
 )
 
 # Left word-boundary only (not \bword\b) so inflected forms match too -
@@ -64,11 +57,8 @@ def check_toxicity_with_context(
     message: str, classification: IntentClassification
 ) -> GuardrailResult:
     """The combined check orchestrator.run_turn() actually calls, after
-    classification is available. Complaint intent trusts the semantic signal
-    only; everything else is blocked on either layer."""
-    if classification.intent == Intent.COMPLAINT:
-        return check_toxicity_semantic(classification)
-
+    classification is available. Blocked if either the wordlist or the
+    router's semantic signal flags the message."""
     wordlist_result = check_toxicity(message)
     if not wordlist_result.allowed:
         return wordlist_result

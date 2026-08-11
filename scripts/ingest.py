@@ -51,7 +51,21 @@ def parse_raw_file(path: Path) -> str:
     meta_path = path.with_suffix(".meta.yaml")
     if not meta_path.exists():
         raise ValueError(f"{path.name} needs a sibling {meta_path.name} with frontmatter fields")
-    return f"---\n{meta_path.read_text(encoding='utf-8').strip()}\n---\n\n{text}"
+    meta_raw = meta_path.read_text(encoding="utf-8").strip()
+
+    # Optional front-matter trim: a doc can set `content_start_marker` in its
+    # meta.yaml to drop everything before the first real content (e.g. the
+    # Faculty Manual's cover + Table of Contents). Fail-safe: if the marker isn't
+    # found, keep the full text rather than silently emitting an empty doc.
+    import yaml
+
+    marker = (yaml.safe_load(meta_raw) or {}).get("content_start_marker")
+    if marker:
+        idx = text.find(str(marker))
+        if idx != -1:
+            text = text[idx:]
+
+    return f"---\n{meta_raw}\n---\n\n{text}"
 
 
 def normalize_text(text: str) -> str:
@@ -133,9 +147,14 @@ def run_ingestion(force: bool = False) -> dict:
     raw_files = sorted(
         p for p in config.RAW_DIR.glob("*") if p.suffix in SUPPORTED_SUFFIXES
     )
+    # Append explicit sources that live outside data/raw/ (the Faculty Manual).
+    raw_files += [p for p in config.MANUAL_SOURCES if p.exists()]
     if not raw_files:
         raise SystemExit(f"No source documents found in {config.RAW_DIR}")
 
+    # Resolve each source by filename so the ingest loop can find files that live
+    # outside data/raw/ (data/raw/ names are unique across the two locations).
+    path_by_name = {p.name: p for p in raw_files}
     manifest = load_manifest()
     current_hashes = {p.name: hash_source(p) for p in raw_files}
     plan = plan_changes(current_hashes, manifest, force=force)
@@ -161,7 +180,7 @@ def run_ingestion(force: bool = False) -> dict:
 
     total_new_chunks = 0
     for name in plan.to_ingest:
-        raw_path = config.RAW_DIR / name
+        raw_path = path_by_name[name]
         markdown = normalize_text(parse_raw_file(raw_path))
         markdown = add_source_file(markdown, name)
         chunks = chunk_document(markdown)
@@ -195,6 +214,14 @@ def run_ingestion(force: bool = False) -> dict:
         f"Done. Index has {new_manifest['total_chunks']} chunks across "
         f"{len(files_entry)} documents ({total_new_chunks} newly embedded)."
     )
+
+    # Rebuild the BM25 (FTS5) side-index from the just-updated Chroma collection
+    # so hybrid retrieval (PLAN.md §3.4) always mirrors the vector index. Cheap,
+    # no API calls, and keeping it here means the two indexes never drift.
+    from src.rag.hybrid import build_bm25_index
+
+    n_bm25 = build_bm25_index(collection=collection)
+    print(f"BM25 index rebuilt: {n_bm25} chunks -> {config.BM25_SQLITE_PATH.name}")
     return new_manifest
 
 
