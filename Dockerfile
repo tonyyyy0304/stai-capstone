@@ -15,6 +15,6 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-EXPOSE 8000 8501 5000
+EXPOSE 8000 7860 5000
 
-CMD ["sh", "scripts/render_start.sh"]
+CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
