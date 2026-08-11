@@ -56,7 +56,7 @@ def _status_line(name: str, ok: bool, detail: str = "") -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check API, UI, and MLflow readiness.")
     parser.add_argument("--api-url", default="http://localhost:8000")
-    parser.add_argument("--ui-url", default="http://localhost:8501")
+    parser.add_argument("--ui-url", default="http://localhost:7860")
     parser.add_argument("--mlflow-url", default="http://localhost:5000")
     parser.add_argument(
         "--skip-chat",

@@ -9,8 +9,6 @@ WORKDIR /app
 COPY requirements-mlflow.txt .
 RUN pip install -r requirements-mlflow.txt
 
-COPY scripts/render_mlflow_start.sh scripts/render_mlflow_start.sh
-
 EXPOSE 5000
 
-CMD ["sh", "scripts/render_mlflow_start.sh"]
+CMD ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--workers", "1", "--backend-store-uri", "sqlite:////app/data/mlflow.db", "--allowed-hosts", "mlflow:*,localhost:*,localhost,127.0.0.1:*"]
