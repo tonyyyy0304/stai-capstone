@@ -10,6 +10,7 @@ COPY requirements-ui.txt .
 RUN pip install -r requirements-ui.txt
 
 COPY src src
+COPY .streamlit .streamlit
 
 EXPOSE 7860
 
