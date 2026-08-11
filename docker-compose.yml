@@ -10,23 +10,20 @@ services:
 
   api:
     build: .
-    # --reload: without a source mount + this flag, every code change needs a
-    # full `docker compose up --build` to take effect -- the image bakes in
-    # src/ via COPY . . at build time, so a host edit alone does nothing
-    # until the container is rebuilt. --reload makes uvicorn watch the
-    # mounted src/ below and restart the worker on change, no rebuild needed.
-    command: uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn src.api:app --host 0.0.0.0 --port 8000
     env_file:
       - path: .env
         required: false
     environment:
+      PORT: 8000
+      RUN_INGEST_ON_START: "0"
+      ENABLE_MLFLOW: "1"
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT_NAME: hr-agent
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./src:/app/src
     depends_on:
       ingest:
         condition: service_completed_successfully
@@ -35,40 +32,26 @@ services:
 
   ui:
     build: .
-    # Streamlit has its own built-in file-watcher (server.fileWatcherType,
-    # "auto" by default) and reruns the script on save -- but only if the
-    # container can actually see host edits, which the ./src mount below is
-    # what makes possible. Same underlying issue as api's --reload above.
-    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 8501
+    command: streamlit run src/ui.py --server.address 0.0.0.0 --server.port 7860 --server.headless true
     env_file:
       - path: .env
         required: false
     environment:
+      PORT: 7860
       API_URL: http://api:8000
     ports:
-      - "8501:8501"
-    volumes:
-      - ./src:/app/src
+      - "7860:7860"
     depends_on:
       - api
 
   mlflow:
     build: .
-    # SQLite backend (four slashes = absolute path in the container). Enables the
-    # trace-metrics aggregates the 3.x Traces UI needs; the DB lives in the shared
-    # ./data volume alongside the app.
-    # --allowed-hosts: mlflow 3.x's DNS-rebinding protection rejects any request
-    # whose Host header isn't allowlisted -- the api container talks to this
-    # over the compose network as http://mlflow:5000, so that host:port needs
-    # to be explicitly allowed or every /chat and /upload-doc call fails API
-    # startup with a 403 from configure_mlflow(). Two things that aren't
-    # obvious from the flag name alone: (1) matching is exact-string on the
-    # WHOLE "host:port" Host header, not hostname-only, so "mlflow" alone
-    # never matches "mlflow:5000" -- needs the wildcard or the literal port;
-    # (2) passing --allowed-hosts REPLACES mlflow's default allowlist
-    # entirely rather than adding to it, so localhost has to be re-listed too.
-    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////app/data/mlflow.db --allowed-hosts "mlflow:*,localhost:*,localhost"
-    ports:
-      - "5000:5000"
+    command: mlflow server --host 0.0.0.0 --port 5000 --workers 1 --backend-store-uri sqlite:////app/data/mlflow.db --allowed-hosts "mlflow:*,localhost:*,localhost,127.0.0.1:*"
+    environment:
+      PORT: 5000
+      MLFLOW_BACKEND_STORE_URI: sqlite:////app/data/mlflow.db
+      MLFLOW_ALLOWED_HOSTS: "mlflow:*,localhost:*,localhost,127.0.0.1:*"
+    expose:
+      - "5000"
     volumes:
       - ./data:/app/data

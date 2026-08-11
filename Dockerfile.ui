@@ -10,8 +10,7 @@ COPY requirements-ui.txt .
 RUN pip install -r requirements-ui.txt
 
 COPY src src
-COPY scripts/render_ui_start.sh scripts/render_ui_start.sh
 
-EXPOSE 8501
+EXPOSE 7860
 
-CMD ["sh", "scripts/render_ui_start.sh"]
+CMD ["streamlit", "run", "src/ui.py", "--server.address", "0.0.0.0", "--server.port", "7860", "--server.headless", "true"]

@@ -91,9 +91,9 @@ Start Docker Desktop first, then:
 docker compose up --build
 ```
 
-- Streamlit UI: http://localhost:8501
+- Streamlit UI: http://localhost:7860
 - FastAPI health check: http://localhost:8000/health
-- MLflow dashboard: http://localhost:5000
+- MLflow runs inside Docker at `http://mlflow:5000` for API tracing. Publish port `5000` in `docker-compose.yml` only if your host/provider gives you an external MLflow port.
 
 Stop with `Ctrl+C`, then `docker compose down`.
 
@@ -119,7 +119,7 @@ Note: don't mix host and Docker ingestion against the same `data/chroma/` — ch
 - `POST /upload-doc` — **planned**: NBI Clearance submission (PLAN.md §4.4).
 - `GET /onboarding-status/{employee_id}` — **planned**: per-hire checklist state (PLAN.md §4.3–§4.4).
 
-`src.monitoring.chat_trace()` records each chat turn as an **MLflow 3.x trace** (a `chat_turn` span whose duration is the turn latency / agent response time), with sanitized telemetry — token usage, latency, and source/citation/action counts as span attributes; route, status, and models as searchable trace tags — via fail-closed allowlists. It never logs raw messages, model answers, or extracted document field values. Traces appear under the **Traces** tab of the MLflow UI (`http://localhost:5000`); the eval harnesses log separately as MLflow runs.
+`src.monitoring.chat_trace()` records each chat turn as an **MLflow 3.x trace** (a `chat_turn` span whose duration is the turn latency / agent response time), with sanitized telemetry — token usage, latency, and source/citation/action counts as span attributes; route, status, and models as searchable trace tags — via fail-closed allowlists. It never logs raw messages, model answers, or extracted document field values. In Docker Compose, the API writes traces to the internal MLflow service at `http://mlflow:5000`; publish that port only when you have an external port assigned for the MLflow dashboard. The eval harnesses log separately as MLflow runs.
 
 ## Useful Checks
 
