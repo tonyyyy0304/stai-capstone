@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import sys
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -68,8 +69,22 @@ a:hover { text-decoration: underline; }
   transition: width 0.22s ease, min-width 0.22s ease;
   overflow: hidden;
 }
-[data-testid="stSidebarContent"] { min-width: 260px; padding: 18px 14px !important; }
+/* box-sizing:border-box is the fix here, not the min-width/padding values
+   themselves -- by default (content-box) a 260px min-width PLUS 14px
+   padding on each side renders at 288px actual width, 28px wider than the
+   parent stSidebar's own fixed 260px (_sidebar_width_css()). Since stSidebar
+   has overflow:hidden, that 28px of overflow was silently clipped off the
+   right edge of every row -- and since only the right side gets cut, the
+   visible content reads as unevenly balanced/off-center, not just clipped. */
+[data-testid="stSidebarContent"] { min-width: 260px; padding: 18px 14px !important; box-sizing: border-box; }
 [data-testid="stSidebarCollapseButton"] { display: none; }
+/* Streamlit's own floating re-expand chevron -- auto-appears top-left
+   whenever stSidebar's width hits 0, which our collapsed state does.
+   Left visible, it overlaps the custom hamburger toggle below and steals
+   its clicks, so a click meant for our button re-expands via Streamlit's
+   own untracked mechanism instead of flipping session_state.sidebar_open --
+   the two state sources desync and the sidebar gets stuck. */
+[data-testid="stSidebarCollapsedControl"] { display: none !important; }
 
 /* Header hamburger toggle */
 .st-key-sidebar_toggle_btn button {
@@ -108,6 +123,16 @@ a:hover { text-decoration: underline; }
    the sidebar (which is checklist-only), aligned to the same centered
    width as the message list below it. */
 .st-key-uploader_section { max-width: 680px; margin: 0 auto; padding: 16px 24px 0 24px; }
+
+/* Restyles Streamlit's built-in st.spinner (shown during POST /upload-doc)
+   to match this design's accent/type instead of Streamlit's stock red-ish
+   default -- the icon's stroke follows `color` via currentColor, so setting
+   color here recolors both the spinner icon and its text in one rule. */
+.st-key-uploader_section [data-testid="stSpinner"] {
+  color: __ACCENT__ !important;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+.st-key-uploader_section [data-testid="stSpinner"] p { font-size: 13.5px !important; }
 
 /* Message list */
 .st-key-message_list { max-width: 680px; margin: 0 auto; padding: 32px 24px 20px 24px; }
@@ -302,6 +327,12 @@ def _init_state() -> None:
     # above) -- set on submit, rendered on the NEXT run, so the result
     # banner survives the rerun that follows a successful upload.
     st.session_state.setdefault("last_upload_result", None)
+    # Auto-expand the uploader the first time it's revealed, so the user
+    # doesn't have to notice and click open a collapsed expander right after
+    # being told to use it. Flips True on first render and stays there --
+    # the expander's own `key` lets Streamlit remember subsequent manual
+    # toggles instead of forcing it back open every rerun.
+    st.session_state.setdefault("uploader_auto_expanded", False)
 
 
 def _toggle_sidebar() -> None:
@@ -439,6 +470,18 @@ _STATUS_STYLES = {
 }
 
 
+def _is_valid_iso_date(text: str) -> bool:
+    """Real calendar validation (rejects 2023-13-40), not just a regex shape
+    check -- catches a malformed DOB before it's spent on a POST /upload-doc
+    round trip, matching the same discipline as the rest of this project
+    (fail before the network call, not after)."""
+    try:
+        date.fromisoformat(text)
+        return True
+    except ValueError:
+        return False
+
+
 def _status_badge_style(status: str) -> tuple[str, str, str]:
     return _STATUS_STYLES.get(status, _STATUS_STYLES["missing"])
 
@@ -471,15 +514,19 @@ def _render_checklist() -> None:
         checklist = response.json()
     except requests.RequestException:
         st.markdown(
-            '<div style="font-size:12px;color:oklch(55% 0.012 250);padding:4px 8px;">'
+            '<div style="font-size:12px;color:oklch(55% 0.012 250);padding:4px 0;">'
             "Could not load document checklist.</div>",
             unsafe_allow_html=True,
         )
         return
 
+    documents = checklist.get("documents", [])
+    validated_count = sum(1 for d in documents if d["status"] == "validated")
     st.markdown(
         '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
-        'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;">Document Checklist</div>',
+        f'color:oklch(55% 0.012 250);padding:14px 0 0 0;">Checklist &mdash; {html.escape(employee_id)}</div>'
+        '<div style="font-size:12px;color:oklch(48% 0.012 250);padding:2px 0 6px 0;">'
+        f'{validated_count} of {len(documents)} documents validated</div>',
         unsafe_allow_html=True,
     )
     rows = []
@@ -521,24 +568,41 @@ def _render_uploader() -> None:
     the banner survives the rerun a successful submission triggers, which
     is also what makes the checklist above refresh without a manual reload."""
     with st.container(key="uploader_section"):
-        with st.expander("Upload a document", expanded=False):
+        # First reveal starts open (expanded=True is only the INITIAL value
+        # for this key -- Streamlit remembers the user's own toggle after
+        # that, so this doesn't fight a manual collapse on later reruns).
+        was_auto_expanded = st.session_state.uploader_auto_expanded
+        st.session_state.uploader_auto_expanded = True
+        with st.expander("Upload a document", expanded=not was_auto_expanded, key="uploader_expander"):
+            # Doc types come from config.REQUIRED_ONBOARDING_DOCS, not a
+            # hardcoded list here -- a future third required doc type shows
+            # up automatically. _DOC_TYPE_LABELS is decoration only (falls
+            # back to the raw value if a type isn't in it).
             upload_doc_type = st.selectbox(
-                "Document type", list(_DOC_TYPE_LABELS), format_func=lambda v: _DOC_TYPE_LABELS[v],
-                key="upload_doc_type",
+                "Document type", config.REQUIRED_ONBOARDING_DOCS,
+                format_func=lambda v: _DOC_TYPE_LABELS.get(v, v), key="upload_doc_type",
             )
             st.session_state.upload_full_name = st.text_input(
                 "Full name (as printed on the document)",
                 value=st.session_state.upload_full_name, key="upload_full_name_input",
+                placeholder="e.g. REYES, MARIA SANTOS",
             )
             st.session_state.upload_dob = st.text_input(
                 "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
+                placeholder="e.g. 1990-01-01",
             )
             upload_file = st.file_uploader("File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key="upload_file")
+            if upload_file is not None:
+                st.image(upload_file, width=180)
 
             if st.button("Submit document", key="upload_submit_btn", use_container_width=True):
                 employee_id = st.session_state.employee_id.strip()
-                if not (employee_id and st.session_state.upload_full_name and st.session_state.upload_dob and upload_file):
+                dob_text = st.session_state.upload_dob.strip()
+                dob_valid = _is_valid_iso_date(dob_text)
+                if not (employee_id and st.session_state.upload_full_name and dob_text and upload_file):
                     st.error("Employee ID, full name, date of birth, and a file are all required.")
+                elif not dob_valid:
+                    st.error("Date of birth must be a real date in YYYY-MM-DD format (e.g. 1990-01-01).")
                 else:
                     with st.spinner("Verifying document — this can take a few seconds…"):
                         try:
@@ -548,7 +612,7 @@ def _render_uploader() -> None:
                                     "employee_id": employee_id,
                                     "doc_type": upload_doc_type,
                                     "full_name": st.session_state.upload_full_name,
-                                    "date_of_birth": st.session_state.upload_dob,
+                                    "date_of_birth": dob_text,
                                 },
                                 files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
                                 timeout=90,
@@ -582,12 +646,12 @@ def _render_uploader() -> None:
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
     with st.sidebar:
         st.markdown(
-            f'''<div style="display:flex;flex-direction:column;min-width:260px;">
-  <div style="display:flex;align-items:center;gap:8px;padding:6px 8px 18px 8px;">
+            f'''<div style="display:flex;flex-direction:column;">
+  <div style="display:flex;align-items:center;gap:8px;padding:6px 0 18px 0;">
     <div style="width:22px;height:22px;border-radius:6px;background:{accent};flex-shrink:0;"></div>
     <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">{config.ASSISTANT_NAME}</div>
   </div>
-  <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:oklch(55% 0.012 250);padding:4px 8px 8px 8px;">Recent</div>
+  <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:oklch(55% 0.012 250);padding:4px 0 8px 0;">Recent</div>
   <div style="display:flex;flex-direction:column;gap:1px;padding:9px 8px;border-radius:8px;background:oklch(92% 0.012 250);">
     <div style="font-size:13.5px;font-weight:500;color:oklch(22% 0.015 255);">Current chat</div>
     <div style="font-size:11.5px;color:oklch(56% 0.012 250);">Today</div>
@@ -603,7 +667,7 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
         if st.session_state.show_upload_flow:
             st.markdown(
                 '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
-                'color:oklch(55% 0.012 250);padding:14px 8px 6px 8px;border-top:1px solid oklch(90% 0.006 250);'
+                'color:oklch(55% 0.012 250);padding:14px 0 6px 0;border-top:1px solid oklch(90% 0.006 250);'
                 'margin-top:10px;">Employee ID</div>',
                 unsafe_allow_html=True,
             )
