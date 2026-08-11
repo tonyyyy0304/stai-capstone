@@ -573,7 +573,7 @@ def _render_uploader() -> None:
         # that, so this doesn't fight a manual collapse on later reruns).
         was_auto_expanded = st.session_state.uploader_auto_expanded
         st.session_state.uploader_auto_expanded = True
-        with st.expander("Upload a document", expanded=not was_auto_expanded, key="uploader_expander"):
+        with st.expander("Upload a document", expanded=not was_auto_expanded):
             # Doc types come from config.REQUIRED_ONBOARDING_DOCS, not a
             # hardcoded list here -- a future third required doc type shows
             # up automatically. _DOC_TYPE_LABELS is decoration only (falls
