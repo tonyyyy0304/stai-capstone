@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src import config
 from src.schemas import ImageQualityReport, QualityVerdict
@@ -35,23 +37,57 @@ from src.schemas import ImageQualityReport, QualityVerdict
 def load_image(data: bytes) -> np.ndarray:
     """Decodes raw image bytes to a BGR pixel array. This is also the EXIF
     strip point — decoding to a raw array discards all metadata, including
-    phone geolocation, as a side effect (CV_INTEGRATION.md §1.7)."""
-    arr = np.frombuffer(data, dtype=np.uint8)
-    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError("could not decode image data — not a valid JPEG/PNG")
-    return image
+    phone geolocation, as a side effect (CV_INTEGRATION.md §1.7).
+
+    Routed through PIL first specifically for ImageOps.exif_transpose():
+    plain cv2.imdecode() never reads the EXIF Orientation tag, so a phone
+    photo taken sideways (pixels stored in sensor-native orientation, EXIF
+    saying "rotate 90 to display upright") stayed sideways all the way
+    through the pipeline -- the skew corrector can't catch this either,
+    since a rectangle's angle is only meaningful mod 90 by construction
+    (see _detect_document()), structurally blind to 90/180/270 rotation.
+    exif_transpose() physically rotates the pixels to match; converting the
+    result straight to a numpy array (never keeping the PIL Image object
+    around) means the metadata-stripping guarantee is unaffected -- a numpy
+    array carries no EXIF at all regardless of what the source file had."""
+    try:
+        pil_image = Image.open(io.BytesIO(data))
+        pil_image = ImageOps.exif_transpose(pil_image)
+        # .convert("RGB") is also what forces PIL to actually decode the
+        # pixel body -- Image.open() alone is lazy and can succeed on a
+        # truncated/corrupted file whose header merely looks valid, only
+        # failing here (as OSError, not UnidentifiedImageError) once the
+        # body is actually read.
+        rgb_array = np.array(pil_image.convert("RGB"))
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("could not decode image data — not a valid JPEG/PNG") from exc
+    return cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR)
 
 
 # --- Document contour / skew detection ---------------------------------------
 
 def _detect_document(gray: np.ndarray) -> tuple[float, bool, np.ndarray | None]:
     """Returns (signed_angle_deg, quad_found, contour). The largest
-    thresholded contour above a minimum-area floor is treated as the
+    edge-based contour above a minimum-area floor is treated as the
     document boundary; too small or absent means quad_found=False and the
-    image has nothing document-shaped to anchor a skew measurement on."""
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    image has nothing document-shaped to anchor a skew measurement on.
+
+    Blur + Canny + dilate, not a raw global-threshold binarize: real NBI
+    clearances carry a dense repeating ghost watermark (by design, to resist
+    exactly this kind of naive image processing) plus JPEG/WEBP compression
+    noise, and global Otsu threshold on raw intensity fragmented that texture
+    into hundreds-to-thousands of tiny contours -- 3/3 real specimens capped
+    below the 5% area floor (largest topped out at 1-3.6% of frame) despite
+    being full-frame, unskewed document photos. Edge detection on a blurred
+    image is far less sensitive to that kind of fine texture; dilating closes
+    small gaps between edge fragments so the document boundary reads as one
+    connected contour. Verified against all 3 real specimens (now 50-99% of
+    frame) and the full mock clean/blur/skew/blank-page suite before landing
+    (2026-08-10)."""
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+    dilated = cv2.dilate(edges, np.ones((5, 5), np.uint8), iterations=2)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return 0.0, False, None
 
