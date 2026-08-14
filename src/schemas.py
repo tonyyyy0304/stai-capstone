@@ -425,3 +425,76 @@ class ChecklistStatus(BaseModel):
     documents: list[OnboardingDocument] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
     faculty_class: str | None = Field(default=None)
+
+
+# --- HR handoff email (Component 14 follow-on) --------------------------------
+# See src/notifications/. HrPacket is pure data assembled by
+# src/notifications/hr_packet.py (no I/O) and rendered by templates.py — kept
+# here, not in that module, so it follows the same "every cross-module
+# contract is a schema" convention as the rest of this file.
+
+class VerifiedDocSummary(BaseModel):
+    """One row of the "verified by the Concierge" block — shape-only fields,
+    same PII discipline as OnboardingDocument (no extracted field value)."""
+
+    doc_type: DocType
+    outcome: ValidationOutcome
+    validated_at: str = ""
+
+
+class OutstandingItem(BaseModel):
+    """One row of the "still outstanding" block, sourced from
+    config.PREEMPLOYMENT_CHECKLIST — never invented at send time."""
+
+    item: str
+    source_doc: str
+    section: str
+
+
+class NameDiscrepancy(BaseModel):
+    """Optional discrepancy block (HR-authorized PII egress point — see
+    hr_packet.py's module docstring, which cites the deleted Midterm
+    emailer's precedent for this exception). Populated only when the
+    cross-document check actually failed; RuleResult.detail itself stays
+    PII-free."""
+
+    nbi_name: str = ""
+    id_name: str = ""
+
+
+class HrPacket(BaseModel):
+    """Composed, ready-to-render HR handoff packet (pure data, no I/O) —
+    input to src/notifications/templates.py."""
+
+    employee_id: str
+    faculty_class: str | None = None
+    faculty_class_label: str = ""
+    verified_at: str = ""
+    verified_docs: list[VerifiedDocSummary] = Field(default_factory=list)
+    outstanding: list[OutstandingItem] = Field(default_factory=list)
+    nbi_printed_valid_until: str = ""
+    nbi_resubmit_by: str = ""
+    reduced_detail: bool = Field(
+        default=False,
+        description="True when the sibling OCR cache entry was unavailable "
+        "(container restart between uploads) — the packet still sends, with "
+        "per-field detail omitted rather than silently skipping HR entirely.",
+    )
+    discrepancy: NameDiscrepancy | None = None
+    packet_hash: str = ""
+
+
+class NotificationStatus(str, Enum):
+    QUEUED = "queued"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+class EmailSendResult(BaseModel):
+    """Return shape from src/notifications/email_client.py — never raises,
+    same never-fail convention as the deleted emailer's
+    _send_email_notification() (23417c9~1:src/agent/tools.py)."""
+
+    status: NotificationStatus
+    provider_id: str = ""
+    error: str = Field(default="", description="PII-free; never echoes a field value")

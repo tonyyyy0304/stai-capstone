@@ -45,6 +45,10 @@ _ALLOWED_METRIC_KEYS = frozenset(
         "fields_extracted",
         "fields_missing",
         "ocr_latency_ms",
+        # HR handoff email (Component 14 follow-on) — never a recipient
+        # address, employee_id, or field value, only shape/outcome.
+        "email_latency_ms",
+        "attempt_count",
     }
 )
 # String trace tags — searchable/filterable labels in the MLflow Traces UI.
@@ -61,6 +65,9 @@ _ALLOWED_TAG_KEYS = frozenset(
         "doc_type",
         "validation_outcome",
         "quality_verdict",
+        # HR handoff email — classification labels only, never a recipient.
+        "email_status",
+        "email_provider",
     }
 )
 
@@ -226,6 +233,53 @@ def doc_trace(doc_type: str) -> Iterator[dict[str, Any]]:
             }
             tags["status"] = status
             tags["doc_type"] = doc_type
+            mlflow.update_current_trace(tags=tags)
+
+
+@contextmanager
+def email_trace() -> Iterator[dict[str, Any]]:
+    """Record one HR handoff-email send attempt (Component 14 follow-on) as
+    an MLflow trace. Same shape/contract as doc_trace: a mutable trace_state
+    dict for metrics/tags, filtered through the same fail-closed allowlists,
+    a no-op yield when MLflow is unavailable.
+
+    Deliberately takes no employee_id/recipient, same reasoning as
+    doc_trace's own docstring: src/memory/hr_notifications.py is already the
+    authoritative per-employee send record, so MLflow only needs aggregate
+    latency/outcome observability here, not a per-person audit trail."""
+    trace_state: dict[str, Any] = {"metrics": {}, "tags": {}, "attributes": {}}
+
+    mlflow = _safe_import_mlflow()
+    if mlflow is None:
+        yield trace_state
+        return
+
+    configure_mlflow()
+    started = perf_counter()
+    status = "ok"
+    with mlflow.start_span(name="hr_email_send", span_type="AGENT") as span:
+        try:
+            yield trace_state
+        except Exception as exc:
+            status = "error"
+            trace_state["tags"]["error_type"] = type(exc).__name__
+            raise
+        finally:
+            latency_ms = (perf_counter() - started) * 1000.0
+            metrics = {
+                key: value
+                for key, value in trace_state.get("metrics", {}).items()
+                if key in _ALLOWED_METRIC_KEYS and isinstance(value, (int, float))
+            }
+            metrics.setdefault("email_latency_ms", latency_ms)
+            span.set_attributes(metrics)
+
+            tags = {
+                key: str(value)
+                for key, value in trace_state.get("tags", {}).items()
+                if key in _ALLOWED_TAG_KEYS
+            }
+            tags["status"] = status
             mlflow.update_current_trace(tags=tags)
 
 

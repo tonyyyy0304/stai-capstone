@@ -313,30 +313,35 @@ def _init_state() -> None:
     # resolve to a checklist lookup, and so the uploader below knows who
     # it's uploading for.
     st.session_state.setdefault("employee_id", "")
-    # Hidden until the conversation actually calls for it -- flipped True
-    # when an assistant message carries an "unlock_document_flow" action
-    # (Intent.DOCUMENT_UPLOAD/DOCUMENT_STATUS, src/agent/orchestrator.py).
-    # Persists for the rest of the session once unlocked (by design, not an
-    # oversight) -- an unrelated question later shouldn't re-hide it.
+    # Hidden until the user opens it -- either the sidebar's "Verify a
+    # document" button (_open_document_flow) or an assistant message
+    # carrying an "unlock_document_flow" action (Intent.DOCUMENT_UPLOAD/
+    # DOCUMENT_STATUS, src/agent/orchestrator.py). Persists for the rest of
+    # the session once opened (by design, not an oversight) -- an unrelated
+    # question later shouldn't re-hide it.
     st.session_state.setdefault("show_upload_flow", False)
-    # Remembered across the two uploads so the user doesn't retype identity
-    # fields for the second document.
+    # Remembered across both documents' uploads so the user doesn't retype
+    # identity fields for the second one -- shared by both cards.
     st.session_state.setdefault("upload_full_name", "")
     st.session_state.setdefault("upload_dob", "")
+    # Faculty class (audience-class slug, config.AUDIENCE_ORDER) — persisted
+    # server-side via set_faculty_class() on first submit, but remembered
+    # here too so the second document's upload doesn't need it re-picked.
+    st.session_state.setdefault("upload_faculty_class", config.AUDIENCE_ORDER[0])
     # Deferred-render pattern (matches pending_request/awaiting_response
     # above) -- set on submit, rendered on the NEXT run, so the result
-    # banner survives the rerun that follows a successful upload.
-    st.session_state.setdefault("last_upload_result", None)
-    # Auto-expand the uploader the first time it's revealed, so the user
-    # doesn't have to notice and click open a collapsed expander right after
-    # being told to use it. Flips True on first render and stays there --
-    # the expander's own `key` lets Streamlit remember subsequent manual
-    # toggles instead of forcing it back open every rerun.
-    st.session_state.setdefault("uploader_auto_expanded", False)
+    # banner survives the rerun that follows a successful upload. Keyed by
+    # doc_type so each document's card owns its own banner instead of one
+    # upload's result bleeding onto the other document's card.
+    st.session_state.setdefault("last_upload_result", {})
 
 
 def _toggle_sidebar() -> None:
     st.session_state.sidebar_open = not st.session_state.sidebar_open
+
+
+def _open_document_flow() -> None:
+    st.session_state.show_upload_flow = True
 
 
 def _start_new_chat() -> None:
@@ -411,7 +416,8 @@ def _render_privacy_gate(accent: str) -> None:
             '<div style="font-size:14px;line-height:1.6;color:oklch(38% 0.014 250);">'
             "This assistant can help with faculty onboarding, pre-employment requirements, "
             "and DLSU Faculty Manual questions. Your messages are stored to maintain "
-            "conversation context.</div>",
+            "conversation context. If you submit a document (e.g. NBI Clearance, government ID) "
+            "for verification, it is processed and its extracted fields are validated.</div>",
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -496,15 +502,22 @@ def _status_badge_html(status: str) -> str:
     )
 
 
-def _render_checklist() -> None:
-    """Document checklist card (Component 14). Fetches GET /onboarding-status
-    on every render when an employee ID is set -- a cheap SQLite read, no
-    LLM/vision cost -- so it reflects the latest state on every rerun
-    (including the one that follows a successful upload) without needing a
-    manual page refresh."""
+def _fetch_checklist() -> dict | None:
+    """GET /onboarding-status (+ conditional GET /hr-notifications) -- called
+    once per script run from the top-level flow, after the sidebar's
+    Employee ID input has run, and shared by both the sidebar checklist and
+    the main-column document cards so neither fetches it twice. A cheap
+    SQLite read, no LLM/vision cost, so it reflects the latest state on
+    every rerun (including the one that follows a successful upload)
+    without needing a manual page refresh.
+
+    Returns None when there's no employee ID yet (nothing to show), or
+    {"error": True} on a request failure (still something to show: an error
+    line) -- kept distinct from None so callers don't conflate "not started"
+    with "failed"."""
     employee_id = st.session_state.employee_id.strip()
     if not employee_id:
-        return
+        return None
 
     try:
         response = requests.get(
@@ -513,6 +526,46 @@ def _render_checklist() -> None:
         response.raise_for_status()
         checklist = response.json()
     except requests.RequestException:
+        return {"error": True}
+
+    documents = checklist.get("documents", [])
+    validated_count = sum(1 for d in documents if d["status"] == "validated")
+    sent_to_hr = False
+    if documents and validated_count == len(documents):
+        # Only worth asking once the checklist is actually complete -- this
+        # is the same gate src/api.py uses to decide whether it ever queued
+        # a send (checklist.missing == []).
+        try:
+            hr_response = requests.get(
+                f"{st.session_state.api_url.rstrip('/')}/hr-notifications/{employee_id}", timeout=10
+            )
+            hr_response.raise_for_status()
+            sent_to_hr = hr_response.json().get("sent", False)
+        except requests.RequestException:
+            pass
+    checklist["sent_to_hr"] = sent_to_hr
+    return checklist
+
+
+def _doc_status(checklist: dict | None, doc_type: str) -> str:
+    """Status badge input for a single document card. Missing checklist
+    (no employee ID yet, or a failed fetch) and a doc_type with no matching
+    entry both read the same as "missing" -- there's nothing more specific
+    to say in either case."""
+    if not checklist or checklist.get("error"):
+        return "missing"
+    for doc in checklist.get("documents", []):
+        if doc["doc_type"] == doc_type:
+            return doc["status"]
+    return "missing"
+
+
+def _render_sidebar_checklist(checklist: dict | None) -> None:
+    """Renders the sidebar's compact checklist card from an already-fetched
+    checklist (see _fetch_checklist). No I/O here."""
+    if checklist is None:
+        return
+    if checklist.get("error"):
         st.markdown(
             '<div style="font-size:12px;color:oklch(55% 0.012 250);padding:4px 0;">'
             "Could not load document checklist.</div>",
@@ -520,17 +573,20 @@ def _render_checklist() -> None:
         )
         return
 
+    employee_id = checklist["employee_id"]
     documents = checklist.get("documents", [])
     validated_count = sum(1 for d in documents if d["status"] == "validated")
+    sent_to_hr = checklist.get("sent_to_hr", False)
+    status_line = "Sent to HR &#10003;" if sent_to_hr else f"{validated_count} of {len(documents)} documents validated"
     st.markdown(
         '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
         f'color:oklch(55% 0.012 250);padding:14px 0 0 0;">Checklist &mdash; {html.escape(employee_id)}</div>'
-        '<div style="font-size:12px;color:oklch(48% 0.012 250);padding:2px 0 6px 0;">'
-        f'{validated_count} of {len(documents)} documents validated</div>',
+        f'<div style="font-size:12px;color:{"oklch(45% 0.13 155)" if sent_to_hr else "oklch(48% 0.012 250)"};'
+        f'padding:2px 0 6px 0;{"font-weight:600;" if sent_to_hr else ""}">{status_line}</div>',
         unsafe_allow_html=True,
     )
     rows = []
-    for doc in checklist.get("documents", []):
+    for doc in documents:
         label = _DOC_TYPE_LABELS.get(doc["doc_type"], doc["doc_type"])
         rows.append(
             '<div style="display:flex;align-items:center;justify-content:space-between;'
@@ -549,39 +605,114 @@ def _render_checklist() -> None:
     )
 
 
-def _render_uploader() -> None:
-    """Document upload flow (Component 14) -- posts to POST /upload-doc.
-    Lives in the main chat column (not the sidebar, which is checklist-only)
-    so it sits alongside the conversation rather than off to the side.
+def _submit_document(doc_type: str, upload_file) -> None:
+    """Validates and posts a single document to POST /upload-doc, writing its
+    result into last_upload_result[doc_type] so it lands on that document's
+    own card, then reruns. Single code path for both cards' Submit buttons.
 
-    The request runs inside st.spinner(), which blocks and animates in place
-    during the call -- extraction genuinely takes a few seconds (a real
-    Gemini vision call), and without this the UI just looked frozen. This is
-    a different mechanism from the chat composer's typing-indicator pattern:
-    that one defers rendering to the NEXT script run because the reply needs
-    to appear as a new message row after a rerun; here nothing needs to
-    survive a rerun mid-request, so the simpler synchronous st.spinner is
-    the right tool, not a duplicate of that pattern.
+    Runs inside st.spinner(), which blocks and animates in place during the
+    call -- extraction genuinely takes a few seconds (a real Gemini vision
+    call), and without this the UI just looked frozen. This is a different
+    mechanism from the chat composer's typing-indicator pattern: that one
+    defers rendering to the NEXT script run because the reply needs to
+    appear as a new message row after a rerun; here nothing needs to survive
+    a rerun mid-request, so the simpler synchronous st.spinner is the right
+    tool, not a duplicate of that pattern.
 
     The result banner IS deferred to the next run (session_state +
     st.rerun() after a successful submit) -- that part still needs it, so
-    the banner survives the rerun a successful submission triggers, which
-    is also what makes the checklist above refresh without a manual reload."""
-    with st.container(key="uploader_section"):
-        # First reveal starts open (expanded=True is only the INITIAL value
-        # for this key -- Streamlit remembers the user's own toggle after
-        # that, so this doesn't fight a manual collapse on later reruns).
-        was_auto_expanded = st.session_state.uploader_auto_expanded
-        st.session_state.uploader_auto_expanded = True
-        with st.expander("Upload a document", expanded=not was_auto_expanded):
-            # Doc types come from config.REQUIRED_ONBOARDING_DOCS, not a
-            # hardcoded list here -- a future third required doc type shows
-            # up automatically. _DOC_TYPE_LABELS is decoration only (falls
-            # back to the raw value if a type isn't in it).
-            upload_doc_type = st.selectbox(
-                "Document type", config.REQUIRED_ONBOARDING_DOCS,
-                format_func=lambda v: _DOC_TYPE_LABELS.get(v, v), key="upload_doc_type",
+    the banner survives the rerun a successful submission triggers, which is
+    also what makes the checklist refresh without a manual reload."""
+    employee_id = st.session_state.employee_id.strip()
+    dob_text = st.session_state.upload_dob.strip()
+    dob_valid = _is_valid_iso_date(dob_text)
+    if not (employee_id and st.session_state.upload_full_name and dob_text and upload_file):
+        st.error("Employee ID, full name, date of birth, and a file are all required.")
+    elif not dob_valid:
+        st.error("Date of birth must be a real date in YYYY-MM-DD format (e.g. 1990-01-01).")
+    else:
+        with st.spinner("Verifying document — this can take a few seconds…"):
+            try:
+                response = requests.post(
+                    f"{st.session_state.api_url.rstrip('/')}/upload-doc",
+                    data={
+                        "employee_id": employee_id,
+                        "doc_type": doc_type,
+                        "full_name": st.session_state.upload_full_name,
+                        "date_of_birth": dob_text,
+                        "faculty_class": st.session_state.upload_faculty_class,
+                    },
+                    files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
+                    timeout=90,
+                )
+                response.raise_for_status()
+                st.session_state.last_upload_result[doc_type] = response.json()
+            except requests.RequestException as exc:
+                st.session_state.last_upload_result[doc_type] = {"error": str(exc)}
+        st.rerun()
+
+
+def _render_document_card(doc_type: str, status: str) -> None:
+    """One document's dropzone + Submit + own result banner. The dropzone
+    renders unconditionally, including for an already-validated document --
+    re-upload after a rejected/needs_review outcome is a real path."""
+    label = _DOC_TYPE_LABELS.get(doc_type, doc_type)
+    st.markdown(
+        '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0 2px 0;">'
+        f'<span style="font-size:13.5px;font-weight:600;color:oklch(24% 0.015 255);">{html.escape(label)}</span>'
+        f'{_status_badge_html(status)}'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    upload_file = st.file_uploader(
+        "File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key=f"upload_file_{doc_type}",
+        label_visibility="collapsed",
+    )
+    if upload_file is not None:
+        st.image(upload_file, width=180)
+
+    if st.button("Submit", key=f"upload_submit_{doc_type}", use_container_width=True):
+        _submit_document(doc_type, upload_file)
+
+    result = st.session_state.last_upload_result.get(doc_type)
+    if result:
+        if "error" in result:
+            st.markdown(
+                f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                f'background:oklch(96% 0.03 25);border:1px solid oklch(87% 0.06 25);'
+                f'color:oklch(45% 0.15 25);font-size:13px;">Upload failed: {html.escape(result["error"])}</div>',
+                unsafe_allow_html=True,
             )
+        else:
+            validation = result["validation"]
+            text_color, bg_color, border_color = _status_badge_style(validation["outcome"])
+            st.markdown(
+                f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
+                f'background:{bg_color};border:1px solid {border_color};color:{text_color};'
+                f'font-size:13px;">{html.escape(validation["message"])}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def _render_document_panel(checklist: dict | None) -> None:
+    """Document verification flow (Component 14) -- posts to POST
+    /upload-doc. Lives in the main chat column (not the sidebar, which
+    holds the Employee ID field and the compact checklist) so it sits
+    alongside the conversation rather than off to the side.
+
+    One card per config.REQUIRED_ONBOARDING_DOCS entry (not two hardcoded
+    blocks) -- a future third required doc type gets a card automatically.
+    Identity fields are entered once, above the cards, and shared by both
+    documents' submissions."""
+    with st.container(key="uploader_section"):
+        # Streamlit 1.45 has no key= param for st.expander (added later), so
+        # there's no widget state to fall back on across reruns -- expanded=
+        # is re-applied fresh on every rerun, full stop. Passing anything
+        # other than a constant True here would re-collapse the panel the
+        # moment an unrelated widget (e.g. the Employee ID input) triggers a
+        # rerun. Always-open is the tradeoff until this project's Streamlit
+        # pin moves past 1.47.
+        with st.expander("Document verification", expanded=True):
             st.session_state.upload_full_name = st.text_input(
                 "Full name (as printed on the document)",
                 value=st.session_state.upload_full_name, key="upload_full_name_input",
@@ -591,56 +722,20 @@ def _render_uploader() -> None:
                 "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
                 placeholder="e.g. 1990-01-01",
             )
-            upload_file = st.file_uploader("File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key="upload_file")
-            if upload_file is not None:
-                st.image(upload_file, width=180)
+            # Drives the HR handoff email's per-class "still outstanding"
+            # checklist (config.PREEMPLOYMENT_CHECKLIST) once both documents
+            # validate — the three faculty classes carry different
+            # requirement sets (CLAUDE.md's biggest corpus/process hazard).
+            st.session_state.upload_faculty_class = st.selectbox(
+                "Faculty class", config.AUDIENCE_ORDER,
+                index=config.AUDIENCE_ORDER.index(st.session_state.upload_faculty_class),
+                format_func=lambda slug: config.AUDIENCE_LABELS.get(slug, slug),
+                key="upload_faculty_class_input",
+            )
 
-            if st.button("Submit document", key="upload_submit_btn", use_container_width=True):
-                employee_id = st.session_state.employee_id.strip()
-                dob_text = st.session_state.upload_dob.strip()
-                dob_valid = _is_valid_iso_date(dob_text)
-                if not (employee_id and st.session_state.upload_full_name and dob_text and upload_file):
-                    st.error("Employee ID, full name, date of birth, and a file are all required.")
-                elif not dob_valid:
-                    st.error("Date of birth must be a real date in YYYY-MM-DD format (e.g. 1990-01-01).")
-                else:
-                    with st.spinner("Verifying document — this can take a few seconds…"):
-                        try:
-                            response = requests.post(
-                                f"{st.session_state.api_url.rstrip('/')}/upload-doc",
-                                data={
-                                    "employee_id": employee_id,
-                                    "doc_type": upload_doc_type,
-                                    "full_name": st.session_state.upload_full_name,
-                                    "date_of_birth": dob_text,
-                                },
-                                files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
-                                timeout=90,
-                            )
-                            response.raise_for_status()
-                            st.session_state.last_upload_result = response.json()
-                        except requests.RequestException as exc:
-                            st.session_state.last_upload_result = {"error": str(exc)}
-                    st.rerun()
-
-            result = st.session_state.last_upload_result
-            if result:
-                if "error" in result:
-                    st.markdown(
-                        f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
-                        f'background:oklch(96% 0.03 25);border:1px solid oklch(87% 0.06 25);'
-                        f'color:oklch(45% 0.15 25);font-size:13px;">Upload failed: {html.escape(result["error"])}</div>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    validation = result["validation"]
-                    text_color, bg_color, border_color = _status_badge_style(validation["outcome"])
-                    st.markdown(
-                        f'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;'
-                        f'background:{bg_color};border:1px solid {border_color};color:{text_color};'
-                        f'font-size:13px;">{html.escape(validation["message"])}</div>',
-                        unsafe_allow_html=True,
-                    )
+            for doc_type in config.REQUIRED_ONBOARDING_DOCS:
+                st.divider()
+                _render_document_card(doc_type, _doc_status(checklist, doc_type))
 
 
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
@@ -659,24 +754,29 @@ def _render_sidebar(accent: str, dev_mode: bool) -> None:
 </div>''',
             unsafe_allow_html=True,
         )
-        # Employee ID + checklist are hidden until the conversation actually
-        # calls for document verification (Intent.DOCUMENT_UPLOAD/
-        # DOCUMENT_STATUS flips show_upload_flow -- see _fetch_pending_
-        # response) rather than sitting there with no context, then persist
-        # for the rest of the session once revealed.
+        # DOCUMENTS is always visible so the CV/OCR track doesn't depend on
+        # the chat router correctly classifying a document-upload intent
+        # (Intent.DOCUMENT_UPLOAD/DOCUMENT_STATUS still opens it too, via
+        # show_upload_flow -- see _fetch_pending_response) -- but the
+        # Employee ID field only appears once the user actually asks for it,
+        # preserving the original "no HR form for Manual-only questions"
+        # intent. Persists for the rest of the session once opened.
+        st.markdown(
+            '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
+            'color:oklch(55% 0.012 250);padding:14px 0 6px 0;border-top:1px solid oklch(90% 0.006 250);'
+            'margin-top:10px;">Documents</div>',
+            unsafe_allow_html=True,
+        )
         if st.session_state.show_upload_flow:
-            st.markdown(
-                '<div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;'
-                'color:oklch(55% 0.012 250);padding:14px 0 6px 0;border-top:1px solid oklch(90% 0.006 250);'
-                'margin-top:10px;">Employee ID</div>',
-                unsafe_allow_html=True,
-            )
             st.session_state.employee_id = st.text_input(
                 "Employee ID", value=st.session_state.employee_id, key="employee_id_input",
-                label_visibility="collapsed", placeholder="e.g. EMP-04821",
+                placeholder="e.g. EMP-04821",
             )
-
-            _render_checklist()
+        else:
+            st.button(
+                "Verify a document", key="open_doc_flow_btn",
+                on_click=_open_document_flow, use_container_width=True,
+            )
 
         if dev_mode:
             with st.expander("Developer tools", expanded=False):
@@ -1005,6 +1105,13 @@ if _privacy_status != "agreed":
     st.stop()
 
 _render_sidebar(_accent, _dev_mode)
+# Fetched once here, after the sidebar's Employee ID input has run, and
+# shared by both the sidebar's compact checklist and the main-column
+# document cards below -- avoids fetching GET /onboarding-status twice per
+# script run.
+_checklist = _fetch_checklist()
+with st.sidebar:
+    _render_sidebar_checklist(_checklist)
 _render_header()
 _render_messages(_accent)
 
@@ -1019,7 +1126,7 @@ if st.session_state.awaiting_response:
 
 _render_quick_prompts()
 if st.session_state.show_upload_flow:
-    _render_uploader()
+    _render_document_panel(_checklist)
 
 _prompt = st.chat_input("Ask about faculty onboarding or the Faculty Manual…")
 if _prompt:

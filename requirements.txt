@@ -35,6 +35,13 @@ opencv-python-headless==4.11.0.86   # headless: slim Docker base lacks libGL —
 rapidfuzz==3.13.0                   # Rule 4 name matching — src/guardrails/doc_validation.py
 python-dateutil==2.9.0.post0        # relativedelta — Rule 5 validity window, src/guardrails/doc_validation.py (was only a transitive dep; pinned explicitly since Phase 5 imports it directly)
 python-multipart==0.0.20            # FastAPI UploadFile — POST /upload-doc
+# HR handoff email (Component 14 follow-on, src/notifications/) talks to
+# Mailtrap's Sandbox Sending API directly over httpx (already a transitive
+# dep via google-genai, and already imported directly in src/ocr/extractor.py)
+# rather than through a provider SDK — no new dependency needed, and it keeps
+# the same explicit httpx.TimeoutException handling this codebase already
+# standardized on for exactly this failure mode (config.py:401-409's comment
+# on the Gemini vision timeout bug).
 
 # Tests
 pytest==8.3.5

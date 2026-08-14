@@ -4,7 +4,9 @@
 
 Owner: **Del Rosario — Component 14, CV/DS Domain Integration, end to end** (PLAN.md §4 ownership table: "Del Rosario | CV Integration and its evaluation"). `TASKS.md` (which split the OCR modules across three people) has been removed from the repo — **PLAN.md is now the sole source of truth for ownership and build order**; this doc maps PLAN.md §4.1/§4.2 into concrete files and sequencing, nothing more.
 
-**Status: all 9 phases done (0–7 plus optional 4a) and live-verified end to end**, including in a real user test session against the running Docker stack with genuine real NBI clearances (not just mock fixtures). `POST /upload-doc` → quality → extraction → six-rule validation → cross-document check → checklist state, `GET /onboarding-status/{employee_id}`, `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` chat routing, and the styled UI (checklist card in the sidebar, upload flow in the main chat column with a spinner during the vision call) are all built, tested (354 passed, 1 skipped), and confirmed working live — not just against mocks. Three real specimens now collected; testing against them surfaced and fixed two genuine calibration bugs after the mock-only Phase 2 pass couldn't have caught either (see Phase 2's `quad_found` recalibration below) and confirmed Rule 5's validity-window math behaves correctly on a real document. UI structure changed once more after live feedback: the uploader moved from the sidebar into the main chat column (sidebar is checklist-only now), positioned above the composer (a stable spot regardless of conversation length — earlier positions looked unchanged on a short conversation, which is what "why didn't anything change?" turned out to mean). The whole document flow (Employee ID field, checklist, uploader) is now hidden until the conversation actually asks for document verification — `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` now populate `AgentResponse.actions` with an `unlock_document_flow` signal that `src/ui.py` watches for, persisting for the rest of the session once triggered. This closes a dead pipe that existed since Phase 6 (`handle_message()`'s `actions` field was hardcoded to `[]`). Full-scale evals (Phase 7, all 16 mock identities + 26 negatives, paid API key) confirm 100% OCR exact-match and 0% false-auto-pass on both document types — see Phase 7 below, including a real indefinite-hang bug found and fixed (no request timeout was configured on the Gemini client anywhere in the codebase).
+**Status: all 10 phases done (0–7 plus optional 4a, plus 8 and 9) and live-verified end to end**, including in a real user test session against the running Docker stack with genuine real NBI clearances (not just mock fixtures). `POST /upload-doc` → quality → extraction → six-rule validation → cross-document check → checklist state, `GET /onboarding-status/{employee_id}`, `Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` chat routing, and the styled UI are all built, tested (381 passed, 1 skipped), and confirmed working live — not just against mocks. Three real specimens now collected; testing against them surfaced and fixed two genuine calibration bugs after the mock-only Phase 2 pass couldn't have caught either (see Phase 2's `quad_found` recalibration below) and confirmed Rule 5's validity-window math behaves correctly on a real document. Full-scale evals (Phase 7, all 16 mock identities + 26 negatives, paid API key) confirm 100% OCR exact-match and 0% false-auto-pass on both document types — see Phase 7 below, including a real indefinite-hang bug found and fixed (no request timeout was configured on the Gemini client anywhere in the codebase).
+
+**UI structure, current (Phase 9 — see below for the full account):** the sidebar carries an always-visible `DOCUMENTS` section (a "Verify a document" button before engagement, then the Employee ID field + checklist once opened) so the mandatory CV/OCR track no longer depends on the chat router correctly classifying a document-upload intent to become reachable at all. The document panel lives in the main chat column, above the composer, and no longer uses a doc-type dropdown — one card per `config.REQUIRED_ONBOARDING_DOCS` entry, each with its own dropzone/status badge/result banner, with shared identity fields entered once above the cards. The chat path (`Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` → `AgentResponse.actions` → `unlock_document_flow` → `src/ui.py`) still works, now opening the always-visible panel rather than revealing it for the first time.
 
 The instructor's live objection to this track is *"is this easy enough?"* — a clean mockup fed to a multimodal model returning JSON is decorative. Everything below is organized around making that objection answerable.
 
@@ -1133,7 +1135,95 @@ Fixed: `config.GEMINI_REQUEST_TIMEOUT_MS = 120_000`, passed via `http_options=ge
 python evals/run_ocr_eval.py --subset mock --limit 1     # quota-cheap smoke run
 python evals/run_ocr_eval.py --subset mock --limit 1 --no-preprocess
 python evals/run_validation_eval.py                        # zero API cost, safe to run in full anytime
-# python evals/run_ocr_eval.py --subset mock                # full 16-identity run -- spends real quota, ask first
+```
+
+---
+
+### Phase 8 — HR handoff email ✅ DONE (branch `feat/final-capstone-cv-email`)
+
+**Goal:** close the loop the pipeline previously dead-ended at — a status pill in the Streamlit sidebar that only HR staff who happen to be watching the UI would ever see. Once an employee's NBI Clearance **and** Government ID both reach `validated`, HRMO gets a handoff email with what they need to act: verified/outstanding checklist, faculty class, and the re-submit-by date — without a human re-keying the outcome anywhere.
+**Files:** `src/notifications/` (new: `email_client.py`, `hr_packet.py`, `templates.py`), `src/memory/hr_notifications.py` (new), `src/api.py`, `src/config.py`, `src/schemas.py`, `src/monitoring.py`, `src/ui.py`.
+**Depends on:** Phase 6 (the checklist gate and OCR cache this reuses).
+
+**Judged by what an HRMO officer needs in their inbox, not by what's technically neat** — the email answers "is this hire's folder complete, and what do I chase next," not "is this NBI valid." The "still outstanding" block is sourced from `config.PREEMPLOYMENT_CHECKLIST` (per faculty class, cited to `data/raw/dlsu-faculty-preemployment-requirements.pdf`) rather than generated at send time — an official HR artifact doesn't get a hallucinated requirement, and the upload path acquires no LLM-call latency or new failure mode from composing it. `tests/test_hr_email.py`'s `test_preemployment_checklist_sections_resolve_to_the_ingested_source` keeps every declared citation honest against the actual source PDF via `pdfplumber`.
+
+**Gate and idempotency:** fires exactly once per (employee, document-pair) — `src/memory/hr_notifications.py`'s `packet_hash` is the sha256 of the two documents' sorted `source_hash`es, so re-uploading the identical pair never resends, but replacing one document with a genuinely different file (new `source_hash` → new `packet_hash`) is treated as a legitimate resend. The send runs as a FastAPI `BackgroundTasks` job so a slow or down email provider can never add latency to `/upload-doc`'s response, and `email_client.send_packet()` never raises — same never-fail contract as `/upload-doc` itself.
+
+**Data the system otherwise deliberately throws away, worked around without new persistence:** `onboarding_documents` stores no field value and `config.PERSIST_UPLOADS = False` means raw image bytes don't survive past their own request. The email body is composed from the triggering request's in-memory `ExtractedResult` plus a cache-hit `load_cached_result()` lookup for the sibling — the same mechanism `/upload-doc`'s existing cross-document check already uses, zero new API calls. Unlike that check, which silently skips on a cache miss, `hr_packet.compose_packet()` never skips the send on a miss — it sets `reduced_detail=True` and the template renders a banner saying so. A validated hire reaching HR with less detail beats not reaching HR at all.
+
+**Attachments — a deliberate, stated deployment-level limitation.** To attach the original images at all, they have to be persisted somewhere (`config.PERSIST_UPLOADS` stays `False` by design), so `config.EMAIL_ATTACH_ORIGINALS` (default `False`, gitignored `data/uploads/{source_hash}.{jpg|png}`) is a second, independent opt-in. **There is no per-submission real-vs-mock field anywhere in this codebase**, so the mock-attaches / real-metadata-only PII rule can only be enforced at the **deployment** level, not per upload: an instance is either a demo instance (`EMAIL_ATTACH_ORIGINALS=true`, mock docs, attachments on) or a real-data instance (`false`, metadata-only). Never defaults to `true`. If this component is ever extended with a genuine per-submission real/mock flag, `EMAIL_ATTACH_ORIGINALS` should be revisited to key off it instead of a blanket deployment switch.
+
+**Transport:** dry-run (default, `EMAIL_DRY_RUN=true`) writes the fully composed message to gitignored `data/outbox/*.eml` and sends nothing — a fresh checkout, CI, and the test suite never send real mail without an explicit opt-in. The real path talks to **Mailtrap's Sandbox Sending API** directly over `httpx` (already a transitive dependency, already imported directly in `src/ocr/extractor.py`) rather than a provider SDK or `smtplib` — no new dependency, and it reuses this codebase's existing explicit `httpx.TimeoutException` handling convention (`config.py`'s Gemini-timeout comment) for the same failure mode instead of introducing a second one. Mailtrap Sandbox was picked over a production provider (Resend, SES, ...) deliberately: this is a proof-of-concept project with no production mailbox, and Sandbox catches every send in a private test inbox rather than actually delivering — safe to point at even with real (non-mock) NBI/ID data, no domain verification needed, and neither `HR_EMAIL_TO` nor `HR_EMAIL_FROM` has to be a real address.
+
+**PII discipline:** `hr_notifications` carries only `employee_id`/`packet_hash`/`status`/`provider_id`/`attempts`/`last_error`/`sent_at` — no field value, same discipline as `onboarding_documents`. `last_error` is contractually PII-free (never echoes an extracted value), asserted directly in `test_provider_failure_error_is_pii_free`. The email body itself is the one place a name-discrepancy value would legitimately appear (`HrPacket.discrepancy`, unused by the current gate since a cross-document mismatch already escalates to `needs_review` before this module is ever reached) — same "one authorized PII-egress point, logs/traces stay redacted" precedent the deleted Midterm emailer set for `ComplaintTicket` (`git show 23417c9~1:src/agent/tools.py`).
+
+**Acceptance criteria:**
+- [x] Fires only when `ChecklistStatus.missing == []` — never on `needs_review`, `rejected`, or a cross-document mismatch — verified (`test_gate_never_fires_on_needs_review`/`_on_cross_document_mismatch`/`_on_rejected`).
+- [x] Idempotent: the identical document pair uploaded twice sends exactly once; replacing one document sends again — verified (`test_reuploading_identical_pair_sends_exactly_once`, `test_replacing_a_document_after_sent_triggers_a_new_send`).
+- [x] A provider failure never breaks `/upload-doc`'s 200 response, and lands a PII-free `failed` row — verified (`test_provider_failure_never_breaks_the_upload_response`, `test_provider_failure_error_is_pii_free`).
+- [x] `EMAIL_ATTACH_ORIGINALS=False` (the default) attaches nothing, body still complete — verified (`test_gate_sends_only_once_both_documents_validated` asserts `attachments is None`).
+- [x] Every citation in `config.PREEMPLOYMENT_CHECKLIST` resolves to real text in `dlsu-faculty-preemployment-requirements.pdf` — verified (`test_preemployment_checklist_sections_resolve_to_the_ingested_source`).
+- [x] No extracted field value (name, ID number) reaches `hr_notifications`, an MLflow tag/metric, or `RuleResult.detail` — verified (`test_hr_notifications_row_never_carries_a_field_value`, `email_trace()`'s allowlist).
+- [ ] Live send against a real Mailtrap Sandbox inbox, with mock documents only. **Not yet run** — dry-run path is fully verified (26 tests, `tests/test_hr_email.py` + `tests/test_hr_notifications.py`); a real send needs a Mailtrap account the author hasn't set up yet.
+- [ ] UI "Sent to HR ✓" indicator manually confirmed in a running Streamlit session. **Not yet run** — `GET /hr-notifications/{employee_id}` and the sidebar's conditional render are wired and unit-covered at the API layer, not yet clicked through in a live UI session.
+
+**Verify:**
+```bash
+pytest tests/test_hr_notifications.py tests/test_hr_email.py -v
+pytest tests/ -q   # full suite, not just the new files
+
+# Dry-run end to end, zero secrets:
+EMAIL_DRY_RUN=true uvicorn src.api:app --reload
+curl -F "file=@data/references/mock/nbi_id01_clean.png" -F "employee_id=EMP-00123" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" \
+     -F "doc_type=nbi_clearance" -F "faculty_class=full_time_academic" \
+     http://localhost:8000/upload-doc          # first upload: no .eml written yet
+curl -F "file=@data/references/mock/id_id01_clean.png" -F "employee_id=EMP-00123" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" \
+     -F "doc_type=government_id" -F "faculty_class=full_time_academic" \
+     http://localhost:8000/upload-doc          # second upload: check data/outbox/ for one new .eml
+curl http://localhost:8000/hr-notifications/EMP-00123   # {"sent": true, "sent_at": "..."}
+
+# Live send (Mailtrap Sandbox, never a real recipient):
+#   MAILTRAP_API_TOKEN=... MAILTRAP_INBOX_ID=... EMAIL_DRY_RUN=false uvicorn src.api:app --reload
+#   ...repeat the two curl uploads above, then check the Mailtrap Sandbox inbox in the browser.
+```
+
+---
+
+### Phase 9 — Document verification UI restructure ✅ DONE (branch `feat/final-capstone-ui-upload`)
+
+**Goal:** fix two usability problems reported against the Phase 6/8 UI. First, the entire document flow was reachable only through a chat-classified intent (`Intent.DOCUMENT_UPLOAD`/`DOCUMENT_STATUS` → `unlock_document_flow`) — a classification below `ROUTER_CONFIDENCE_FLOOR` degrades to `AMBIGUOUS` with no action emitted at all, and `ROUTER_PROMPT` deliberately routes "what documents do I need to submit?" to `faq`, not `document_upload`. A **mandatory** graded component (CLAUDE.md) hidden behind a probabilistic router is a demo risk, not just a UX rough edge. Second, one `st.selectbox` + one `st.file_uploader` meant the same widget meant two different things depending on unseen state, and nothing on screen said which document a result banner belonged to — this had already leaked as a real bug: `last_upload_result` was written but never cleared, so an NBI result banner stayed visible while the user uploaded their government ID.
+**Files:** `src/ui.py` (the only substantial file), `src/agent/orchestrator.py` (one string).
+**Depends on:** Phase 6 (checklist state), Phase 8 (faculty-class selector, HR-email trigger — untouched by this phase).
+
+**Sidebar becomes the entry point, always visible.** A `DOCUMENTS` section renders unconditionally now: a single "Verify a document" button before engagement (`_open_document_flow` callback), then the Employee ID field once clicked. The original "don't show an HR form to someone asking Manual questions" intent is preserved — the *button* is always there, the *form* still opens on demand — while removing the dependency on chat classification ever succeeding. The existing chat-triggered `unlock_document_flow` action still works, now opening the already-visible panel rather than revealing it from nothing; its label was reworded (`src/agent/orchestrator.py`) since it referred to the sidebar for something that had already moved to the main column back in Phase 6/8.
+
+**Doc-type dropdown replaced by one card per document.** `_render_document_panel` loops `config.REQUIRED_ONBOARDING_DOCS` (not two hardcoded blocks — a future third required doc type gets a card automatically, same generalizability property the dropdown had) and renders a `_render_document_card` per entry: its own status badge (sourced from the same checklist fetch, `_doc_status()`), its own dropzone, its own Submit button, its own result banner. Identity fields (full name, DOB, faculty class) are entered once, above the cards, and shared by both submissions — unchanged from before. `last_upload_result` changed from a single dict to `dict[doc_type, dict]`, which is what makes each card's banner belong to that card and retires the bleed-through bug.
+
+**One checklist fetch, shared.** `_render_checklist` (one function doing one `GET /onboarding-status` + a conditional `GET /hr-notifications`, then rendering) was split into `_fetch_checklist()` (I/O, called once per script run from the top-level flow after the sidebar's Employee ID input has run) and `_render_sidebar_checklist()` (pure rendering) — both the sidebar's compact checklist and the main-column cards' status badges now read from the same fetch instead of each doing their own `GET`.
+
+**A real Streamlit-version bug found via live use, not caught by tests.** The panel is meant to stay open once opened; the first fix attempt gave `st.expander(..., key="uploader_expander")` on the theory that a stable key lets Streamlit preserve widget state (including a user's manual collapse) across reruns — this is correct behavior in later Streamlit, but this project's pin (`streamlit==1.45.1`) doesn't have a `key=` parameter on `st.expander` at all (`TypeError: LayoutsMixin.expander() got an unexpected keyword argument 'key'`), confirmed via `inspect.signature`. Without `key`, there is no widget state to fall back on: `expanded=` is re-applied fresh on every rerun, so the original auto-expand-once logic (`expanded=not was_auto_expanded`, flipping a session_state flag after first render) collapsed the panel the moment *any* unrelated widget triggered a rerun — concretely, typing into the Employee ID field. Fixed by dropping the one-shot dance entirely and hardcoding `expanded=True`: always-open is the honest tradeoff available in this Streamlit version, not a papered-over workaround. Revisit if the Streamlit pin ever moves to 1.47+.
+
+**Privacy gate copy updated** (`src/ui.py`) — the notice now states that a submitted document is processed and its extracted fields validated, since uploading is reachable without ever sending a chat message.
+
+**Acceptance criteria:**
+- [x] `DOCUMENTS` section and "Verify a document" button visible in the sidebar with zero chat messages sent — verified live.
+- [x] Clicking it opens the Employee ID field in the sidebar and the document panel in the main column, expanded.
+- [x] Uploading one document's result banner appears only on that document's card, not the other's — verified live (the concrete regression the old shared `last_upload_result` produced).
+- [x] Typing the Employee ID (or any other rerun-triggering interaction) does not collapse the panel — verified live, was the Phase 9 follow-up fix.
+- [x] Chat path (`unlock_document_flow`) still opens the panel; `tests/test_orchestrator.py`, `tests/test_api.py` assert on the action's `type` only, so the label reword required no test changes.
+- [x] Full suite green after the change — 381 passed, 1 skipped (unchanged count; this phase added no new tests, it restructured `src/ui.py` and one string in `src/agent/orchestrator.py`, neither under direct test).
+- [ ] Docker rebuild + container smoke test. **Run outside this session** — `docker compose up --build` confirmed all four services start clean; browser click-through was done by the branch owner, not by an automated check (no browser-automation tool was available in the assistant's environment).
+
+**Verify:**
+```bash
+pytest tests/ -q                      # 381 passed, 1 skipped
+docker compose up --build -d          # rebuild required: src/ isn't volume-mounted, only ./data is
+# then in a browser: http://localhost:7860
+#   1. accept the privacy gate, confirm DOCUMENTS + "Verify a document" show with no chat sent
+#   2. click it, enter an Employee ID, confirm the panel stays expanded
+#   3. upload one mock document (data/references/mock/), confirm only its card gets a banner
 ```
 
 ---
