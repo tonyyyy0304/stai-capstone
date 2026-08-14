@@ -94,14 +94,16 @@ Closes the loop Component 14 previously dead-ended at: a status pill in the Stre
 - **Golden set** (`evals/golden_set.jsonl`, 32 rows) — per-topic + per-tier.
 - **Retrieval eval** (`evals/run_retrieval_eval.py`) — per-topic/per-tier hit-rate.
 - **Guardrail eval** (`evals/run_guardrail_eval.py`) + red-team set (`evals/guardrail_redteam.jsonl`).
+- **Answer eval** (`evals/run_answer_eval.py`) — end-to-end task success via `run_turn()` (full agent path, not RAG alone). Tier-scored: negatives pass by abstaining, disambiguation by clarifying, answerable by answering + citing the expected source + LLM-judge faithfulness (≥4/5) + key-fact coverage (≥0.67). Judge verdicts SHA-256 disk-cached (`evals/results/judge_cache/`; bump `RUBRIC_VERSION` to invalidate). Flags: `--limit`, `--tier`, `--topic`, `--no-judge`, `--judge-model`, `--trace ROW_ID`, `--sleep`, `--retry`, `--resume`, `--mlflow`.
+  - Run 2026-08-14 (dense, top_k=8, gemini-3.1-flash-lite), 29/32 scored: lookup **0.91** (n=11), multihop **1.00** (n=3), near_miss 0.67 (n=3), citation validity **0.938** (1.000 on lookup).
+  - Judged lookup subset (n=11): faithfulness **4.50/5**, key-fact coverage **0.850**, partial credit 0.818.
+  - Abstention ablation: 0.143 with web fallback on (n=7) → **0.625** with `ENABLE_WEB_FALLBACK=false` (n=8).
+  - Latency p50 ~32s, ~8.2k tokens/turn. Logged to MLflow experiment `answer-eval`.
 - **Unit tests** (`tests/`, 22 files, 381 passed / 1 skipped) — api, chunking, doc_validation, doctypes, embeddings, extractor, guardrails, hr_email, hr_notifications, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
 
 ---
 
 ## Planned / not yet implemented
-
-### End-to-end / answer evals
-- `evals/run_answer_eval.py` — end-to-end answer accuracy harness.
 
 ### Removed from prior scope (do not reintroduce)
 Complaint intake and escalation (`danger_scan`, `escalation`, `escalation_state`, `form_pii`) were **deleted** in the pivot from the Midterm chatbot — see PLAN.md §1.5.
