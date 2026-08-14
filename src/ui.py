@@ -334,12 +334,6 @@ def _init_state() -> None:
     # doc_type so each document's card owns its own banner instead of one
     # upload's result bleeding onto the other document's card.
     st.session_state.setdefault("last_upload_result", {})
-    # Auto-expand the uploader the first time it's revealed, so the user
-    # doesn't have to notice and click open a collapsed expander right after
-    # being told to use it. Flips True on first render and stays there --
-    # the expander's own `key` lets Streamlit remember subsequent manual
-    # toggles instead of forcing it back open every rerun.
-    st.session_state.setdefault("uploader_auto_expanded", False)
 
 
 def _toggle_sidebar() -> None:
@@ -711,12 +705,14 @@ def _render_document_panel(checklist: dict | None) -> None:
     Identity fields are entered once, above the cards, and shared by both
     documents' submissions."""
     with st.container(key="uploader_section"):
-        # First reveal starts open (expanded=True is only the INITIAL value
-        # for this key -- Streamlit remembers the user's own toggle after
-        # that, so this doesn't fight a manual collapse on later reruns).
-        was_auto_expanded = st.session_state.uploader_auto_expanded
-        st.session_state.uploader_auto_expanded = True
-        with st.expander("Document verification", expanded=not was_auto_expanded):
+        # Streamlit 1.45 has no key= param for st.expander (added later), so
+        # there's no widget state to fall back on across reruns -- expanded=
+        # is re-applied fresh on every rerun, full stop. Passing anything
+        # other than a constant True here would re-collapse the panel the
+        # moment an unrelated widget (e.g. the Employee ID input) triggers a
+        # rerun. Always-open is the tradeoff until this project's Streamlit
+        # pin moves past 1.47.
+        with st.expander("Document verification", expanded=True):
             st.session_state.upload_full_name = st.text_input(
                 "Full name (as printed on the document)",
                 value=st.session_state.upload_full_name, key="upload_full_name_input",
