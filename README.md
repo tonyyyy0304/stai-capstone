@@ -56,8 +56,6 @@ flowchart TD
     Memory --> SQLite["data/hr_agent.db"]
 ```
 
-*Planned, not yet implemented — see [PLAN.md](PLAN.md) §2, §4.2–§4.4: `src/ocr/`, `src/guardrails/doc_validation.py`, `src/rag/hybrid.py`, `POST /upload-doc`, `GET /onboarding-status/{id}`.*
-
 ## Handling Real Documents
 
 The OCR eval uses two separate subsets, **real** and **mock**, reported as separate numbers and never pooled. Real NBI Clearances are collected only with recorded consent; `data/references/real/` is **gitignored and never committed**; names and reference numbers are hashed anywhere they leave the machine; EXIF is stripped on upload; and **no real document appears in a slide, screenshot, or recorded demo** — demos use mock documents only. Full rules: [SCOPE.md](SCOPE.md) §8, [PLAN.md](PLAN.md) §3.5.
@@ -125,11 +123,15 @@ Note: don't mix host and Docker ingestion against the same `data/chroma/` — ch
 
 ```bash
 pytest tests/
-python evals/run_retrieval_eval.py   # per-topic + per-tier hit-rate on the golden set
+python evals/run_retrieval_eval.py    # per-topic + per-tier hit-rate on the golden set
 python evals/run_guardrail_eval.py
+python evals/run_ocr_eval.py
+python evals/run_validation_eval.py
+python evals/run_answer_eval.py       # end-to-end answer accuracy (add --no-judge to skip judge calls)
+python evals/run_answer_eval.py --trace L14   # print one full agent reasoning trace
 ```
 
-*(OCR/document-validation evals are planned — `run_ocr_eval.py` / `run_validation_eval.py` / `run_answer_eval.py` don't exist yet; see PLAN.md §7, §9.)*
+The answer eval runs the full agent per row and is rate-limit sensitive on the free Gemini tier — use `--sleep 6 --retry 3`, and `--resume <prior results json>` to continue a partial run without re-spending on rows that already scored.
 
 ## Component Ownership
 
@@ -138,10 +140,10 @@ Maps to the Final spec's 14-component checklist (see [PLAN.md](PLAN.md) §4 for 
 | Member | Components | Code |
 | --- | --- | --- |
 | Baybayon | RAG, Guardrails, ReAct tools (web search, calling the CV integration) | `scripts/ingest.py`, `src/rag/` (incl. planned `hybrid.py`), `src/guardrails/`, `src/agent/tools.py` |
-| Del Rosario | CV integration and its evaluation | `src/ocr/` (planned), `evals/run_ocr_eval.py` (planned) |
-| Burayag | RRL, end-to-end evals | [PLAN.md](PLAN.md) §5, `evals/run_answer_eval.py` / `run_validation_eval.py` (planned) |
+| Del Rosario | CV integration and its evaluation | `src/ocr/` , `evals/run_ocr_eval.py` |
+| Burayag | RRL, end-to-end evals | [PLAN.md](PLAN.md) §5, `evals/run_answer_eval.py` |
 | Tamondong | Evals dataset, Chat UI, API endpoint, LLMOps | `evals/golden_set.jsonl`, `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
-| **Team (shared)** | **CV/DS Domain Integration (mandatory, Component 14)** | `src/ocr/` (planned) |
+| **Team (shared)** | **CV/DS Domain Integration (mandatory, Component 14)** | `src/ocr/` |
 
 Pipeline, chunking, retrieval, and eval-set detail is documented in [PLAN.md](PLAN.md) §3 rather than duplicated here.
 
