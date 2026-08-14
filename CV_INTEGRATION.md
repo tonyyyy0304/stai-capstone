@@ -1133,7 +1133,58 @@ Fixed: `config.GEMINI_REQUEST_TIMEOUT_MS = 120_000`, passed via `http_options=ge
 python evals/run_ocr_eval.py --subset mock --limit 1     # quota-cheap smoke run
 python evals/run_ocr_eval.py --subset mock --limit 1 --no-preprocess
 python evals/run_validation_eval.py                        # zero API cost, safe to run in full anytime
-# python evals/run_ocr_eval.py --subset mock                # full 16-identity run -- spends real quota, ask first
+```
+
+---
+
+### Phase 8 — HR handoff email ✅ DONE (branch `feat/final-capstone-cv-email`)
+
+**Goal:** close the loop the pipeline previously dead-ended at — a status pill in the Streamlit sidebar that only HR staff who happen to be watching the UI would ever see. Once an employee's NBI Clearance **and** Government ID both reach `validated`, HRMO gets a handoff email with what they need to act: verified/outstanding checklist, faculty class, and the re-submit-by date — without a human re-keying the outcome anywhere.
+**Files:** `src/notifications/` (new: `email_client.py`, `hr_packet.py`, `templates.py`), `src/memory/hr_notifications.py` (new), `src/api.py`, `src/config.py`, `src/schemas.py`, `src/monitoring.py`, `src/ui.py`.
+**Depends on:** Phase 6 (the checklist gate and OCR cache this reuses).
+
+**Judged by what an HRMO officer needs in their inbox, not by what's technically neat** — the email answers "is this hire's folder complete, and what do I chase next," not "is this NBI valid." The "still outstanding" block is sourced from `config.PREEMPLOYMENT_CHECKLIST` (per faculty class, cited to `data/raw/dlsu-faculty-preemployment-requirements.pdf`) rather than generated at send time — an official HR artifact doesn't get a hallucinated requirement, and the upload path acquires no LLM-call latency or new failure mode from composing it. `tests/test_hr_email.py`'s `test_preemployment_checklist_sections_resolve_to_the_ingested_source` keeps every declared citation honest against the actual source PDF via `pdfplumber`.
+
+**Gate and idempotency:** fires exactly once per (employee, document-pair) — `src/memory/hr_notifications.py`'s `packet_hash` is the sha256 of the two documents' sorted `source_hash`es, so re-uploading the identical pair never resends, but replacing one document with a genuinely different file (new `source_hash` → new `packet_hash`) is treated as a legitimate resend. The send runs as a FastAPI `BackgroundTasks` job so a slow or down email provider can never add latency to `/upload-doc`'s response, and `email_client.send_packet()` never raises — same never-fail contract as `/upload-doc` itself.
+
+**Data the system otherwise deliberately throws away, worked around without new persistence:** `onboarding_documents` stores no field value and `config.PERSIST_UPLOADS = False` means raw image bytes don't survive past their own request. The email body is composed from the triggering request's in-memory `ExtractedResult` plus a cache-hit `load_cached_result()` lookup for the sibling — the same mechanism `/upload-doc`'s existing cross-document check already uses, zero new API calls. Unlike that check, which silently skips on a cache miss, `hr_packet.compose_packet()` never skips the send on a miss — it sets `reduced_detail=True` and the template renders a banner saying so. A validated hire reaching HR with less detail beats not reaching HR at all.
+
+**Attachments — a deliberate, stated deployment-level limitation.** To attach the original images at all, they have to be persisted somewhere (`config.PERSIST_UPLOADS` stays `False` by design), so `config.EMAIL_ATTACH_ORIGINALS` (default `False`, gitignored `data/uploads/{source_hash}.{jpg|png}`) is a second, independent opt-in. **There is no per-submission real-vs-mock field anywhere in this codebase**, so the mock-attaches / real-metadata-only PII rule can only be enforced at the **deployment** level, not per upload: an instance is either a demo instance (`EMAIL_ATTACH_ORIGINALS=true`, mock docs, attachments on) or a real-data instance (`false`, metadata-only). Never defaults to `true`. If this component is ever extended with a genuine per-submission real/mock flag, `EMAIL_ATTACH_ORIGINALS` should be revisited to key off it instead of a blanket deployment switch.
+
+**Transport:** dry-run (default, `EMAIL_DRY_RUN=true`) writes the fully composed message to gitignored `data/outbox/*.eml` and sends nothing — a fresh checkout, CI, and the test suite never send real mail without an explicit opt-in. The real path talks to **Mailtrap's Sandbox Sending API** directly over `httpx` (already a transitive dependency, already imported directly in `src/ocr/extractor.py`) rather than a provider SDK or `smtplib` — no new dependency, and it reuses this codebase's existing explicit `httpx.TimeoutException` handling convention (`config.py`'s Gemini-timeout comment) for the same failure mode instead of introducing a second one. Mailtrap Sandbox was picked over a production provider (Resend, SES, ...) deliberately: this is a proof-of-concept project with no production mailbox, and Sandbox catches every send in a private test inbox rather than actually delivering — safe to point at even with real (non-mock) NBI/ID data, no domain verification needed, and neither `HR_EMAIL_TO` nor `HR_EMAIL_FROM` has to be a real address.
+
+**PII discipline:** `hr_notifications` carries only `employee_id`/`packet_hash`/`status`/`provider_id`/`attempts`/`last_error`/`sent_at` — no field value, same discipline as `onboarding_documents`. `last_error` is contractually PII-free (never echoes an extracted value), asserted directly in `test_provider_failure_error_is_pii_free`. The email body itself is the one place a name-discrepancy value would legitimately appear (`HrPacket.discrepancy`, unused by the current gate since a cross-document mismatch already escalates to `needs_review` before this module is ever reached) — same "one authorized PII-egress point, logs/traces stay redacted" precedent the deleted Midterm emailer set for `ComplaintTicket` (`git show 23417c9~1:src/agent/tools.py`).
+
+**Acceptance criteria:**
+- [x] Fires only when `ChecklistStatus.missing == []` — never on `needs_review`, `rejected`, or a cross-document mismatch — verified (`test_gate_never_fires_on_needs_review`/`_on_cross_document_mismatch`/`_on_rejected`).
+- [x] Idempotent: the identical document pair uploaded twice sends exactly once; replacing one document sends again — verified (`test_reuploading_identical_pair_sends_exactly_once`, `test_replacing_a_document_after_sent_triggers_a_new_send`).
+- [x] A provider failure never breaks `/upload-doc`'s 200 response, and lands a PII-free `failed` row — verified (`test_provider_failure_never_breaks_the_upload_response`, `test_provider_failure_error_is_pii_free`).
+- [x] `EMAIL_ATTACH_ORIGINALS=False` (the default) attaches nothing, body still complete — verified (`test_gate_sends_only_once_both_documents_validated` asserts `attachments is None`).
+- [x] Every citation in `config.PREEMPLOYMENT_CHECKLIST` resolves to real text in `dlsu-faculty-preemployment-requirements.pdf` — verified (`test_preemployment_checklist_sections_resolve_to_the_ingested_source`).
+- [x] No extracted field value (name, ID number) reaches `hr_notifications`, an MLflow tag/metric, or `RuleResult.detail` — verified (`test_hr_notifications_row_never_carries_a_field_value`, `email_trace()`'s allowlist).
+- [ ] Live send against a real Mailtrap Sandbox inbox, with mock documents only. **Not yet run** — dry-run path is fully verified (26 tests, `tests/test_hr_email.py` + `tests/test_hr_notifications.py`); a real send needs a Mailtrap account the author hasn't set up yet.
+- [ ] UI "Sent to HR ✓" indicator manually confirmed in a running Streamlit session. **Not yet run** — `GET /hr-notifications/{employee_id}` and the sidebar's conditional render are wired and unit-covered at the API layer, not yet clicked through in a live UI session.
+
+**Verify:**
+```bash
+pytest tests/test_hr_notifications.py tests/test_hr_email.py -v
+pytest tests/ -q   # full suite, not just the new files
+
+# Dry-run end to end, zero secrets:
+EMAIL_DRY_RUN=true uvicorn src.api:app --reload
+curl -F "file=@data/references/mock/nbi_id01_clean.png" -F "employee_id=EMP-00123" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" \
+     -F "doc_type=nbi_clearance" -F "faculty_class=full_time_academic" \
+     http://localhost:8000/upload-doc          # first upload: no .eml written yet
+curl -F "file=@data/references/mock/id_id01_clean.png" -F "employee_id=EMP-00123" \
+     -F "full_name=REYES, MARIA SANTOS" -F "date_of_birth=1990-01-01" \
+     -F "doc_type=government_id" -F "faculty_class=full_time_academic" \
+     http://localhost:8000/upload-doc          # second upload: check data/outbox/ for one new .eml
+curl http://localhost:8000/hr-notifications/EMP-00123   # {"sent": true, "sent_at": "..."}
+
+# Live send (Mailtrap Sandbox, never a real recipient):
+#   MAILTRAP_API_TOKEN=... MAILTRAP_INBOX_ID=... EMAIL_DRY_RUN=false uvicorn src.api:app --reload
+#   ...repeat the two curl uploads above, then check the Mailtrap Sandbox inbox in the browser.
 ```
 
 ---

@@ -37,6 +37,11 @@ mlruns/
 data/mlruns/
 data/*.db
 
+# HR handoff email (Component 14 follow-on) -- original document images
+# (EMAIL_ATTACH_ORIGINALS only) and dry-run .eml outbox. Never committed.
+data/uploads/
+data/outbox/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -4,9 +4,11 @@
 >
 > Scope note: this file lists **implemented features and plans only** — no architecture rationale (that's [PLAN.md](PLAN.md)) and no problem framing (that's [SCOPE.md](SCOPE.md)).
 
-_Last updated: 2026-08-10 · branch: `feat/final-capstone-ui`_
+_Last updated: 2026-08-14 · branch: `feat/final-capstone-cv-email`_
 
 `feat/final-capstone-cv` was merged into `final-capstone` (clean fast-forward, `b1ebc30..ba152fb`, both pushed) — Component 14 is fully in the shared branch now. This branch continues from there for UI-only work.
+
+This branch (`feat/final-capstone-cv-email`) adds the HR handoff email that closes Component 14's loop — see "HR handoff email" below and `CV_INTEGRATION.md` Phase 8 for the full design.
 
 ---
 
@@ -77,11 +79,24 @@ Full design doc: [CV_INTEGRATION.md](CV_INTEGRATION.md). All 9 phases done (0–
 - **Embedding rate-limit retry** (`src/rag/embeddings.py`) — `GeminiEmbedder` now retries on HTTP 429 with exponential backoff (10s→320s, 6 attempts) instead of crashing `ingest.py` mid-run with no progress saved. Found live: `embed_content`'s free-tier quota is per-minute, and a corpus needing many re-embedded batches in one ingest run could exceed it with zero retry logic previously in place.
 - **Docker mlflow Host-header fix** (`docker-compose.yml`) — mlflow 3.x's DNS-rebinding protection rejects any request whose `Host` header isn't allowlisted; the `api` container talks to `mlflow` over the compose network as `http://mlflow:5000`, which wasn't allowlisted by default, breaking `configure_mlflow()` on every API startup. Fixed with `--allowed-hosts "mlflow:*,localhost:*,localhost"` — verified against a real running `mlflow server` (correct host passes, `evil.com` still correctly rejected).
 
+### HR handoff email (Component 14 follow-on)
+Closes the loop Component 14 previously dead-ended at: a status pill in the Streamlit sidebar nobody in HR ever saw. When an employee's NBI Clearance **and** Government ID both reach `validated` (`onboarding_status.get_status(employee_id).missing == []`), the system emails HRMO a handoff packet once, automatically, as a FastAPI `BackgroundTasks` job (never adds latency to `/upload-doc`, never fails its 200 response). Full design: [CV_INTEGRATION.md](CV_INTEGRATION.md) Phase 8.
+- **Idempotent send state** (`src/memory/hr_notifications.py`, new SQLite table `hr_notifications`) — keyed by `(employee_id, packet_hash)` where `packet_hash` is the sha256 of the two documents' sorted `source_hash`es; re-uploading the identical pair never resends, replacing a document does.
+- **Packet composition** (`src/notifications/hr_packet.py`, pure, no I/O) — pulls the triggering request's in-memory extraction plus a cache-hit `load_cached_result()` lookup for the sibling (same mechanism the existing cross-document check uses). Degrades to `reduced_detail=True` rather than skipping the send when the sibling's OCR cache entry is gone (e.g. a container restart between uploads).
+- **Templates** (`src/notifications/templates.py`) — plain text + HTML from one `HrPacket`, verdict/faculty-class/verified-docs/outstanding-items/re-submit-by/next-action, Data Privacy Act (RA 10173) footer. "Still outstanding" items come from `config.PREEMPLOYMENT_CHECKLIST` (per faculty class, cited to `data/raw/dlsu-faculty-preemployment-requirements.pdf`), declared statically rather than generated at send time — a hallucinated requirement in an HR-facing email is a real harm this design avoids on purpose.
+- **Transport** (`src/notifications/email_client.py`) — `EMAIL_DRY_RUN=true` by default, writes to gitignored `data/outbox/*.eml`, sends nothing; real path is Mailtrap's Sandbox Sending API over `httpx` directly (no new SDK dependency, no production mailbox needed — this is a proof-of-concept project), bounded retry on 5xx/timeout.
+- **Attachments** — `config.EMAIL_ATTACH_ORIGINALS` (default `False`), gitignored `data/uploads/`. **Deployment-level limitation, stated not hidden:** no per-submission real-vs-mock field exists anywhere in this codebase, so mock-attaches/real-metadata-only is enforced per deployment instance, not per upload.
+- **API** (`src/api.py`) — `POST /upload-doc` gained `faculty_class` (optional form field, persisted via the previously-unused `onboarding_status.set_faculty_class()`) and a `BackgroundTasks` param; `GET /hr-notifications/{employee_id}` backs the UI indicator.
+- **UI** (`src/ui.py`) — faculty-class selector in the uploader (reuses `config.AUDIENCE_ORDER`/`AUDIENCE_LABELS`, not a second taxonomy); checklist card shows "Sent to HR ✓" once complete.
+- **Monitoring** (`src/monitoring.py`) — `email_trace()` sibling to `doc_trace()`; `email_status`/`email_provider` tags, `email_latency_ms`/`attempt_count` metrics, no recipient/employee_id/field value.
+- **Tests** (`tests/test_hr_email.py`, `tests/test_hr_notifications.py`, 26 tests) — gate, idempotency, PII, attachment policy, failure isolation, and a corpus-crossover test (`pdfplumber` against the raw PDF) that keeps every declared checklist citation honest.
+- **Not yet done:** a real send verified against a live Mailtrap Sandbox inbox; the UI clicked through in a running session (API-layer wiring is tested, the browser flow isn't).
+
 ### Evals & tests
 - **Golden set** (`evals/golden_set.jsonl`, 32 rows) — per-topic + per-tier.
 - **Retrieval eval** (`evals/run_retrieval_eval.py`) — per-topic/per-tier hit-rate.
 - **Guardrail eval** (`evals/run_guardrail_eval.py`) + red-team set (`evals/guardrail_redteam.jsonl`).
-- **Unit tests** (`tests/`, 20 files, 354 passed / 1 skipped) — api, chunking, doc_validation, doctypes, embeddings, extractor, guardrails, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
+- **Unit tests** (`tests/`, 22 files, 381 passed / 1 skipped) — api, chunking, doc_validation, doctypes, embeddings, extractor, guardrails, hr_email, hr_notifications, hybrid, ingest, llm_client, memory, onboarding_status, orchestrator, pdf_to_md, quality, retrieval, router, schemas, tools, usage.
 
 ---
 

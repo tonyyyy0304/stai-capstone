@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, Form, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -31,8 +31,10 @@ from src.guardrails.doc_validation import (
     validate_document,
     validate_id_document,
 )
-from src.memory import onboarding_status
-from src.monitoring import chat_trace, configure_mlflow, doc_trace
+from src.memory import hr_notifications, onboarding_status
+from src.monitoring import chat_trace, configure_mlflow, doc_trace, email_trace
+from src.notifications.email_client import send_packet
+from src.notifications.hr_packet import compose_packet
 from src.ocr.extractor import extract_document, load_cached_result
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
@@ -40,6 +42,9 @@ from src.schemas import (
     ChecklistStatus,
     Citation,
     DocType,
+    IdExtractionResult,
+    NbiExtractionResult,
+    NotificationStatus,
     RuleResult,
     TokenUsage,
     ValidationOutcome,
@@ -104,6 +109,11 @@ class HealthResponse(BaseModel):
 class UploadDocResponse(BaseModel):
     validation: ValidationResult
     checklist: ChecklistStatus
+
+
+class HrNotificationResponse(BaseModel):
+    sent: bool
+    sent_at: str | None = None
 
 
 class UsageResponse(BaseModel):
@@ -243,13 +253,72 @@ def _rejected_before_processing(detail: str, message: str) -> ValidationResult:
     )
 
 
+def _persist_upload(raw_bytes: bytes, mime_type: str, source_hash: str) -> None:
+    """Only called when config.EMAIL_ATTACH_ORIGINALS is on — otherwise raw
+    bytes never outlive the request (config.PERSIST_UPLOADS). Keyed by
+    source_hash so the HR-email attachment loader can find either sibling's
+    bytes regardless of which one is "current" this request."""
+    ext = "png" if mime_type == "image/png" else "jpg"
+    try:
+        config.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        (config.UPLOADS_DIR / f"{source_hash}.{ext}").write_bytes(raw_bytes)
+    except OSError:
+        logger.warning("hr_email_attachment_persist_failed source_hash=%s", source_hash)
+
+
+def _load_attachments(checklist: ChecklistStatus) -> list[tuple[str, bytes, str]]:
+    attachments: list[tuple[str, bytes, str]] = []
+    for doc in checklist.documents:
+        if not doc.source_hash:
+            continue
+        matches = sorted(config.UPLOADS_DIR.glob(f"{doc.source_hash}.*"))
+        if not matches:
+            continue
+        path = matches[0]
+        mime_type = "image/png" if path.suffix == ".png" else "image/jpeg"
+        attachments.append((f"{doc.doc_type.value}{path.suffix}", path.read_bytes(), mime_type))
+    return attachments
+
+
+def _send_hr_packet(
+    nbi_result: NbiExtractionResult | None,
+    id_result: IdExtractionResult | None,
+    checklist: ChecklistStatus,
+) -> None:
+    """FastAPI BackgroundTasks target: runs after /upload-doc's response has
+    already been sent, so a slow or unreachable email provider can never
+    degrade the upload endpoint's latency or 200 response (CLAUDE.md
+    fail-safe convention; same reasoning as email_client.send_packet's own
+    never-raise contract). Wrapped in try/except as a last-resort backstop —
+    send_packet() itself already never raises, but composition/attachment-
+    loading here could."""
+    try:
+        packet = compose_packet(nbi_result, id_result, checklist, checklist.faculty_class)
+        if hr_notifications.already_sent(checklist.employee_id, packet.packet_hash):
+            return
+        attempts = hr_notifications.record_attempt(checklist.employee_id, packet.packet_hash)
+        attachments = _load_attachments(checklist) if config.EMAIL_ATTACH_ORIGINALS else None
+        with email_trace() as trace:
+            result = send_packet(packet, attachments=attachments)
+            trace["metrics"] = {"attempt_count": attempts}
+            trace["tags"] = {
+                "email_status": result.status.value,
+                "email_provider": "dry_run" if config.EMAIL_DRY_RUN else config.EMAIL_PROVIDER,
+            }
+        hr_notifications.record_result(checklist.employee_id, packet.packet_hash, result)
+    except Exception:
+        logger.exception("hr_email_gate_failed employee_id=%s", checklist.employee_id)
+
+
 @app.post("/upload-doc", response_model=UploadDocResponse)
 async def upload_doc(
+    background_tasks: BackgroundTasks,
     file: UploadFile,
     employee_id: str = Form(...),
     doc_type: Literal["nbi_clearance", "government_id"] = Form(...),
     full_name: str = Form(...),
     date_of_birth: str = Form(...),
+    faculty_class: str | None = Form(default=None),
 ) -> UploadDocResponse:
     """Runs the full CV pipeline synchronously (quality gate -> extraction ->
     validation -> checklist record -> cross-document check against any
@@ -257,7 +326,14 @@ async def upload_doc(
     entirely (CV_INTEGRATION.md §1.5). Degrades toward needs_review/rejected
     rather than a 500 on any processing failure, matching
     _try_agent_orchestrator's no-HTTPException convention.
+
+    When both REQUIRED_ONBOARDING_DOCS reach validated, schedules the HR
+    handoff email as a BackgroundTasks job (see _send_hr_packet) so a slow
+    or down email provider never adds latency to this endpoint.
     """
+    if faculty_class:
+        onboarding_status.set_faculty_class(employee_id, faculty_class)
+
     raw_bytes = await file.read()
 
     with doc_trace(doc_type=doc_type) as trace:
@@ -300,19 +376,30 @@ async def upload_doc(
         source_hash = hashlib.sha256(raw_bytes).hexdigest()
         onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
 
+        # Persisted here (every upload, not just whichever one happens to
+        # complete the checklist) so BOTH documents' bytes are available
+        # once the HR-email gate below fires on the second one — the first
+        # upload's raw bytes would otherwise never be written, since at that
+        # point the checklist is still incomplete.
+        if config.EMAIL_ATTACH_ORIGINALS:
+            _persist_upload(raw_bytes, mime_type, source_hash)
+
         # Cross-document check: only runs when a sibling document is already on
         # file, via a cache-hit re-extraction (extractor.load_cached_result) —
         # zero new API calls, no new image bytes (CV_INTEGRATION.md §2.7).
+        # nbi_result/id_result are also what the HR-email gate below composes
+        # the handoff packet from — computed once here, reused there, rather
+        # than a second cache lookup.
         other_type = _OTHER_DOC_TYPE[doc_type]
         sibling = onboarding_status.get_document(employee_id, other_type)
-        if extracted is not None and sibling is not None and sibling.source_hash:
-            sibling_result = load_cached_result(sibling.source_hash, other_type)
-            if sibling_result is not None:
-                nbi_result = extracted if doc_type_enum == DocType.NBI_CLEARANCE else sibling_result
-                id_result = sibling_result if doc_type_enum == DocType.NBI_CLEARANCE else extracted
-                cross_rule = validate_cross_document(nbi_result, id_result)
-                validation = apply_cross_document_result(validation, cross_rule)
-                onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
+        sibling_result = load_cached_result(sibling.source_hash, other_type) if sibling and sibling.source_hash else None
+        nbi_result = extracted if doc_type_enum == DocType.NBI_CLEARANCE else sibling_result
+        id_result = sibling_result if doc_type_enum == DocType.NBI_CLEARANCE else extracted
+
+        if extracted is not None and sibling_result is not None:
+            cross_rule = validate_cross_document(nbi_result, id_result)
+            validation = apply_cross_document_result(validation, cross_rule)
+            onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
 
         # Sanitized shape only — never a field value (blur_score/skew_deg from
         # the deterministic quality gate; extraction_confidence/fields_* from
@@ -328,12 +415,29 @@ async def upload_doc(
             trace["metrics"]["skew_deg"] = quality_report.skew_deg
             trace["tags"]["quality_verdict"] = quality_report.verdict.value
 
-        return UploadDocResponse(validation=validation, checklist=onboarding_status.get_status(employee_id))
+        checklist = onboarding_status.get_status(employee_id)
+        if not checklist.missing:
+            try:
+                background_tasks.add_task(_send_hr_packet, nbi_result, id_result, checklist)
+            except Exception:
+                logger.exception("hr_email_schedule_failed employee_id=%s", employee_id)
+
+        return UploadDocResponse(validation=validation, checklist=checklist)
 
 
 @app.get("/onboarding-status/{employee_id}", response_model=ChecklistStatus)
 def onboarding_status_endpoint(employee_id: str) -> ChecklistStatus:
     return onboarding_status.get_status(employee_id)
+
+
+@app.get("/hr-notifications/{employee_id}", response_model=HrNotificationResponse)
+def hr_notifications_endpoint(employee_id: str) -> HrNotificationResponse:
+    """Backs the UI's "Sent to HR" checklist indicator."""
+    rows = hr_notifications.list_for_employee(employee_id)
+    sent_rows = [row for row in rows if row["status"] == NotificationStatus.SENT.value]
+    if not sent_rows:
+        return HrNotificationResponse(sent=False)
+    return HrNotificationResponse(sent=True, sent_at=sent_rows[0]["sent_at"])
 
 
 @app.get("/usage", response_model=UsageResponse)

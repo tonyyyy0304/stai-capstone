@@ -20,6 +20,16 @@ services:
       ENABLE_MLFLOW: "1"
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT_NAME: hr-agent
+      # HR handoff email (Component 14 follow-on) -- secrets (MAILTRAP_API_TOKEN,
+      # MAILTRAP_INBOX_ID) come from .env via env_file above; these just pass
+      # the non-secret settings through with the same EMAIL_DRY_RUN=true-by-
+      # default safety net as a bare-metal run. Real sends go to a Mailtrap
+      # Sandbox inbox, not a production mailbox (proof-of-concept project).
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-mailtrap}
+      EMAIL_DRY_RUN: ${EMAIL_DRY_RUN:-true}
+      HR_EMAIL_TO: ${HR_EMAIL_TO:-hrmo@faculty-concierge.test}
+      HR_EMAIL_FROM: ${HR_EMAIL_FROM:-onboarding@faculty-concierge.test}
+      EMAIL_ATTACH_ORIGINALS: ${EMAIL_ATTACH_ORIGINALS:-false}
     ports:
       - "8000:8000"
     volumes:

@@ -361,7 +361,7 @@ OCR_RETRY_CONFIDENCE_FLOOR = 0.5
 # Extraction + validation (src/ocr/extractor.py, src/guardrails/doc_validation.py)
 OCR_CONFIDENCE_FLOOR = 0.70     # composite below this -> needs_review
 NAME_MATCH_THRESHOLD = 85       # rapidfuzz token_set_ratio, 0-100
-NBI_VALIDITY_MONTHS = 6         # EMPLOYER freshness policy, layered on top of
+NBI_VALIDITY_MONTHS = 12         # EMPLOYER freshness policy, layered on top of
                                 # (not instead of) the document's own printed
                                 # valid_until — Rule 5 takes whichever is
                                 # stricter. See PLAN.md §4.1 Rule 5, CV_INTEGRATION.md §2.7.
@@ -386,6 +386,97 @@ REQUIRED_ONBOARDING_DOCS = ("nbi_clearance", "government_id")
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 ALLOWED_IMAGE_MIME = ("image/jpeg", "image/png")   # PDF is a stretch goal
 PERSIST_UPLOADS = False         # don't keep raw images past the request
+
+# --- HR handoff email (Component 14, CV integration follow-on) ---
+# Fires once per employee when both REQUIRED_ONBOARDING_DOCS reach VALIDATED
+# (src/memory/onboarding_status.py's `missing` list is empty) — see
+# src/notifications/. Provider selection mirrors LLM_PROVIDER/VISION_PROVIDER;
+# "mailtrap" (Mailtrap's Sandbox Sending API) is the only real transport
+# (src/notifications/email_client.py). This is a proof-of-concept project
+# with no production mailbox, so the real path deliberately targets a sandbox
+# that catches every send in a private test inbox rather than any actual
+# smtplib/production provider (see the deleted Midterm emailer at
+# git show 23417c9~1:src/agent/tools.py — its SMTP port 465/587 branching is
+# deliberately not carried forward either way).
+EMAIL_PROVIDER = os.environ.get("EMAIL_PROVIDER", "mailtrap")
+MAILTRAP_API_TOKEN_ENV = "MAILTRAP_API_TOKEN"
+MAILTRAP_INBOX_ID = os.environ.get("MAILTRAP_INBOX_ID", "")
+# Default True: a fresh checkout must never send real mail before someone
+# opts in. Dry-run writes the fully-composed message to OUTBOX_DIR/*.eml
+# instead of calling the provider — revival of the deleted emailer's
+# _write_mock_outbox() (23417c9~1:src/agent/tools.py), same rationale: "stays
+# inspectable during dev/demo without a real mail server."
+EMAIL_DRY_RUN = os.environ.get("EMAIL_DRY_RUN", "true").lower() == "true"
+# Deployment profile (belongs alongside ORG_NAME/HELP_CONTACT above —
+# retargeting to another university's HRMO mailbox stays a config change).
+# Mailtrap Sandbox catches every send in the inbox identified by
+# MAILTRAP_INBOX_ID regardless of what's in To/From — neither needs to be a
+# real, deliverable address, and no domain verification is required.
+HR_EMAIL_TO = os.environ.get("HR_EMAIL_TO", "hrmo@faculty-concierge.test")
+HR_EMAIL_FROM = os.environ.get("HR_EMAIL_FROM", "onboarding@faculty-concierge.test")
+EMAIL_MAX_RETRIES = int(os.environ.get("EMAIL_MAX_RETRIES", "3"))
+# Attach original document images? Deployment-level only (no per-submission
+# real-vs-mock field exists anywhere in this codebase) — an instance is
+# either a demo instance (mock docs, attachments on) or a real-data instance
+# (attachments off, metadata-only). Never default true: a misconfigured real
+# deployment must not leak clearance/ID images into HR's inbox by default.
+# See CV_INTEGRATION.md's HR-email phase note for this limitation.
+EMAIL_ATTACH_ORIGINALS = os.environ.get("EMAIL_ATTACH_ORIGINALS", "false").lower() == "true"
+UPLOADS_DIR = DATA_DIR / "uploads"      # only written when EMAIL_ATTACH_ORIGINALS is on
+OUTBOX_DIR = DATA_DIR / "outbox"        # dry-run .eml files
+
+# NBI's own printed validity is one year; NBI_VALIDITY_MONTHS above is the
+# stricter employer freshness window HR must re-chase a clearance by — the
+# HR email shows both, never just one (see NBI_VALIDITY_MONTHS's docstring).
+
+# Faculty-class-scoped "still outstanding" checklist rendered in the HR email
+# (CLAUDE.md's per-class hazard: three parallel faculty classes, different
+# requirement sets). Keyed by the SAME slugs as AUDIENCE_CLASSES above —
+# deliberately not a second taxonomy. Declared statically (not retrieved live
+# at send time) because an email to HR is an official artifact: a
+# hallucinated requirement is HR-harmful, so this is authored from
+# data/raw/dlsu-faculty-preemployment-requirements.pdf directly rather than
+# generated, and the upload path acquires no LLM-call latency or new failure
+# mode from it. NBI Clearance and the Government ID are deliberately omitted
+# from every list below — those two are what the Concierge itself verified,
+# not what's still outstanding. Every (source, section) pair here is asserted
+# by tests/test_hr_email.py to actually appear in the source PDF, so this
+# stays honest as the source document changes.
+PREEMPLOYMENT_CHECKLIST_SOURCE = "dlsu-faculty-preemployment-requirements"
+_PREEMPLOYMENT_COMMON = (
+    {"item": "Original Transcript of Records (TOR)", "section": "1. Faculty-Specific Documents"},
+    {"item": "Diploma (highest relevant degree)", "section": "1. Faculty-Specific Documents"},
+    {"item": "Biodata / Curriculum Vitae", "section": "1. Faculty-Specific Documents"},
+    {"item": "Three (3) character/professional references", "section": "1. Faculty-Specific Documents"},
+    {"item": "Certification of physical fitness to teach", "section": "1. Faculty-Specific Documents"},
+    {"item": "2x2 ID photo (recent, white background)", "section": "1. Faculty-Specific Documents"},
+    {"item": "SSS number", "section": "2. National Statutory Documents"},
+    {"item": "PhilHealth Identification Number (PIN)", "section": "2. National Statutory Documents"},
+    {"item": "Pag-IBIG Membership ID (MID)", "section": "2. National Statutory Documents"},
+    {"item": "Tax Identification Number (TIN)", "section": "2. National Statutory Documents"},
+    {"item": "BIR Form 2316 (if employed earlier this calendar year)", "section": "2. National Statutory Documents"},
+)
+PREEMPLOYMENT_CHECKLIST = {
+    "full_time_academic": _PREEMPLOYMENT_COMMON + (
+        {"item": "Clearance from previous employer", "section": "1. Faculty-Specific Documents"},
+        {"item": "Rank-specific supporting documents (per academic rank)", "section": "3. Rank-Specific Requirements"},
+        {"item": "Signed acknowledgment of probationary terms", "section": "4.1 Full-time Academic Faculty"},
+    ),
+    "part_time_academic": _PREEMPLOYMENT_COMMON + (
+        {
+            "item": "Clearance from previous employer (or a signed self-certification of no unresolved obligations)",
+            "section": "4.2 Part-time Academic Faculty",
+        },
+        {"item": "Rank-specific supporting documents (per academic rank)", "section": "3. Rank-Specific Requirements"},
+    ),
+    "academic_service": _PREEMPLOYMENT_COMMON + (
+        {"item": "Clearance from previous employer", "section": "1. Faculty-Specific Documents"},
+        {
+            "item": "Role-specific competency documentation (e.g. certification or license for the ASF role)",
+            "section": "4.3 Academic Service Faculty (ASF)",
+        },
+    ),
+}
 
 
 def get_gemini_api_key() -> str:
@@ -433,6 +524,16 @@ def get_tavily_client():
     from tavily import TavilyClient
 
     return TavilyClient(api_key=get_tavily_api_key())
+
+
+def get_mailtrap_api_token() -> str:
+    token = os.environ.get(MAILTRAP_API_TOKEN_ENV, "")
+    if not token:
+        raise RuntimeError(
+            "MAILTRAP_API_TOKEN is not set. Copy .env.example to .env and add your Mailtrap "
+            "sandbox token + MAILTRAP_INBOX_ID, or leave EMAIL_DRY_RUN=true to skip real sends."
+        )
+    return token
 
 
 def get_llm_client():

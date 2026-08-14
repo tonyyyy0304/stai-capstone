@@ -120,14 +120,15 @@ class AgentResponse:
     # to the HTTP contract, not the other way around. Only ever populated by
     # the DOCUMENT_UPLOAD/DOCUMENT_STATUS short-circuits below, with
     # type="unlock_document_flow" -- src/ui.py watches for that specific
-    # type to reveal the Employee ID field, checklist, and uploader, which
-    # are otherwise hidden until the conversation actually calls for them.
+    # type to open the Employee ID field, checklist, and document panel,
+    # which otherwise stay closed until the conversation actually calls for
+    # them (the sidebar's "Verify a document" button opens the same panel).
     actions: list[dict] = field(default_factory=list)
 
 
 _UNLOCK_DOCUMENT_FLOW_ACTION = {
     "type": "unlock_document_flow",
-    "label": "You can now enter your Employee ID and upload documents in the sidebar.",
+    "label": "Document verification is open below — enter your Employee ID in the sidebar and upload your documents.",
     "status": "completed",
 }
 
