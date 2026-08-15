@@ -142,7 +142,7 @@ Maps to the Final spec's 14-component checklist (see [PLAN.md](PLAN.md) §4 for 
 | Baybayon | RAG, Guardrails, ReAct tools (web search, calling the CV integration) | `scripts/ingest.py`, `src/rag/` (incl. planned `hybrid.py`), `src/guardrails/`, `src/agent/tools.py` |
 | Del Rosario | CV integration and its evaluation | `src/ocr/` , `evals/run_ocr_eval.py` |
 | Burayag | RRL, end-to-end evals | [PLAN.md](PLAN.md) §5, `evals/run_answer_eval.py` |
-| Tamondong | Evals dataset, Chat UI, API endpoint, LLMOps | `evals/golden_set.jsonl`, `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
+| Tamondong | Evals dataset, Chat UI, API endpoint, LLMOps, Dockerization | `evals/golden_set.jsonl`, `src/ui.py`, `src/api.py`, `src/monitoring.py`, `Dockerfile*`, `docker-compose.yml` |
 | **Team (shared)** | **CV/DS Domain Integration (mandatory, Component 14)** | `src/ocr/` |
 
 Pipeline, chunking, retrieval, and eval-set detail is documented in [PLAN.md](PLAN.md) §3 rather than duplicated here.
