@@ -15,6 +15,7 @@ static HTML prototype, both driven by Streamlit's rerun model:
 
 from __future__ import annotations
 
+import base64
 import html
 import sys
 from datetime import date
@@ -31,6 +32,23 @@ if str(REPO_ROOT) not in sys.path:
 from src import config
 
 ACCENT = "#3B6FE0"
+
+
+def _load_logo_data_uri() -> str | None:
+    """Base64-embeds logo.png as a data: URI rather than an <img src="...">
+    file path -- Streamlit's static file server (enableStaticServing) isn't
+    configured, so a relative path wouldn't resolve, and this keeps the
+    sidebar header self-contained the same way every other block in this
+    file is raw HTML with no external dependency. None on a checkout
+    without the file, so the sidebar falls back to the accent-color square
+    instead of a broken image icon."""
+    try:
+        return "data:image/png;base64," + base64.b64encode((REPO_ROOT / "logo.png").read_bytes()).decode("ascii")
+    except OSError:
+        return None
+
+
+LOGO_DATA_URI = _load_logo_data_uri()
 
 GLOBAL_CSS = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -350,6 +368,10 @@ def _init_state() -> None:
     # (existence = in-flight, contents = what to send) since only one
     # upload can ever be queued at a time.
     st.session_state.setdefault("pending_upload", None)
+    # Bumped per doc_type after a successful submit -- forces the
+    # file_uploader's key to change so it renders empty next time instead
+    # of still showing the just-processed file (see _render_document_card).
+    st.session_state.setdefault("upload_file_version", {})
 
 
 def _toggle_sidebar() -> None:
@@ -369,6 +391,24 @@ def _start_new_chat() -> None:
     st.session_state.show_upload_flow = False  # re-lock; a new conversation hasn't asked for it yet
     st.session_state.replace_unlocked = {}
     st.session_state.pending_upload = None
+    st.session_state.upload_file_version = {}
+    # A new conversation is a new employee context -- carrying over the
+    # previous one's ID/identity/results would show someone else's
+    # checklist the moment the panel reopens. Resetting the mirror
+    # variables alone is NOT enough: st.text_input/st.selectbox only
+    # respect their `value=`/`index=` argument on a widget's FIRST render
+    # for a given `key` -- once a key exists in session_state (the user
+    # typed into it, or an earlier run created it), later reruns use that
+    # keyed state regardless of what `value=` says. Popping the keys
+    # outright is what actually clears what's on screen, not just the
+    # value this code will read back on the next submit.
+    st.session_state.employee_id = ""
+    st.session_state.upload_full_name = ""
+    st.session_state.upload_dob = ""
+    st.session_state.upload_faculty_class = config.AUDIENCE_ORDER[0]
+    st.session_state.last_upload_result = {}
+    for widget_key in ("employee_id_input", "upload_full_name_input", "upload_dob_input", "upload_faculty_class_input"):
+        st.session_state.pop(widget_key, None)
 
 
 def _accept_privacy() -> None:
@@ -399,9 +439,37 @@ def _sidebar_width_css() -> str:
     # explicitly turned off too.
     closed_extra = "" if st.session_state.sidebar_open else "border-right: none !important; pointer-events: none !important;"
     return (
-        "<style>[data-testid=\"stSidebar\"] { "
-        f"width: {width}px !important; min-width: {width}px !important; {closed_extra} "
-        "}</style>"
+        "<style>"
+        "[data-testid=\"stSidebar\"] { "
+        f"width: {width}px !important; min-width: {width}px !important; "
+        # flex-shrink/transform/visibility hardening: our width/min-width
+        # override alone isn't enough to survive a browser window resize --
+        # Streamlit has its own narrow-viewport auto-collapse behavior,
+        # separate from this file's session_state.sidebar_open flag, that
+        # this app can't observe or react to server-side (a resize is a
+        # client-only event, no rerun). These extra properties make our
+        # forced-open state resistant to whatever mechanism that uses,
+        # without needing to know it exactly.
+        "flex-shrink: 0 !important; transform: none !important; visibility: visible !important; "
+        f"{closed_extra} "
+        "}"
+        # Narrow-viewport escape hatch. GLOBAL_CSS hides Streamlit's own
+        # native re-expand chevron (stSidebarCollapsedControl) everywhere,
+        # on purpose -- it auto-appears whenever Streamlit's own logic
+        # decides to collapse the sidebar, and at normal widths it
+        # overlaps and steals clicks from the custom hamburger toggle
+        # above, desyncing the two state sources. But that means if the
+        # hardening above ever loses the fight against Streamlit's native
+        # collapse on a narrow window, there is NO way back except a full
+        # page reload. Re-enabling it (and hiding our own toggle in favor
+        # of it) ONLY below this breakpoint keeps normal-width behavior
+        # exactly as before while guaranteeing a working escape hatch on a
+        # narrow/minimized window.
+        "@media (max-width: 768px) {"
+        "  [data-testid=\"stSidebarCollapsedControl\"] { display: flex !important; }"
+        "  .st-key-sidebar_toggle_btn { display: none !important; }"
+        "}"
+        "</style>"
     )
 
 
@@ -686,6 +754,12 @@ def _fetch_pending_upload() -> None:
         # failure below does NOT reset this, so the user can just hit
         # Submit again without re-clicking "Replace".
         st.session_state.replace_unlocked[doc_type] = False
+        # Bump the file_uploader's key version so the dropzone comes back
+        # empty next render instead of still showing the just-processed
+        # file -- see _render_document_card's file_version comment. Also
+        # only on success: a network failure leaves the file in place so
+        # the user can just retry Submit.
+        st.session_state.upload_file_version[doc_type] = st.session_state.upload_file_version.get(doc_type, 0) + 1
     except requests.RequestException as exc:
         st.session_state.last_upload_result[doc_type] = {"error": str(exc)}
     st.session_state.pending_upload = None
@@ -739,8 +813,15 @@ def _render_document_card(doc_type: str, status: str, disable_all: bool) -> None
     if status == "validated":
         st.caption("Replacing a validated document will notify HR if the outcome changes.")
 
+    # Keyed by a per-doc-type version counter, bumped after every successful
+    # response (see _fetch_pending_upload) -- st.file_uploader has no
+    # supported way to clear a selected file programmatically; changing its
+    # key is the standard way to force Streamlit to treat it as a fresh,
+    # empty widget instead of leaving the just-processed file "stuck"
+    # sitting in the dropzone looking like an unsent selection.
+    file_version = st.session_state.upload_file_version.get(doc_type, 0)
     upload_file = st.file_uploader(
-        "File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key=f"upload_file_{doc_type}",
+        "File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key=f"upload_file_{doc_type}_{file_version}",
         label_visibility="collapsed", disabled=disable_all,
     )
     if upload_file is not None:
@@ -797,6 +878,13 @@ def _render_document_panel(checklist: dict | None) -> None:
             # panel has rendered with disable_all already applied).
             disable_all = st.session_state.pending_upload is not None
 
+            if not st.session_state.employee_id.strip():
+                st.markdown(
+                    '<div style="font-size:12.5px;color:oklch(48% 0.012 250);padding:0 0 10px 0;">'
+                    "Enter your Employee ID in the sidebar on the left to get started.</div>",
+                    unsafe_allow_html=True,
+                )
+
             st.session_state.upload_full_name = st.text_input(
                 "Full name (as printed on the document)",
                 value=st.session_state.upload_full_name, key="upload_full_name_input",
@@ -841,11 +929,17 @@ def _render_document_panel(checklist: dict | None) -> None:
 
 
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
+    logo_html = (
+        f'<img src="{LOGO_DATA_URI}" alt="{html.escape(config.ASSISTANT_NAME)}" '
+        'style="width:130px;height:auto;flex-shrink:0;" />'
+        if LOGO_DATA_URI else
+        f'<div style="width:22px;height:22px;border-radius:6px;background:{accent};flex-shrink:0;"></div>'
+    )
     with st.sidebar:
         st.markdown(
             f'''<div style="display:flex;flex-direction:column;">
-  <div style="display:flex;align-items:center;gap:8px;padding:6px 0 18px 0;">
-    <div style="width:22px;height:22px;border-radius:6px;background:{accent};flex-shrink:0;"></div>
+  <div style="display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:6px 0 18px 0;">
+    {logo_html}
     <div style="font-size:14px;font-weight:600;letter-spacing:0.01em;color:oklch(20% 0.015 255);">{config.ASSISTANT_NAME}</div>
   </div>
   <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.06em;color:oklch(55% 0.012 250);padding:4px 0 8px 0;">Recent</div>
@@ -1188,7 +1282,7 @@ def _render_messages(accent: str) -> None:
             _render_message(i, message, accent)
 
 
-st.set_page_config(page_title=config.ASSISTANT_NAME, page_icon="💬", layout="wide")
+st.set_page_config(page_title=f"E.Z.R.A. - {config.ASSISTANT_NAME}", page_icon="💬", layout="wide")
 _init_state()
 
 _dev_mode = st.query_params.get("dev") == "1"
