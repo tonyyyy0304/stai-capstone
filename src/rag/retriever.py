@@ -5,6 +5,7 @@ similarity, optionally filtered by category, and applies the similarity floor:
 if nothing passes, the caller must answer "I don't know" — never from memory.
 """
 
+import threading
 from dataclasses import dataclass
 
 import chromadb
@@ -12,6 +13,9 @@ from chromadb.config import Settings
 
 from src import config
 from src.rag.embeddings import Embedder
+
+_collection_lock = threading.Lock()
+_collection = None
 
 
 @dataclass
@@ -30,13 +34,25 @@ class RetrievedChunk:
 
 
 def get_collection():
-    client = chromadb.PersistentClient(
-        path=str(config.CHROMA_DIR),
-        settings=Settings(anonymized_telemetry=False),
-    )
-    return client.get_or_create_collection(
-        name=config.COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
-    )
+    """Return a process-wide singleton collection.
+
+    Constructing chromadb.PersistentClient is not safe to race across threads
+    (concurrent eval runs use a ThreadPoolExecutor) -- the Rust bindings can end
+    up half-initialized. Build the client/collection once behind a lock and
+    reuse it; querying an already-built collection concurrently is fine.
+    """
+    global _collection
+    if _collection is None:
+        with _collection_lock:
+            if _collection is None:
+                client = chromadb.PersistentClient(
+                    path=str(config.CHROMA_DIR),
+                    settings=Settings(anonymized_telemetry=False),
+                )
+                _collection = client.get_or_create_collection(
+                    name=config.COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+                )
+    return _collection
 
 
 def _to_chunks(result: dict) -> list[RetrievedChunk]:

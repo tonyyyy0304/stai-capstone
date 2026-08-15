@@ -8,6 +8,7 @@ we return the "I don't know" path without calling the model.
 Member 2's `search_kb` tool should call answer_question().
 """
 
+import difflib
 import re
 
 from src import config
@@ -45,6 +46,41 @@ def _clarification_question(present: set[str]) -> str:
     return (
         f"The answer depends on your {config.AUDIENCE_NOUN}. "
         f"Which applies to you: {options}?"
+    )
+
+
+def _normalize_for_agreement(text: str) -> str:
+    """Strip each configured class's own label/keywords out of an excerpt before
+    comparing it against another class's excerpt — the corpus's near-duplicate
+    per-class sections restate identical facts with only the class noun swapped
+    ("Full-time faculty" / "ASF member"), and that swap must not count as a
+    difference."""
+    t = text.lower()
+    for segment in config.AUDIENCE_CLASSES:
+        for kw in (segment["label"].lower(), *segment["keywords"]):
+            t = t.replace(kw, "")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _segments_agree(chunks: list[RetrievedChunk], present: set[str]) -> bool:
+    """Deterministic (no LLM) check for whether the top evidence per audience
+    segment states the SAME fact or genuinely diverges. Compares the leading
+    chunk from each segment with a class-label-stripped text-similarity ratio —
+    a near-verbatim restatement (e.g. statutory paternity leave duplicated per
+    class) scores high and should be answered directly; a real split (e.g.
+    vacation leave's differing durations/conditions per class) scores low and
+    must still ask which class the reader is in."""
+    reps = []
+    for seg in present:
+        top = next((c for c in chunks if c.audience_class == seg), None)
+        if top is not None:
+            reps.append(_normalize_for_agreement(top.text))
+    if len(reps) < 2:
+        return True
+    base = reps[0]
+    return all(
+        difflib.SequenceMatcher(None, base, other).ratio() >= config.DISAMBIG_AGREEMENT_RATIO
+        for other in reps[1:]
     )
 
 
@@ -246,7 +282,10 @@ def retrieve_kb(
         present = {
             c.audience_class for c in chunks[: config.DISAMBIG_TOP_N] if c.audience_class
         }
-        if stated is None and len(present) >= 2:
+        # Some provisions are duplicated near-verbatim per class (same fact, class
+        # noun swapped) -- only ask when the top evidence per class actually
+        # disagrees, not merely when it comes from >1 class (see _segments_agree).
+        if stated is None and len(present) >= 2 and not _segments_agree(chunks, present):
             return [], _clarification_question(present)
         if stated:
             chunks = rerank_by_audience(chunks, stated)

@@ -170,6 +170,15 @@ AUDIENCE_CLASS_BOOST = 0.05
 # so it correctly falls through to a normal "I don't know" instead of a bogus
 # "which class are you?".
 DISAMBIG_TOP_N = 3
+# Even among the top-N classes, some provisions are duplicated near-verbatim per
+# class (e.g. statutory paternity leave: same "seven (7) days" under both
+# Full-time and ASF, differing only in the class noun). Asking "which class are
+# you?" there adds friction with no informational payoff. DISAMBIG_AGREEMENT_RATIO
+# is the difflib.SequenceMatcher.ratio() floor (after stripping each class's own
+# label words) above which the top chunk per class is treated as stating the SAME
+# fact rather than a genuine split — deterministic, no LLM call, so this decision
+# stays as cheap and auditable as the rest of the disambiguation gate.
+DISAMBIG_AGREEMENT_RATIO = 0.75
 
 # --- Agent (Module 7: ReAct Agent) ---
 MAX_REACT_ITERATIONS = 5

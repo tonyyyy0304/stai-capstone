@@ -152,9 +152,9 @@ def test_answer_question_returns_chunks_when_answer_is_grounded():
 
 # --- Faculty-class disambiguation (Phase 2) ---------------------------------
 
-def _class_chunk(chunk_id, audience_class, similarity=0.7):
+def _class_chunk(chunk_id, audience_class, similarity=0.7, text="Faculty Manual 2021 > x\n\nleave text"):
     return RetrievedChunk(
-        chunk_id=chunk_id, text="Faculty Manual 2021 > x\n\nleave text", similarity=similarity,
+        chunk_id=chunk_id, text=text, similarity=similarity,
         doc_id="faculty-manual-2021", title="Faculty Manual 2021",
         section_path="Leaves", category="faculty_manual", audience_class=audience_class,
     )
@@ -182,9 +182,17 @@ def test_detect_stated_audience(msg, expected):
 
 
 def test_multi_class_evidence_triggers_clarification_without_llm():
+    """Genuinely class-specific evidence (different values per class) must
+    clarify without ever calling the LLM."""
     retriever = FakeRetriever([
-        _class_chunk("m#1", "full_time_academic"),
-        _class_chunk("m#2", "academic_service"),
+        _class_chunk(
+            "m#1", "full_time_academic",
+            text="Full-time faculty accrue 15 working days of vacation leave per year, taken in one continuous block.",
+        ),
+        _class_chunk(
+            "m#2", "academic_service",
+            text="A permanent ASF member may apply for a vacation leave for personal wellness for a duration of one term, extendable up to two more terms without pay.",
+        ),
     ])
     answer, chunks = answer_question(
         "how many vacation leave days?", retriever=retriever, client=RaisingClient()
@@ -192,6 +200,33 @@ def test_multi_class_evidence_triggers_clarification_without_llm():
     assert answer.requires_clarification is True
     assert chunks == []
     assert "faculty class" in answer.clarifying_question.lower()
+
+
+def test_multi_class_evidence_with_identical_values_answers_directly():
+    """The corpus duplicates some provisions per class with the IDENTICAL value
+    (e.g. paternity leave: "7 days" under both Full-time and ASF, word-for-word
+    except for the class noun). Asking "which faculty class are you?" there adds
+    friction with no informational payoff, so this should answer directly
+    instead of clarifying -- the fix for the eval's over-firing failures
+    (L23/L24/M07 in evals/golden_set.jsonl)."""
+    retriever = FakeRetriever([
+        _class_chunk(
+            "m#1", "full_time_academic",
+            text="Every married male faculty member shall be entitled to a paternity leave of "
+                 "seven (7) days with full pay for the first four (4) deliveries of the legitimate spouse.",
+        ),
+        _class_chunk(
+            "m#2", "academic_service",
+            text="Every married male ASF member shall be entitled to a paternity leave of "
+                 "seven (7) days with full pay for the first four (4) deliveries of the legitimate spouse.",
+        ),
+    ])
+    grounded = GroundedAnswer(answer="seven (7) days.", source=AnswerSource.INTERNAL_KB)
+    answer, chunks = answer_question(
+        "how many days of paternity leave?", retriever=retriever, client=FakeShapeClient(grounded)
+    )
+    assert answer.requires_clarification is False
+    assert chunks  # answered directly using the (agreeing) evidence, not withheld
 
 
 def test_disambiguation_disabled_when_no_segments_configured(monkeypatch):
