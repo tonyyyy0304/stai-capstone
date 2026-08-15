@@ -68,6 +68,7 @@ _ALLOWED_TAG_KEYS = frozenset(
         # HR handoff email — classification labels only, never a recipient.
         "email_status",
         "email_provider",
+        "email_kind",
     }
 )
 

@@ -72,3 +72,30 @@ def test_isolated_per_employee(monkeypatch, tmp_path):
         "EMP-04821", "hash-a", EmailSendResult(status=NotificationStatus.SENT, provider_id="msg-1")
     )
     assert hr_notifications.already_sent("EMP-09999", "hash-a") is False
+
+
+def test_has_ever_sent_false_before_any_send(monkeypatch, tmp_path):
+    _use_tmp_db(monkeypatch, tmp_path)
+    assert hr_notifications.has_ever_sent("EMP-04821") is False
+
+
+def test_has_ever_sent_false_when_only_attempted_or_failed(monkeypatch, tmp_path):
+    _use_tmp_db(monkeypatch, tmp_path)
+    hr_notifications.record_attempt("EMP-04821", "hash-a")
+    hr_notifications.record_result(
+        "EMP-04821", "hash-a", EmailSendResult(status=NotificationStatus.FAILED, error="mailtrap rejected request")
+    )
+    assert hr_notifications.has_ever_sent("EMP-04821") is False
+
+
+def test_has_ever_sent_true_after_any_packet_hash_sent(monkeypatch, tmp_path):
+    """The upload-lock correction-notice gate (src/api.py) only needs to know
+    HR was told SOMETHING about this employee before -- any sent packet_hash
+    qualifies, not specifically the original "verified" one."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    hr_notifications.record_attempt("EMP-04821", "hash-a")
+    hr_notifications.record_result(
+        "EMP-04821", "hash-a", EmailSendResult(status=NotificationStatus.SENT, provider_id="msg-1")
+    )
+    assert hr_notifications.has_ever_sent("EMP-04821") is True
+    assert hr_notifications.has_ever_sent("EMP-09999") is False

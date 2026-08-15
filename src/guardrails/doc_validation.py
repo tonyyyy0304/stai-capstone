@@ -202,6 +202,24 @@ def _extraction_failed() -> ValidationResult:
 # --- NBI Clearance ------------------------------------------------------------
 
 
+def _nbi_dates_plausible(dp: date | None, vu: date | None) -> bool:
+    """True when valid_until is close enough to date_printed + NBI's fixed
+    one-year printed-validity term (config.NBI_PRINTED_VALIDITY_MONTHS +/-
+    config.NBI_PRINTED_VALIDITY_TOLERANCE_DAYS) to be trustworthy.
+
+    Missing either date, or vu < dp, reads as "nothing to gate on" here --
+    those are handled as their own distinct, always-wrong cases by
+    _rule_format_nbi; this helper is specifically the OCR-misread
+    plausibility signal, shared with _rule_validity_window_nbi below so
+    Rule 5 can defer to Rule 3 instead of independently hard-rejecting on
+    the same untrustworthy pair (see that function's docstring for why the
+    sharing matters, not just the check itself)."""
+    if dp is None or vu is None or vu < dp:
+        return True
+    expected = dp + relativedelta(months=config.NBI_PRINTED_VALIDITY_MONTHS)
+    return abs((vu - expected).days) <= config.NBI_PRINTED_VALIDITY_TOLERANCE_DAYS
+
+
 def _rule_format_nbi(extracted: NbiExtractionResult) -> RuleResult:
     base = _rule_format(extracted, DocType.NBI_CLEARANCE)
     if not base.passed:
@@ -212,6 +230,21 @@ def _rule_format_nbi(extracted: NbiExtractionResult) -> RuleResult:
     dp = _parse_flexible_date(extracted.date_printed.value)
     if vu is not None and dp is not None and vu < dp:
         return RuleResult(rule="format", passed=False, detail="invalid format: valid_until precedes date_printed")
+    if not _nbi_dates_plausible(dp, vu):
+        # NBI clearances are always printed valid for a fixed one-year term
+        # from date_printed. A valid_until far from that expectation is a
+        # strong, cheap signal that OCR misread one of the two dates --
+        # most commonly a single digit in the year -- not that the document
+        # itself is unusual. Escalating here (needs_review) rather than
+        # letting a confidently-wrong extraction reach Rule 5's REJECT path
+        # is what prevents a genuinely valid document from being
+        # auto-rejected on a mis-extracted year. See
+        # config.NBI_PRINTED_VALIDITY_MONTHS's docstring for the real case
+        # that surfaced this.
+        return RuleResult(
+            rule="format", passed=False,
+            detail="valid_until is not consistent with the expected one-year printed validity from date_printed",
+        )
     return base
 
 
@@ -220,6 +253,14 @@ def _rule_validity_window_nbi(extracted: NbiExtractionResult, as_of: date) -> Ru
     vu = _parse_flexible_date(extracted.valid_until.value)
     if dp is None or vu is None:
         return RuleResult(rule="validity_window", passed=True, detail="skipped: date fields did not parse")
+    if not _nbi_dates_plausible(dp, vu):
+        # _resolve_outcome checks validity_window BEFORE format in its
+        # priority order -- without this deferral, Rule 5 would compute its
+        # own (also-failing) verdict off the same implausible vu and win
+        # that priority race, REJECTing before Rule 3's needs_review verdict
+        # is ever consulted. Deferring here is what actually routes a
+        # misread date to review instead of a silent false-reject.
+        return RuleResult(rule="validity_window", passed=True, detail="skipped: valid_until failed plausibility check")
     effective_deadline = min(vu, dp + relativedelta(months=config.NBI_VALIDITY_MONTHS))
     passed = as_of <= effective_deadline
     detail = "within validity window" if passed else "outside validity window"

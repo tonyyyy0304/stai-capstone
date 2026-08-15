@@ -31,10 +31,13 @@ from src.schemas import (
     ChecklistStatus,
     DocStatus,
     DocType,
+    HrCorrectionNotice,
     HrPacket,
+    HrReviewAlert,
     IdExtractionResult,
     NbiExtractionResult,
     OutstandingItem,
+    ValidationResult,
     VerifiedDocSummary,
 )
 
@@ -128,4 +131,72 @@ def compose_packet(
         reduced_detail=nbi_result is None or id_result is None,
         discrepancy=None,
         packet_hash=_packet_hash(checklist),
+    )
+
+
+def compose_correction_notice(
+    doc_type: DocType,
+    validation: ValidationResult,
+    checklist: ChecklistStatus,
+    faculty_class: str | None,
+) -> HrCorrectionNotice:
+    """(doc_type, validation, checklist, faculty_class) -> HrCorrectionNotice.
+
+    Called only when a document that was VALIDATED regresses to something
+    else AFTER HR was already sent a packet for this employee (the gate
+    lives in api.py, not here — this function just composes, same "pure,
+    no I/O" contract as compose_packet). still_verified reuses compose_packet's
+    exact VerifiedDocSummary construction so the two summaries never drift.
+    notice_hash reuses _packet_hash unmodified: a regression always changes
+    the regressed document's source_hash, which is enough on its own to
+    produce a hash distinct from the original "verified" send's packet_hash
+    — no separate idempotency mechanism needed."""
+    still_verified = [
+        VerifiedDocSummary(doc_type=doc.doc_type, outcome=doc.outcome, validated_at=doc.validated_at or "")
+        for doc in checklist.documents
+        if doc.status == DocStatus.VALIDATED
+    ]
+    # Read the persisted status back off the checklist rather than re-deriving
+    # it from validation.outcome here -- onboarding_status.record_result()
+    # already applied the outcome->status mapping when it wrote this row;
+    # this just reuses that, one source of truth.
+    current_doc = next((doc for doc in checklist.documents if doc.doc_type == doc_type), None)
+    new_status = current_doc.status if current_doc is not None else DocStatus.NEEDS_REVIEW
+
+    return HrCorrectionNotice(
+        employee_id=checklist.employee_id,
+        faculty_class_label=config.AUDIENCE_LABELS.get(faculty_class or "", faculty_class or "Unspecified"),
+        doc_type=doc_type,
+        new_outcome=validation.outcome,
+        new_status=new_status,
+        message=validation.message,
+        still_verified=still_verified,
+        notice_hash=_packet_hash(checklist),
+    )
+
+
+def compose_review_alert(
+    doc_type: DocType,
+    validation: ValidationResult,
+    checklist: ChecklistStatus,
+    faculty_class: str | None,
+    source_hash: str,
+) -> HrReviewAlert:
+    """(doc_type, validation, checklist, faculty_class, source_hash) ->
+    HrReviewAlert. Called whenever THIS upload's outcome is NEEDS_REVIEW —
+    independent of compose_correction_notice's regression condition, see
+    HrReviewAlert's docstring for why the two can legitimately both fire on
+    one request.
+
+    review_hash keys off (doc_type, source_hash) rather than the whole
+    checklist (unlike packet_hash/notice_hash) — this alert is about ONE
+    document's own content, not about what else happens to be on file for
+    this employee, so its idempotency shouldn't shift just because the
+    sibling document changes."""
+    return HrReviewAlert(
+        employee_id=checklist.employee_id,
+        faculty_class_label=config.AUDIENCE_LABELS.get(faculty_class or "", faculty_class or "Unspecified"),
+        doc_type=doc_type,
+        message=validation.message,
+        review_hash=hashlib.sha256(f"{doc_type.value}:{source_hash}".encode("utf-8")).hexdigest(),
     )

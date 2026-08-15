@@ -80,6 +80,16 @@ def record_attempt(employee_id: str, packet_hash: str) -> int:
     return row["attempts"]
 
 
+def has_ever_sent(employee_id: str) -> bool:
+    """True once at least one packet (of any packet_hash -- the original
+    handoff or a later replacement) has actually SENT for this employee.
+    Factored out of the GET /hr-notifications endpoint's inline filter
+    (src/api.py) so the upload-lock correction-notice gate can share the
+    same check: a regression only needs correcting if HR was told
+    *something* about this employee already."""
+    return any(row["status"] == NotificationStatus.SENT.value for row in list_for_employee(employee_id))
+
+
 def list_for_employee(employee_id: str) -> list[dict]:
     """Newest-first, for GET /hr-notifications/{employee_id} (the UI's
     "Sent to HR" indicator)."""

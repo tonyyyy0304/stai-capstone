@@ -374,6 +374,23 @@ NBI_VALIDITY_MONTHS = 12         # EMPLOYER freshness policy, layered on top of
                                 # (not instead of) the document's own printed
                                 # valid_until — Rule 5 takes whichever is
                                 # stricter. See PLAN.md §4.1 Rule 5, CV_INTEGRATION.md §2.7.
+# The document's OWN fixed printed-validity length (NBI clearances are always
+# printed valid for exactly one year from date_printed, by NBI policy) — a
+# SEPARATE knob from NBI_VALIDITY_MONTHS above on purpose, even though both
+# currently happen to be 12: one is what NBI itself prints, the other is how
+# fresh THIS employer wants a clearance to be, and they must be able to
+# diverge (e.g. a stricter 6-month employer policy) without this plausibility
+# check's expectation changing. Used only by Rule 3 (_rule_format_nbi) to
+# catch a valid_until that's implausible given date_printed — a real,
+# confirmed failure mode: a real specimen's printed "November 04, 2026" was
+# misread by the vision model as "November 04, 2025" (one digit, high stated
+# confidence), which Rule 5 then correctly-per-its-own-logic hard-rejected as
+# expired. The document was never actually invalid; the OCR was wrong. This
+# check escalates that class of case to needs_review instead of a silent
+# false-reject — deterministic, not another LLM call, per this project's
+# validation-is-not-LLM-judgment convention.
+NBI_PRINTED_VALIDITY_MONTHS = 12
+NBI_PRINTED_VALIDITY_TOLERANCE_DAYS = 14   # leap years / processing-time slack
 # Normalized clean-status strings for the `remarks` field (Rule 3). Deliberately
 # incomplete and tunable — extend as real samples show more phrasing variants.
 # Anything NOT in this tuple fails Rule 3 outright; never assumed clean by default.

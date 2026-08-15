@@ -38,10 +38,9 @@ logger = logging.getLogger(__name__)
 Attachment = tuple[str, bytes, str]  # (filename, content, mime_type)
 
 
-def _build_message(packet: HrPacket, attachments: list[Attachment] | None) -> EmailMessage:
-    plain_text, html_body = build_email_bodies(packet)
+def _build_message(subject: str, plain_text: str, html_body: str, attachments: list[Attachment] | None) -> EmailMessage:
     message = EmailMessage()
-    message["Subject"] = subject_line(packet)
+    message["Subject"] = subject
     message["From"] = config.HR_EMAIL_FROM
     message["To"] = config.HR_EMAIL_TO
     message.set_content(plain_text)
@@ -52,10 +51,13 @@ def _build_message(packet: HrPacket, attachments: list[Attachment] | None) -> Em
     return message
 
 
-def _send_dry_run(packet: HrPacket, attachments: list[Attachment] | None) -> EmailSendResult:
-    message = _build_message(packet, attachments)
+def _send_dry_run(
+    subject: str, plain_text: str, html_body: str, employee_id: str, content_hash: str,
+    attachments: list[Attachment] | None,
+) -> EmailSendResult:
+    message = _build_message(subject, plain_text, html_body, attachments)
     config.OUTBOX_DIR.mkdir(parents=True, exist_ok=True)
-    outbox_path = config.OUTBOX_DIR / f"{packet.employee_id}_{packet.packet_hash[:12]}.eml"
+    outbox_path = config.OUTBOX_DIR / f"{employee_id}_{content_hash[:12]}.eml"
     try:
         outbox_path.write_bytes(bytes(message))
     except OSError as exc:
@@ -64,7 +66,9 @@ def _send_dry_run(packet: HrPacket, attachments: list[Attachment] | None) -> Ema
     return EmailSendResult(status=NotificationStatus.SENT, provider_id=f"dry-run:{outbox_path.name}")
 
 
-def _send_mailtrap(packet: HrPacket, attachments: list[Attachment] | None) -> EmailSendResult:
+def _send_mailtrap(
+    subject: str, plain_text: str, html_body: str, attachments: list[Attachment] | None,
+) -> EmailSendResult:
     """POSTs to Mailtrap's Sandbox Sending API
     (https://sandbox.api.mailtrap.io/api/send/{inbox_id}) — every message is
     caught in a private test inbox, never delivered to a real address, which
@@ -74,11 +78,10 @@ def _send_mailtrap(packet: HrPacket, attachments: list[Attachment] | None) -> Em
 
     import httpx
 
-    plain_text, html_body = build_email_bodies(packet)
     payload = {
         "from": {"email": config.HR_EMAIL_FROM, "name": "Faculty Onboarding Concierge"},
         "to": [{"email": config.HR_EMAIL_TO}],
-        "subject": subject_line(packet),
+        "subject": subject,
         "text": plain_text,
         "html": html_body,
     }
@@ -140,15 +143,37 @@ def _backoff_seconds(attempt: int) -> float:
     return float(2 ** (attempt - 1))
 
 
-def send_packet(packet: HrPacket, attachments: list[Attachment] | None = None) -> EmailSendResult:
-    """Sends (or dry-run-writes) the HR handoff packet. Never raises — any
-    unexpected failure degrades to a FAILED EmailSendResult with a PII-free
-    error string, exactly like every other fail-safe path in this codebase
-    (src/api.py's upload_doc, extractor.py's _call_gemini)."""
+def send_email(
+    subject: str,
+    plain_text: str,
+    html_body: str,
+    employee_id: str,
+    content_hash: str,
+    attachments: list[Attachment] | None = None,
+) -> EmailSendResult:
+    """Sends (or dry-run-writes) any already-composed email to HR. Never
+    raises — any unexpected failure degrades to a FAILED EmailSendResult with
+    a PII-free error string, exactly like every other fail-safe path in this
+    codebase (src/api.py's upload_doc, extractor.py's _call_gemini).
+
+    Generic transport, not HrPacket-specific — employee_id/content_hash are
+    only used to name the dry-run .eml file, same naming scheme as before
+    (packet.employee_id/packet.packet_hash). This is what lets the
+    correction-notice path (src/notifications/hr_packet.py's
+    compose_correction_notice) reuse the exact same dry-run/Mailtrap/retry
+    logic as the original handoff packet without a second copy of it."""
     try:
         if config.EMAIL_DRY_RUN:
-            return _send_dry_run(packet, attachments)
-        return _send_mailtrap(packet, attachments)
+            return _send_dry_run(subject, plain_text, html_body, employee_id, content_hash, attachments)
+        return _send_mailtrap(subject, plain_text, html_body, attachments)
     except Exception as exc:  # last-resort fail-closed, matches upload_doc's own broad catch
         logger.exception("hr_email_send_unexpected_error error_type=%s", type(exc).__name__)
         return EmailSendResult(status=NotificationStatus.FAILED, error=f"unexpected error: {type(exc).__name__}")
+
+
+def send_packet(packet: HrPacket, attachments: list[Attachment] | None = None) -> EmailSendResult:
+    """Sends (or dry-run-writes) the HR handoff packet. Thin wrapper over
+    send_email() — composes packet -> (subject, plain, html) via
+    templates.py, same as before this function was generalized."""
+    plain_text, html_body = build_email_bodies(packet)
+    return send_email(subject_line(packet), plain_text, html_body, packet.employee_id, packet.packet_hash, attachments)
