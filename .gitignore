@@ -55,3 +55,7 @@ Thumbs.db
 .vscode/
 .idea/
 AGENTS.md
+
+# AI assistant tooling (local only, not part of the submitted project)
+CLAUDE.md
+.claude/
