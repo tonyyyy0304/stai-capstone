@@ -11,8 +11,15 @@ from fastapi.testclient import TestClient
 
 from src import api, config
 from src.memory import hr_notifications
-from src.notifications.hr_packet import compose_packet
-from src.notifications.templates import build_email_bodies, subject_line
+from src.notifications.hr_packet import compose_correction_notice, compose_packet, compose_review_alert
+from src.notifications.templates import (
+    build_correction_email_bodies,
+    build_email_bodies,
+    build_review_alert_email_bodies,
+    correction_subject_line,
+    review_alert_subject_line,
+    subject_line,
+)
 from src.schemas import (
     ChecklistStatus,
     DocStatus,
@@ -26,7 +33,9 @@ from src.schemas import (
     NotificationStatus,
     OnboardingDocument,
     QualityVerdict,
+    RuleResult,
     ValidationOutcome,
+    ValidationResult,
 )
 
 
@@ -132,6 +141,132 @@ def test_compose_packet_hash_changes_when_a_document_is_replaced():
     assert p1.packet_hash != p2.packet_hash
 
 
+# --- hr_packet.compose_correction_notice (pure, no I/O) -----------------------
+
+def _rejected_validation(message="Reference number format looks incorrect.") -> ValidationResult:
+    return ValidationResult(
+        outcome=ValidationOutcome.REJECTED,
+        rules=[RuleResult(rule="format", passed=False, detail="reference_no failed pattern check")],
+        composite_confidence=0.2,
+        message=message,
+    )
+
+
+def _regressed_checklist(employee_id="EMP-04821") -> ChecklistStatus:
+    """NBI regressed from VALIDATED to REJECTED; Government ID is still
+    VALIDATED and unaffected -- the shape compose_correction_notice sees
+    right after api.py re-fetches the checklist post-record_result."""
+    checklist = _checklist(employee_id=employee_id)
+    checklist.documents[0].status = DocStatus.REJECTED
+    checklist.documents[0].outcome = ValidationOutcome.REJECTED
+    checklist.documents[0].source_hash = "new-nbi-hash"
+    checklist.missing = [DocType.NBI_CLEARANCE.value]
+    return checklist
+
+
+def test_compose_correction_notice_shape():
+    validation = _rejected_validation()
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, validation, _regressed_checklist(), "full_time_academic")
+    assert notice.employee_id == "EMP-04821"
+    assert notice.faculty_class_label == "Full-time Academic Faculty"
+    assert notice.doc_type == DocType.NBI_CLEARANCE
+    assert notice.new_outcome == ValidationOutcome.REJECTED
+    assert notice.new_status == DocStatus.REJECTED
+    assert notice.message == validation.message
+    # the Government ID is still VALIDATED and unaffected by the NBI regression
+    assert len(notice.still_verified) == 1
+    assert notice.still_verified[0].doc_type == DocType.GOVERNMENT_ID
+
+
+def test_compose_correction_notice_hash_differs_from_original_send():
+    """The whole idempotency story rests on this: a regression always
+    changes the regressed document's source_hash, which is enough on its
+    own to make notice_hash differ from the original packet_hash --
+    already_sent() (src/memory/hr_notifications.py) needs no changes."""
+    original_packet = compose_packet(_nbi_result(), _id_result(), _checklist(), "full_time_academic")
+    notice = compose_correction_notice(
+        DocType.NBI_CLEARANCE, _rejected_validation(), _regressed_checklist(), "full_time_academic"
+    )
+    assert notice.notice_hash != original_packet.packet_hash
+
+
+def test_compose_correction_notice_unknown_faculty_class_degrades_gracefully():
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, _rejected_validation(), _regressed_checklist(), None)
+    assert notice.faculty_class_label == "Unspecified"
+
+
+# --- hr_packet.compose_review_alert (pure, no I/O) -----------------------------
+
+def _needs_review_validation(message="Extraction confidence too low for auto-decision.") -> ValidationResult:
+    return ValidationResult(
+        outcome=ValidationOutcome.NEEDS_REVIEW,
+        rules=[RuleResult(rule="fail_safe", passed=False, detail="low confidence")],
+        composite_confidence=0.3,
+        message=message,
+    )
+
+
+def test_compose_review_alert_shape():
+    validation = _needs_review_validation()
+    alert = compose_review_alert(DocType.NBI_CLEARANCE, validation, _checklist(), "full_time_academic", "some-hash")
+    assert alert.employee_id == "EMP-04821"
+    assert alert.faculty_class_label == "Full-time Academic Faculty"
+    assert alert.doc_type == DocType.NBI_CLEARANCE
+    assert alert.message == validation.message
+
+
+def test_compose_review_alert_hash_keys_off_doc_type_and_source_hash_only():
+    """Deliberately NOT the whole checklist (unlike packet_hash/notice_hash)
+    -- this alert is about one document's own content, so it must not
+    change just because the sibling document changes."""
+    alert1 = compose_review_alert(DocType.NBI_CLEARANCE, _needs_review_validation(), _checklist(), "full_time_academic", "hash-a")
+    checklist2 = _checklist()
+    checklist2.documents[1].source_hash = "a-totally-different-id-hash"  # sibling changes
+    alert2 = compose_review_alert(DocType.NBI_CLEARANCE, _needs_review_validation(), checklist2, "full_time_academic", "hash-a")
+    assert alert1.review_hash == alert2.review_hash
+
+    alert3 = compose_review_alert(DocType.NBI_CLEARANCE, _needs_review_validation(), _checklist(), "full_time_academic", "hash-b")
+    assert alert1.review_hash != alert3.review_hash
+
+    alert4 = compose_review_alert(DocType.GOVERNMENT_ID, _needs_review_validation(), _checklist(), "full_time_academic", "hash-a")
+    assert alert1.review_hash != alert4.review_hash  # same source_hash, different doc_type
+
+
+def test_compose_review_alert_unknown_faculty_class_degrades_gracefully():
+    alert = compose_review_alert(DocType.NBI_CLEARANCE, _needs_review_validation(), _checklist(), None, "some-hash")
+    assert alert.faculty_class_label == "Unspecified"
+
+
+# --- templates.build_review_alert_email_bodies / review_alert_subject_line ----
+
+def test_review_alert_subject_line_is_triageable():
+    alert = compose_review_alert(DocType.NBI_CLEARANCE, _needs_review_validation(), _checklist(), "full_time_academic", "some-hash")
+    subject = review_alert_subject_line(alert)
+    assert "EMP-04821" in subject
+    assert "NBI Clearance" in subject
+    assert "Review needed" in subject
+
+
+def test_review_alert_email_bodies_contain_required_blocks():
+    validation = _needs_review_validation("Extraction confidence too low for auto-decision.")
+    alert = compose_review_alert(DocType.GOVERNMENT_ID, validation, _checklist(), "full_time_academic", "some-hash")
+    plain_text, html_body = build_review_alert_email_bodies(alert)
+
+    for body in (plain_text, html_body):
+        assert "EMP-04821" in body
+        assert "Government ID" in body
+        assert "Extraction confidence too low for auto-decision." in body
+        assert "Data Privacy Act" in body
+
+
+def test_review_alert_email_bodies_escape_html_in_message():
+    validation = _needs_review_validation("<script>alert(1)</script>")
+    alert = compose_review_alert(DocType.NBI_CLEARANCE, validation, _checklist(), "full_time_academic", "some-hash")
+    _, html_body = build_review_alert_email_bodies(alert)
+    assert "<script>alert(1)</script>" not in html_body
+    assert "&lt;script&gt;" in html_body
+
+
 # --- templates.build_email_bodies / subject_line ------------------------------
 
 def test_subject_line_is_triageable():
@@ -176,6 +311,52 @@ def test_email_bodies_escape_html_in_faculty_class_label(monkeypatch):
     packet = compose_packet(_nbi_result(), _id_result(), _checklist(), "full_time_academic")
     packet = packet.model_copy(update={"faculty_class_label": "<script>alert(1)</script>"})
     _, html_body = build_email_bodies(packet)
+    assert "<script>alert(1)</script>" not in html_body
+    assert "&lt;script&gt;" in html_body
+
+
+# --- templates.build_correction_email_bodies / correction_subject_line --------
+
+def test_correction_subject_line_is_triageable():
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, _rejected_validation(), _regressed_checklist(), "full_time_academic")
+    subject = correction_subject_line(notice)
+    assert "EMP-04821" in subject
+    assert "NBI Clearance" in subject
+    assert "ACTION NEEDED" in subject
+
+
+def test_correction_email_bodies_contain_required_blocks():
+    validation = _rejected_validation("Reference number format looks incorrect.")
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, validation, _regressed_checklist(), "full_time_academic")
+    plain_text, html_body = build_correction_email_bodies(notice)
+
+    for body in (plain_text, html_body):
+        assert "EMP-04821" in body
+        assert "NBI Clearance" in body
+        assert "rejected" in body
+        assert "Reference number format looks incorrect." in body
+        assert "stale" in body.lower()
+        assert "Government ID" in body  # still_verified section
+        assert "Data Privacy Act" in body
+
+
+def test_correction_email_bodies_no_still_verified_section_when_empty():
+    """Both documents regressed (or the sibling was never validated) --
+    still_verified is empty, and the section just doesn't render, no
+    empty-list artifact."""
+    checklist = _regressed_checklist()
+    checklist.documents[1].status = DocStatus.MISSING
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, _rejected_validation(), checklist, "full_time_academic")
+    assert notice.still_verified == []
+    plain_text, html_body = build_correction_email_bodies(notice)
+    assert "Still verified" not in plain_text
+    assert "Still verified" not in html_body
+
+
+def test_correction_email_bodies_escape_html_in_message():
+    validation = _rejected_validation("<script>alert(1)</script>")
+    notice = compose_correction_notice(DocType.NBI_CLEARANCE, validation, _regressed_checklist(), "full_time_academic")
+    _, html_body = build_correction_email_bodies(notice)
     assert "<script>alert(1)</script>" not in html_body
     assert "&lt;script&gt;" in html_body
 
@@ -337,6 +518,153 @@ def test_replacing_a_document_after_sent_triggers_a_new_send(monkeypatch, tmp_pa
     different_bytes = _png_bytes() + b"1"
     _upload(client, "EMP-15", "government_id", "id2.png", file_bytes=different_bytes)
     assert len(calls) == 2
+
+
+# --- Upload-lock correction notice: a VALIDATED document that regresses -------
+
+def _correction_calls(email_calls):
+    return [c for c in email_calls if c[0].startswith("[Onboarding] ACTION NEEDED")]
+
+
+def _review_calls(email_calls):
+    return [c for c in email_calls if c[0].startswith("[Onboarding] Review needed")]
+
+
+def test_regression_after_hr_already_notified_triggers_correction_and_review_emails(monkeypatch, tmp_path):
+    """Both documents validate (original send fires), then the NBI Clearance
+    is re-uploaded and regresses to needs_review -- two independently true
+    facts fire on this one request: HR was already told this employee was
+    fully verified (now stale -- correction notice), AND this upload's own
+    outcome needs a human to look at it (review alert). Neither is a
+    duplicate of the other; the original hr_notifications row is untouched
+    (additive, not a rewrite)."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    nbi, id_doc = _nbi_result(), _id_result()
+    _monkeypatch_dual_extract(monkeypatch, nbi, id_doc)
+    packet_calls, email_calls = [], []
+    monkeypatch.setattr(
+        api, "send_packet",
+        lambda packet, attachments=None: packet_calls.append(packet) or EmailSendResult(status=NotificationStatus.SENT, provider_id="msg-1"),
+    )
+    monkeypatch.setattr(
+        api, "send_email",
+        lambda subject, plain_text, html_body, employee_id, content_hash, attachments=None:
+            email_calls.append((subject, employee_id, content_hash)) or EmailSendResult(status=NotificationStatus.SENT, provider_id="msg-2"),
+    )
+    client = TestClient(api.app)
+
+    _upload(client, "EMP-19", "nbi_clearance", "nbi.png")
+    _upload(client, "EMP-19", "government_id", "id.png")
+    assert len(packet_calls) == 1
+    assert email_calls == []
+
+    # NBI re-uploaded, now low-confidence enough to trip fail_safe -> needs_review.
+    low_confidence_nbi = _nbi_result(overall_confidence=0.1)
+    _monkeypatch_dual_extract(monkeypatch, low_confidence_nbi, id_doc)
+    r3 = _upload(client, "EMP-19", "nbi_clearance", "nbi2.png", file_bytes=_png_bytes() + b"2")
+
+    assert r3.json()["validation"]["outcome"] == "needs_review"
+    assert len(packet_calls) == 1  # the original send does not re-fire
+    assert len(_correction_calls(email_calls)) == 1
+    assert len(_review_calls(email_calls)) == 1
+    assert all(c[1] == "EMP-19" for c in email_calls)
+
+    rows = hr_notifications.list_for_employee("EMP-19")
+    assert len(rows) == 3  # original packet + correction notice + review alert, all distinct hashes
+    assert all(row["status"] == "sent" for row in rows)
+
+
+def test_regression_before_any_send_still_triggers_review_but_not_correction(monkeypatch, tmp_path):
+    """The correction gate is has_ever_sent(), not "any regression" -- a
+    document that regresses before the checklist was ever complete has
+    nothing to correct, since HR was never told anything about this
+    employee. The review-alert gate is independent of that: it only cares
+    about THIS upload's own outcome, so it fires regardless."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    nbi, id_doc = _nbi_result(), _id_result()
+    _monkeypatch_dual_extract(monkeypatch, nbi, id_doc)
+    packet_calls, email_calls = [], []
+    monkeypatch.setattr(
+        api, "send_packet",
+        lambda packet, attachments=None: packet_calls.append(1) or EmailSendResult(status=NotificationStatus.SENT),
+    )
+    monkeypatch.setattr(
+        api, "send_email",
+        lambda subject, plain_text, html_body, employee_id, content_hash, attachments=None:
+            email_calls.append((subject, employee_id, content_hash)) or EmailSendResult(status=NotificationStatus.SENT),
+    )
+    client = TestClient(api.app)
+
+    _upload(client, "EMP-20", "nbi_clearance", "nbi.png")  # solo upload -- validates, but checklist incomplete
+    assert packet_calls == []
+
+    low_confidence_nbi = _nbi_result(overall_confidence=0.1)
+    _monkeypatch_dual_extract(monkeypatch, low_confidence_nbi, id_doc)
+    r2 = _upload(client, "EMP-20", "nbi_clearance", "nbi2.png", file_bytes=_png_bytes() + b"2")
+
+    assert r2.json()["validation"]["outcome"] == "needs_review"
+    assert _correction_calls(email_calls) == []  # has_ever_sent("EMP-20") is False -- nothing to correct
+    assert len(_review_calls(email_calls)) == 1  # but a human still needs to look at this document
+
+
+def test_review_alert_fires_on_first_upload_with_no_prior_state(monkeypatch, tmp_path):
+    """The gap this feature closes: a document that lands on NEEDS_REVIEW on
+    its very FIRST upload (previous_doc is None -- not a regression at all)
+    used to be completely silent. Now it alerts."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    low_confidence_nbi = _nbi_result(overall_confidence=0.1)
+    _monkeypatch_dual_extract(monkeypatch, low_confidence_nbi, _id_result())
+    review_calls = []
+    monkeypatch.setattr(
+        api, "send_email",
+        lambda subject, plain_text, html_body, employee_id, content_hash, attachments=None:
+            review_calls.append((subject, employee_id)) or EmailSendResult(status=NotificationStatus.SENT),
+    )
+    client = TestClient(api.app)
+
+    r = _upload(client, "EMP-21", "nbi_clearance", "nbi.png")
+
+    assert r.json()["validation"]["outcome"] == "needs_review"
+    assert len(review_calls) == 1
+    assert review_calls[0][1] == "EMP-21"
+
+
+def test_review_alert_never_fires_on_rejected(monkeypatch, tmp_path):
+    """REJECTED is the deterministic, self-service retry path -- not a
+    human-judgment case, deliberately out of scope for this alert."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    review_calls = []
+    monkeypatch.setattr(
+        api, "send_email",
+        lambda subject, plain_text, html_body, employee_id, content_hash, attachments=None:
+            review_calls.append(1) or EmailSendResult(status=NotificationStatus.SENT),
+    )
+    client = TestClient(api.app)
+
+    r = _upload(client, "EMP-22", "nbi_clearance", "fake.png", file_bytes=b"not a real image")
+
+    assert r.json()["validation"]["outcome"] == "rejected"
+    assert review_calls == []
+
+
+def test_review_alert_is_idempotent_on_same_source_hash(monkeypatch, tmp_path):
+    """Re-fetching the checklist (e.g. the UI's polling GET) must not
+    re-trigger the alert -- and neither should literally resubmitting the
+    same bytes twice."""
+    _use_tmp_db(monkeypatch, tmp_path)
+    low_confidence_nbi = _nbi_result(overall_confidence=0.1)
+    _monkeypatch_dual_extract(monkeypatch, low_confidence_nbi, _id_result())
+    review_calls = []
+    monkeypatch.setattr(
+        api, "send_email",
+        lambda subject, plain_text, html_body, employee_id, content_hash, attachments=None:
+            review_calls.append(1) or EmailSendResult(status=NotificationStatus.SENT),
+    )
+    client = TestClient(api.app)
+
+    _upload(client, "EMP-23", "nbi_clearance", "nbi.png")
+    _upload(client, "EMP-23", "nbi_clearance", "nbi.png")  # identical bytes -> identical source_hash
+    assert len(review_calls) == 1
 
 
 # --- Failure isolation ---------------------------------------------------------

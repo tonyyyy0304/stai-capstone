@@ -33,14 +33,21 @@ from src.guardrails.doc_validation import (
 )
 from src.memory import hr_notifications, onboarding_status
 from src.monitoring import chat_trace, configure_mlflow, doc_trace, email_trace
-from src.notifications.email_client import send_packet
-from src.notifications.hr_packet import compose_packet
+from src.notifications.email_client import send_email, send_packet
+from src.notifications.hr_packet import compose_correction_notice, compose_packet, compose_review_alert
+from src.notifications.templates import (
+    build_correction_email_bodies,
+    build_review_alert_email_bodies,
+    correction_subject_line,
+    review_alert_subject_line,
+)
 from src.ocr.extractor import extract_document, load_cached_result
 from src.rag.answerer import answer_question
 from src.rag.retriever import RetrievedChunk
 from src.schemas import (
     ChecklistStatus,
     Citation,
+    DocStatus,
     DocType,
     IdExtractionResult,
     NbiExtractionResult,
@@ -310,6 +317,77 @@ def _send_hr_packet(
         logger.exception("hr_email_gate_failed employee_id=%s", checklist.employee_id)
 
 
+def _send_correction_notice(
+    doc_type: DocType,
+    validation: ValidationResult,
+    checklist: ChecklistStatus,
+) -> None:
+    """FastAPI BackgroundTasks target, sibling to _send_hr_packet -- fires
+    when a document that was VALIDATED regresses to something else AFTER HR
+    was already sent at least one packet for this employee (the gate is in
+    upload_doc below; this just composes+sends, same pattern as
+    _send_hr_packet). Reuses the same hr_notifications idempotency table
+    keyed by notice_hash instead of packet_hash -- a regression always
+    changes the regressed document's source_hash, so the hash is naturally
+    distinct from the original "verified" send and already_sent() works
+    unmodified, no schema change needed."""
+    try:
+        notice = compose_correction_notice(doc_type, validation, checklist, checklist.faculty_class)
+        if hr_notifications.already_sent(checklist.employee_id, notice.notice_hash):
+            return
+        attempts = hr_notifications.record_attempt(checklist.employee_id, notice.notice_hash)
+        with email_trace() as trace:
+            plain_text, html_body = build_correction_email_bodies(notice)
+            result = send_email(
+                correction_subject_line(notice), plain_text, html_body,
+                checklist.employee_id, notice.notice_hash,
+            )
+            trace["metrics"] = {"attempt_count": attempts}
+            trace["tags"] = {
+                "email_status": result.status.value,
+                "email_provider": "dry_run" if config.EMAIL_DRY_RUN else config.EMAIL_PROVIDER,
+                "email_kind": "correction",
+            }
+        hr_notifications.record_result(checklist.employee_id, notice.notice_hash, result)
+    except Exception:
+        logger.exception("hr_correction_email_gate_failed employee_id=%s", checklist.employee_id)
+
+
+def _send_review_alert(
+    doc_type: DocType,
+    validation: ValidationResult,
+    checklist: ChecklistStatus,
+    source_hash: str,
+) -> None:
+    """FastAPI BackgroundTasks target, sibling to _send_hr_packet /
+    _send_correction_notice -- fires whenever THIS upload's outcome is
+    NEEDS_REVIEW (the gate is in upload_doc below). Idempotency keyed by
+    review_hash = hash(doc_type, source_hash), not the whole checklist's
+    packet_hash -- this alert is about one document's own content, so
+    resubmitting the SAME bytes must not re-alert, independent of whatever
+    the sibling document is doing."""
+    try:
+        alert = compose_review_alert(doc_type, validation, checklist, checklist.faculty_class, source_hash)
+        if hr_notifications.already_sent(checklist.employee_id, alert.review_hash):
+            return
+        attempts = hr_notifications.record_attempt(checklist.employee_id, alert.review_hash)
+        with email_trace() as trace:
+            plain_text, html_body = build_review_alert_email_bodies(alert)
+            result = send_email(
+                review_alert_subject_line(alert), plain_text, html_body,
+                checklist.employee_id, alert.review_hash,
+            )
+            trace["metrics"] = {"attempt_count": attempts}
+            trace["tags"] = {
+                "email_status": result.status.value,
+                "email_provider": "dry_run" if config.EMAIL_DRY_RUN else config.EMAIL_PROVIDER,
+                "email_kind": "review",
+            }
+        hr_notifications.record_result(checklist.employee_id, alert.review_hash, result)
+    except Exception:
+        logger.exception("hr_review_email_gate_failed employee_id=%s", checklist.employee_id)
+
+
 @app.post("/upload-doc", response_model=UploadDocResponse)
 async def upload_doc(
     background_tasks: BackgroundTasks,
@@ -374,6 +452,11 @@ async def upload_doc(
             validation = validate_id_document(extracted, quality_report, faculty_record)
 
         source_hash = hashlib.sha256(raw_bytes).hexdigest()
+        # Captured BEFORE record_result overwrites the row -- the only way to
+        # later tell whether this upload regressed an already-VALIDATED,
+        # possibly-already-emailed document (see the correction-notice gate
+        # near the end of this function).
+        previous_doc = onboarding_status.get_document(employee_id, doc_type_enum)
         onboarding_status.record_result(employee_id, doc_type_enum, validation, source_hash=source_hash)
 
         # Persisted here (every upload, not just whichever one happens to
@@ -421,6 +504,35 @@ async def upload_doc(
                 background_tasks.add_task(_send_hr_packet, nbi_result, id_result, checklist)
             except Exception:
                 logger.exception("hr_email_schedule_failed employee_id=%s", employee_id)
+
+        # Correction gate: this upload's own doc_type just regressed away
+        # from VALIDATED (a re-upload of an already-verified document), and
+        # HR was already told SOMETHING about this employee before -- so
+        # that earlier email is now stale. Mutually exclusive with the
+        # "not checklist.missing" branch above in practice (a regression
+        # means checklist.missing is non-empty this request).
+        current_doc = next((doc for doc in checklist.documents if doc.doc_type == doc_type_enum), None)
+        regressed = (
+            previous_doc is not None and previous_doc.status == DocStatus.VALIDATED
+            and current_doc is not None and current_doc.status != DocStatus.VALIDATED
+        )
+        if regressed and hr_notifications.has_ever_sent(employee_id):
+            try:
+                background_tasks.add_task(_send_correction_notice, doc_type_enum, validation, checklist)
+            except Exception:
+                logger.exception("hr_correction_email_schedule_failed employee_id=%s", employee_id)
+
+        # Review-alert gate: independent of the two gates above -- fires
+        # whenever THIS upload's own outcome is NEEDS_REVIEW, regardless of
+        # what the document's previous status was. REJECTED is deliberately
+        # excluded (deterministic, self-service retry, not a human-judgment
+        # case); can legitimately co-fire with the correction gate above on
+        # the same request (see HrReviewAlert's docstring).
+        if validation.outcome == ValidationOutcome.NEEDS_REVIEW:
+            try:
+                background_tasks.add_task(_send_review_alert, doc_type_enum, validation, checklist, source_hash)
+            except Exception:
+                logger.exception("hr_review_email_schedule_failed employee_id=%s", employee_id)
 
         return UploadDocResponse(validation=validation, checklist=checklist)
 

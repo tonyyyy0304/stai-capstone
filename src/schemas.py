@@ -484,6 +484,44 @@ class HrPacket(BaseModel):
     packet_hash: str = ""
 
 
+class HrCorrectionNotice(BaseModel):
+    """A previously-VALIDATED document regressed after HR was already sent
+    at least one packet for this employee — composed by
+    hr_packet.compose_correction_notice(), rendered by
+    templates.build_correction_email_bodies(). Deliberately a separate model
+    from HrPacket (a different shape — one document's regression, not a full
+    checklist state) rather than a third branch bolted onto compose_packet/
+    build_email_bodies."""
+
+    employee_id: str
+    faculty_class_label: str = ""
+    doc_type: DocType
+    new_outcome: ValidationOutcome
+    new_status: DocStatus
+    message: str = Field(description="ValidationResult.message -- already UI-safe/PII-free")
+    still_verified: list[VerifiedDocSummary] = Field(default_factory=list)
+    notice_hash: str = ""
+
+
+class HrReviewAlert(BaseModel):
+    """A document landed on NEEDS_REVIEW -- the six-rule engine's own
+    "a human must look at this" bucket (Rule 4/identity and Rule 6/fail-safe
+    can only ever escalate here, never auto-reject). Fires independently of
+    HrCorrectionNotice: this is about THIS upload's outcome, not about
+    whether it used to be VALIDATED. The two can legitimately both fire on
+    the same request (e.g. a cross-document mismatch that regresses an
+    already-validated sibling AND lands this upload on needs_review) —
+    deliberately not merged into one email, since they're two independently
+    true facts. REJECTED is out of scope on purpose: it's the deterministic,
+    self-service retry path, not a human-judgment case."""
+
+    employee_id: str
+    faculty_class_label: str = ""
+    doc_type: DocType
+    message: str = Field(description="ValidationResult.message -- already UI-safe/PII-free")
+    review_hash: str = ""
+
+
 class NotificationStatus(str, Enum):
     QUEUED = "queued"
     SENT = "sent"

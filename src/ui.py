@@ -334,6 +334,22 @@ def _init_state() -> None:
     # doc_type so each document's card owns its own banner instead of one
     # upload's result bleeding onto the other document's card.
     st.session_state.setdefault("last_upload_result", {})
+    # A VALIDATED card locks (dropzone hidden) until the user deliberately
+    # clicks "Replace this document" -- overwriting a document that may
+    # already be in an HR email should be a deliberate action, not an
+    # accidental resubmit. One-shot: a successful response re-locks the
+    # card (see _fetch_pending_upload), it doesn't stay unlocked. Keyed by
+    # doc_type, same shape as last_upload_result.
+    st.session_state.setdefault("replace_unlocked", {})
+    # Deferred-submit queue (see _queue_upload/_fetch_pending_upload) --
+    # None when nothing is in flight; a dict describing the one queued
+    # upload otherwise. Needed (not just a bool) because the actual POST
+    # happens on the NEXT script run, after the panel has already rendered
+    # every control as disabled -- the same two-phase shape as
+    # pending_request/awaiting_response above, one flag doing double duty
+    # (existence = in-flight, contents = what to send) since only one
+    # upload can ever be queued at a time.
+    st.session_state.setdefault("pending_upload", None)
 
 
 def _toggle_sidebar() -> None:
@@ -351,6 +367,8 @@ def _start_new_chat() -> None:
     st.session_state.awaiting_response = False
     st.session_state.pending_request = None
     st.session_state.show_upload_flow = False  # re-lock; a new conversation hasn't asked for it yet
+    st.session_state.replace_unlocked = {}
+    st.session_state.pending_upload = None
 
 
 def _accept_privacy() -> None:
@@ -605,24 +623,19 @@ def _render_sidebar_checklist(checklist: dict | None) -> None:
     )
 
 
-def _submit_document(doc_type: str, upload_file) -> None:
-    """Validates and posts a single document to POST /upload-doc, writing its
-    result into last_upload_result[doc_type] so it lands on that document's
-    own card, then reruns. Single code path for both cards' Submit buttons.
+def _queue_upload(doc_type: str, upload_file) -> None:
+    """Validates and queues a document for submission on the NEXT script
+    phase (see _fetch_pending_upload) instead of posting immediately.
 
-    Runs inside st.spinner(), which blocks and animates in place during the
-    call -- extraction genuinely takes a few seconds (a real Gemini vision
-    call), and without this the UI just looked frozen. This is a different
-    mechanism from the chat composer's typing-indicator pattern: that one
-    defers rendering to the NEXT script run because the reply needs to
-    appear as a new message row after a rerun; here nothing needs to survive
-    a rerun mid-request, so the simpler synchronous st.spinner is the right
-    tool, not a duplicate of that pattern.
-
-    The result banner IS deferred to the next run (session_state +
-    st.rerun() after a successful submit) -- that part still needs it, so
-    the banner survives the rerun a successful submission triggers, which is
-    also what makes the checklist refresh without a manual reload."""
+    This split exists specifically so the OTHER card's controls can render
+    as genuinely disabled (disabled=True) before the blocking network call
+    starts, rather than the network call happening inline inside this
+    click handler -- Streamlit is single-threaded per session, so nothing
+    after this function returns executes until it returns, meaning a
+    sibling card can never actually reach the browser in a disabled state
+    while a synchronous call blocks here. Same two-phase shape as the chat
+    composer's _queue_message/_fetch_pending_response (queue + rerun, then
+    fetch on the next script run after the "busy" state has rendered)."""
     employee_id = st.session_state.employee_id.strip()
     dob_text = st.session_state.upload_dob.strip()
     dob_valid = _is_valid_iso_date(dob_text)
@@ -631,31 +644,75 @@ def _submit_document(doc_type: str, upload_file) -> None:
     elif not dob_valid:
         st.error("Date of birth must be a real date in YYYY-MM-DD format (e.g. 1990-01-01).")
     else:
-        with st.spinner("Verifying document — this can take a few seconds…"):
-            try:
-                response = requests.post(
-                    f"{st.session_state.api_url.rstrip('/')}/upload-doc",
-                    data={
-                        "employee_id": employee_id,
-                        "doc_type": doc_type,
-                        "full_name": st.session_state.upload_full_name,
-                        "date_of_birth": dob_text,
-                        "faculty_class": st.session_state.upload_faculty_class,
-                    },
-                    files={"file": (upload_file.name, upload_file.getvalue(), upload_file.type)},
-                    timeout=90,
-                )
-                response.raise_for_status()
-                st.session_state.last_upload_result[doc_type] = response.json()
-            except requests.RequestException as exc:
-                st.session_state.last_upload_result[doc_type] = {"error": str(exc)}
+        st.session_state.pending_upload = {
+            "doc_type": doc_type,
+            "employee_id": employee_id,
+            "full_name": st.session_state.upload_full_name,
+            "date_of_birth": dob_text,
+            "faculty_class": st.session_state.upload_faculty_class,
+            "file_name": upload_file.name,
+            "file_bytes": upload_file.getvalue(),
+            "file_type": upload_file.type,
+        }
         st.rerun()
 
 
-def _render_document_card(doc_type: str, status: str) -> None:
-    """One document's dropzone + Submit + own result banner. The dropzone
-    renders unconditionally, including for an already-validated document --
-    re-upload after a rejected/needs_review outcome is a real path."""
+def _fetch_pending_upload() -> None:
+    """Performs the queued POST /upload-doc call. Must only be called after
+    _render_document_panel has already rendered the panel with every card
+    disabled (see its disable_all param) -- that's what makes the disabled
+    state the thing actually on screen during this blocking call, instead
+    of a stale, still-interactive frame from before the queueing rerun."""
+    pending = st.session_state.pending_upload
+    doc_type = pending["doc_type"]
+    try:
+        response = requests.post(
+            f"{st.session_state.api_url.rstrip('/')}/upload-doc",
+            data={
+                "employee_id": pending["employee_id"],
+                "doc_type": doc_type,
+                "full_name": pending["full_name"],
+                "date_of_birth": pending["date_of_birth"],
+                "faculty_class": pending["faculty_class"],
+            },
+            files={"file": (pending["file_name"], pending["file_bytes"], pending["file_type"])},
+            timeout=90,
+        )
+        response.raise_for_status()
+        st.session_state.last_upload_result[doc_type] = response.json()
+        # Re-lock on any successful response, regardless of the new
+        # outcome -- the card re-derives its lock state from the fresh
+        # status on the next render (see _render_document_card). A network
+        # failure below does NOT reset this, so the user can just hit
+        # Submit again without re-clicking "Replace".
+        st.session_state.replace_unlocked[doc_type] = False
+    except requests.RequestException as exc:
+        st.session_state.last_upload_result[doc_type] = {"error": str(exc)}
+    st.session_state.pending_upload = None
+
+
+def _unlock_replace(doc_type: str) -> None:
+    st.session_state.replace_unlocked[doc_type] = True
+
+
+def _render_document_card(doc_type: str, status: str, disable_all: bool) -> None:
+    """One document's dropzone + Submit + own result banner. Locked once
+    VALIDATED (see module docstring's note on replace_unlocked): an
+    already-verified document may already be in an HR email, so overwriting
+    it needs a deliberate "Replace this document" click rather than being
+    one accidental resubmit away. REJECTED/NEEDS_REVIEW/MISSING are
+    unaffected -- those already need a resubmit, that's the existing,
+    correct recovery path.
+
+    disable_all is True for every card, on both cards, while ANY document
+    is mid-submit (see _render_document_panel) -- genuinely disabled
+    controls (disabled=True), not just Streamlit's cosmetic rerun-dim,
+    which is what "greyed out but still let me interact with it" meant
+    before this fix. Deliberately no per-card "Verifying..." text here --
+    the top-level st.spinner() (_render_document_panel's caller) already
+    says that once, in one place; an earlier version duplicated it inline
+    per-card too, which read as two conflicting/stuck messages rather than
+    one clear one."""
     label = _DOC_TYPE_LABELS.get(doc_type, doc_type)
     st.markdown(
         '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0 2px 0;">'
@@ -664,15 +721,34 @@ def _render_document_card(doc_type: str, status: str) -> None:
         "</div>",
         unsafe_allow_html=True,
     )
+
+    locked = status == "validated" and not st.session_state.replace_unlocked.get(doc_type, False)
+    if locked:
+        st.markdown(
+            '<div style="font-size:12.5px;color:oklch(48% 0.012 250);padding:2px 0 6px 0;">'
+            "This document has been verified.</div>",
+            unsafe_allow_html=True,
+        )
+        st.button(
+            "Replace this document", key=f"unlock_replace_{doc_type}",
+            on_click=_unlock_replace, args=(doc_type,), use_container_width=True,
+            disabled=disable_all,
+        )
+        return
+
+    if status == "validated":
+        st.caption("Replacing a validated document will notify HR if the outcome changes.")
+
     upload_file = st.file_uploader(
         "File (JPEG/PNG)", type=["png", "jpg", "jpeg"], key=f"upload_file_{doc_type}",
-        label_visibility="collapsed",
+        label_visibility="collapsed", disabled=disable_all,
     )
     if upload_file is not None:
         st.image(upload_file, width=180)
 
-    if st.button("Submit", key=f"upload_submit_{doc_type}", use_container_width=True):
-        _submit_document(doc_type, upload_file)
+    submit_label = "Replace document" if status == "validated" else "Submit"
+    if st.button(submit_label, key=f"upload_submit_{doc_type}", use_container_width=True, disabled=disable_all):
+        _queue_upload(doc_type, upload_file)
 
     result = st.session_state.last_upload_result.get(doc_type)
     if result:
@@ -713,14 +789,22 @@ def _render_document_panel(checklist: dict | None) -> None:
         # rerun. Always-open is the tradeoff until this project's Streamlit
         # pin moves past 1.47.
         with st.expander("Document verification", expanded=True):
+            # True the moment ANY document is queued for submission (set by
+            # _queue_upload, cleared by _fetch_pending_upload) -- disables
+            # every field/card below for the one script run where the
+            # actual POST /upload-doc call is in flight (see the top-level
+            # flow's _fetch_pending_upload() call, which runs AFTER this
+            # panel has rendered with disable_all already applied).
+            disable_all = st.session_state.pending_upload is not None
+
             st.session_state.upload_full_name = st.text_input(
                 "Full name (as printed on the document)",
                 value=st.session_state.upload_full_name, key="upload_full_name_input",
-                placeholder="e.g. REYES, MARIA SANTOS",
+                placeholder="e.g. REYES, MARIA SANTOS", disabled=disable_all,
             )
             st.session_state.upload_dob = st.text_input(
                 "Date of birth (YYYY-MM-DD)", value=st.session_state.upload_dob, key="upload_dob_input",
-                placeholder="e.g. 1990-01-01",
+                placeholder="e.g. 1990-01-01", disabled=disable_all,
             )
             # Drives the HR handoff email's per-class "still outstanding"
             # checklist (config.PREEMPLOYMENT_CHECKLIST) once both documents
@@ -730,12 +814,30 @@ def _render_document_panel(checklist: dict | None) -> None:
                 "Faculty class", config.AUDIENCE_ORDER,
                 index=config.AUDIENCE_ORDER.index(st.session_state.upload_faculty_class),
                 format_func=lambda slug: config.AUDIENCE_LABELS.get(slug, slug),
-                key="upload_faculty_class_input",
+                key="upload_faculty_class_input", disabled=disable_all,
             )
 
             for doc_type in config.REQUIRED_ONBOARDING_DOCS:
                 st.divider()
-                _render_document_card(doc_type, _doc_status(checklist, doc_type))
+                _render_document_card(doc_type, _doc_status(checklist, doc_type), disable_all)
+
+            # The blocking POST /upload-doc call itself. Deliberately placed
+            # HERE -- still inside this expander/container, right after both
+            # cards -- rather than in the top-level script flow after this
+            # function returns: st.spinner() renders wherever it's called,
+            # and calling it post-return put the spinner outside the whole
+            # panel box, down near the chat composer, which read as "the
+            # spinner is in a weird place" (it was). Moving it in-panel
+            # fixes the visual position WITHOUT reopening the bug this
+            # two-phase split exists to fix: both cards above have already
+            # rendered with disable_all=True by the time this call starts,
+            # so their disabled state is still what's on screen during the
+            # blocking call -- only the SPINNER's position changed, not the
+            # ordering guarantee.
+            if disable_all:
+                with st.spinner("Verifying document — this can take a few seconds…"):
+                    _fetch_pending_upload()
+                st.rerun()
 
 
 def _render_sidebar(accent: str, dev_mode: bool) -> None:
@@ -1126,6 +1228,10 @@ if st.session_state.awaiting_response:
 
 _render_quick_prompts()
 if st.session_state.show_upload_flow:
+    # The blocking POST /upload-doc call (when pending_upload is set) is
+    # triggered INSIDE _render_document_panel, at the end, after both cards
+    # have already rendered disabled -- not out here -- so the spinner
+    # shows inside the panel box, not below it near the composer.
     _render_document_panel(_checklist)
 
 _prompt = st.chat_input("Ask about faculty onboarding or the Faculty Manual…")

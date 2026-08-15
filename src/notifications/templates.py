@@ -13,7 +13,7 @@ from __future__ import annotations
 import html
 
 from src import config
-from src.schemas import DocType, HrPacket
+from src.schemas import DocType, HrCorrectionNotice, HrPacket, HrReviewAlert
 
 _DOC_TYPE_LABELS = {DocType.NBI_CLEARANCE: "NBI Clearance", DocType.GOVERNMENT_ID: "Government ID"}
 
@@ -173,6 +173,183 @@ def build_email_bodies(packet: HrPacket) -> tuple[str, str]:
             <tr>
               <td style="padding:14px 20px;background-color:#eff6ff;font-size:13px;color:#1e3a8a;">
                 Next action: file under {esc(packet.employee_id)}; request the {len(packet.outstanding)} outstanding item(s) above.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 20px;background-color:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">
+                Confidential: contains information from a government-issued clearance and ID, sensitive personal
+                information under the Philippine Data Privacy Act (RA 10173). Handle and retain per HRMO policy.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+    return plain_text, html_body
+
+
+def correction_subject_line(notice: HrCorrectionNotice) -> str:
+    label = _DOC_TYPE_LABELS.get(notice.doc_type, notice.doc_type.value)
+    return f"[Onboarding] ACTION NEEDED — {label} no longer valid — {notice.employee_id}"
+
+
+def build_correction_email_bodies(notice: HrCorrectionNotice) -> tuple[str, str]:
+    """Returns (plain_text, html_body) for the correction notice sent when a
+    document HR was already told was verified has since regressed. Same
+    esc()-everything discipline as build_email_bodies; separate function
+    rather than a third branch inside that one, since the shape (one
+    document's regression, not a full checklist) is genuinely different."""
+    label = _DOC_TYPE_LABELS.get(notice.doc_type, notice.doc_type.value)
+
+    plain_lines = [
+        "A document previously verified by the Faculty Onboarding Concierge no longer validates.",
+        "The earlier verification email for this employee is now STALE for this document.",
+        "",
+        f"Employee ID:     {notice.employee_id}",
+        f"Faculty class:   {notice.faculty_class_label}",
+        f"Document:        {label}",
+        f"New status:      {notice.new_status.value} ({notice.new_outcome.value})",
+        f"Detail:          {notice.message}",
+        "",
+    ]
+    if notice.still_verified:
+        plain_lines += ["Still verified (unaffected)", "----------------------------"]
+        plain_lines += [
+            f"  - {_DOC_TYPE_LABELS.get(d.doc_type, d.doc_type.value)}: {d.outcome.value} "
+            f"(validated {d.validated_at or 'unknown date'})"
+            for d in notice.still_verified
+        ]
+        plain_lines.append("")
+
+    plain_lines += [
+        f"Next action: do not rely on the earlier verification email for the {label}. "
+        "Re-review before proceeding.",
+        "",
+        "Confidential: this message contains information from a government-issued clearance and ID, "
+        "which are sensitive personal information under the Philippine Data Privacy Act (RA 10173). "
+        "Handle and retain per HRMO's data privacy policy.",
+    ]
+    plain_text = "\n".join(plain_lines)
+
+    still_verified_html = "".join(
+        f'<li style="padding:3px 0;">{esc(_DOC_TYPE_LABELS.get(d.doc_type, d.doc_type.value))}: '
+        f'{esc(d.outcome.value)} (validated {esc(d.validated_at or "unknown date")})</li>'
+        for d in notice.still_verified
+    )
+    still_verified_html_block = (
+        f"""
+        <tr><td style="padding:16px 20px 4px;font-size:13px;font-weight:600;color:#111827;">Still verified (unaffected)</td></tr>
+        <tr><td style="padding:0 20px 8px;"><ul style="margin:0;padding-left:18px;font-size:13px;color:#374151;">{still_verified_html}</ul></td></tr>
+        """
+        if notice.still_verified
+        else ""
+    )
+
+    html_body = f"""\
+<html>
+  <body style="margin:0;padding:0;background-color:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f3f4f6;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0"
+                 style="background-color:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="background-color:#b91c1c;padding:18px 20px;">
+                <span style="color:#ffffff;font-size:16px;font-weight:700;">Action needed — document no longer valid</span><br>
+                <span style="color:#ffffff;font-size:13px;opacity:0.9;">{esc(notice.employee_id)} &middot; {esc(notice.faculty_class_label)}</span>
+              </td>
+            </tr>
+            <tr><td style="padding:10px 20px;background:#fef2f2;color:#b91c1c;font-size:12px;">
+              The earlier verification email for this employee is now stale for this document.
+            </td></tr>
+            <tr>
+              <td style="padding:16px 20px 4px;font-size:13px;font-weight:600;color:#111827;">{esc(label)}</td>
+            </tr>
+            <tr><td style="padding:0 20px 8px;font-size:13px;color:#374151;">
+              New status: <strong>{esc(notice.new_status.value)}</strong> ({esc(notice.new_outcome.value)})<br>
+              Detail: {esc(notice.message)}
+            </td></tr>
+            {still_verified_html_block}
+            <tr>
+              <td style="padding:14px 20px;background-color:#fef2f2;font-size:13px;color:#991b1b;">
+                Next action: do not rely on the earlier verification email for the {esc(label)}. Re-review before proceeding.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 20px;background-color:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">
+                Confidential: contains information from a government-issued clearance and ID, sensitive personal
+                information under the Philippine Data Privacy Act (RA 10173). Handle and retain per HRMO policy.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+    return plain_text, html_body
+
+
+def review_alert_subject_line(alert: HrReviewAlert) -> str:
+    label = _DOC_TYPE_LABELS.get(alert.doc_type, alert.doc_type.value)
+    return f"[Onboarding] Review needed — {label} — {alert.employee_id}"
+
+
+def build_review_alert_email_bodies(alert: HrReviewAlert) -> tuple[str, str]:
+    """Returns (plain_text, html_body) for the alert sent when a document
+    lands on NEEDS_REVIEW — the six-rule engine's own "a human must look at
+    this" bucket. Not a verdict either way (unlike the complete-verification
+    packet or the correction notice, both of which report a resolved
+    outcome): this just gets the case in front of a person."""
+    label = _DOC_TYPE_LABELS.get(alert.doc_type, alert.doc_type.value)
+
+    plain_lines = [
+        "A document submitted to the Faculty Onboarding Concierge needs human review.",
+        "Automated validation could not confidently accept or reject it.",
+        "",
+        f"Employee ID:     {alert.employee_id}",
+        f"Faculty class:   {alert.faculty_class_label}",
+        f"Document:        {label}",
+        f"Detail:          {alert.message}",
+        "",
+        f"Next action: review the {label} for {alert.employee_id} and record a manual decision.",
+        "",
+        "Confidential: this message contains information from a government-issued clearance and ID, "
+        "which are sensitive personal information under the Philippine Data Privacy Act (RA 10173). "
+        "Handle and retain per HRMO's data privacy policy.",
+    ]
+    plain_text = "\n".join(plain_lines)
+
+    html_body = f"""\
+<html>
+  <body style="margin:0;padding:0;background-color:#f3f4f6;font-family:Arial,Helvetica,sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f3f4f6;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="600" cellpadding="0" cellspacing="0"
+                 style="background-color:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="background-color:#92400e;padding:18px 20px;">
+                <span style="color:#ffffff;font-size:16px;font-weight:700;">Review needed</span><br>
+                <span style="color:#ffffff;font-size:13px;opacity:0.9;">{esc(alert.employee_id)} &middot; {esc(alert.faculty_class_label)}</span>
+              </td>
+            </tr>
+            <tr><td style="padding:10px 20px;background:#fffbeb;color:#92400e;font-size:12px;">
+              Automated validation could not confidently accept or reject this document.
+            </td></tr>
+            <tr>
+              <td style="padding:16px 20px 4px;font-size:13px;font-weight:600;color:#111827;">{esc(label)}</td>
+            </tr>
+            <tr><td style="padding:0 20px 8px;font-size:13px;color:#374151;">
+              Detail: {esc(alert.message)}
+            </td></tr>
+            <tr>
+              <td style="padding:14px 20px;background-color:#fffbeb;font-size:13px;color:#92400e;">
+                Next action: review the {esc(label)} for {esc(alert.employee_id)} and record a manual decision.
               </td>
             </tr>
             <tr>
