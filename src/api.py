@@ -85,6 +85,7 @@ class SourceResponse(BaseModel):
     similarity: float
     effective_date: str = ""
     version: str = ""
+    page: int = 0
     preview: str
 
 
@@ -163,6 +164,7 @@ def _source_from_chunk(chunk: RetrievedChunk) -> SourceResponse:
         similarity=round(chunk.similarity, 4),
         effective_date=chunk.effective_date,
         version=chunk.version,
+        page=chunk.page_start,
         preview=preview,
     )
 

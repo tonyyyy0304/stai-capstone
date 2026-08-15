@@ -1183,10 +1183,14 @@ def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
             title = html.escape(c["title"])
             section = html.escape(c["section_path"])
             chunk_id = html.escape(c["chunk_id"])
+            # 0 = unknown page (Citation.page's documented sentinel, src/schemas.py)
+            # -- omit rather than show a meaningless "p.0".
+            page = c.get("page", 0)
+            page_html = f' <span style="font-weight:500;">p.{page}</span>' if page else ""
             rows.append(
                 '<div style="font-size:12.5px;color:oklch(35% 0.014 250);display:flex;gap:6px;">'
                 f'<span style="font-family:\'IBM Plex Mono\',monospace;color:{accent};flex-shrink:0;">[{n}]</span>'
-                f'<span><span style="font-weight:500;">{title}</span> — {section} '
+                f'<span><span style="font-weight:500;">{title}</span> — {section}{page_html} '
                 '<span style="font-family:\'IBM Plex Mono\',monospace;color:oklch(55% 0.012 250);'
                 f'font-size:11.5px;">{chunk_id}</span></span>'
                 "</div>"
@@ -1205,11 +1209,13 @@ def _render_pills_and_panels(i: int, msg: dict, accent: str) -> None:
             section = html.escape(s["section_path"])
             preview = html.escape(s["preview"])
             similarity = s.get("similarity", 0)
+            page = s.get("page", 0)
+            page_suffix = f" · p.{page}" if page else ""
             rows.append(
                 '<div style="display:flex;flex-direction:column;gap:4px;">'
                 '<div style="font-size:12.5px;font-weight:500;color:oklch(28% 0.015 255);'
                 'display:flex;justify-content:space-between;gap:10px;">'
-                f"<span>{title} · {section}</span>"
+                f"<span>{title} · {section}{page_suffix}</span>"
                 '<span style="font-family:\'IBM Plex Mono\',monospace;font-weight:400;font-size:11px;'
                 f'color:oklch(56% 0.012 250);white-space:nowrap;flex-shrink:0;">sim {similarity:.2f}</span>'
                 "</div>"
