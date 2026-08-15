@@ -9,6 +9,7 @@ the mock dataset finds matching values.
 
 from datetime import date
 
+from src import config
 from src.guardrails import doc_validation
 from src.schemas import (
     DocType,
@@ -157,13 +158,21 @@ def test_rule5_expired_with_pinned_as_of_rejects():
     assert not _by_rule(result, "validity_window").passed
 
 
-def test_rule5_stricter_printed_valid_until_governs_over_employer_window():
-    """valid_until (2026-03-01) is STRICTER than date_printed + 6 months
-    (2026-02-14 + 6mo = 2026-08-14) — Rule 5 must reject on the document's
-    own earlier expiry, not just the looser employer-policy window."""
-    extracted = _clean_nbi(date_printed=_field("2026-02-14"), valid_until=_field("2026-03-01"))
+def test_rule5_stricter_employer_window_governs_over_printed_validity(monkeypatch):
+    """A realistic printed pair (date_printed 2026-02-14, valid_until
+    2027-02-14 -- NBI's normal fixed one-year term, so it clears the
+    plausibility gate below) but the employer's freshness policy is set
+    stricter than that -- Rule 5 must reject on the EMPLOYER's earlier
+    deadline, not wait for the document's own later printed expiry.
+    (Previously this test used an implausible 2-week printed validity to
+    make the same point -- replaced because real NBI clearances are always
+    printed with a fixed one-year term (see the real specimen that prompted
+    config.NBI_PRINTED_VALIDITY_MONTHS), so that scenario doesn't occur on
+    a genuine document and is exactly what the plausibility gate now flags.)"""
+    monkeypatch.setattr(config, "NBI_VALIDITY_MONTHS", 6)
+    extracted = _clean_nbi(date_printed=_field("2026-02-14"), valid_until=_field("2027-02-14"))
     result = doc_validation.validate_document(
-        extracted, _quality(), _faculty_record(), as_of=date(2026, 4, 1)
+        extracted, _quality(), _faculty_record(), as_of=date(2026, 9, 1)  # > dp+6mo, still < vu
     )
     assert result.outcome == ValidationOutcome.REJECTED
     assert not _by_rule(result, "validity_window").passed
@@ -175,6 +184,49 @@ def test_rule5_within_both_windows_passes():
         extracted, _quality(), _faculty_record(), as_of=date(2026, 4, 1)
     )
     assert _by_rule(result, "validity_window").passed
+
+
+# --- Plausibility gate: a valid_until inconsistent with NBI's fixed one- ------
+# --- year printed term is treated as a likely OCR misread, not a real expiry --
+
+def test_rule3_implausible_valid_until_fails_format():
+    """valid_until a full year short of date_printed + one-year term --
+    exactly the shape of a single-digit year misread (e.g. 2026 read as
+    2025), not a real document variant."""
+    extracted = _clean_nbi(date_printed=_field("2025-11-04"), valid_until=_field("2025-11-04"))
+    result = doc_validation.validate_document(extracted, _quality(), _faculty_record())
+    rule = _by_rule(result, "format")
+    assert not rule.passed
+    assert "one-year printed validity" in rule.detail
+
+
+def test_rule5_defers_to_format_on_implausible_valid_until_instead_of_rejecting():
+    """The actual bug this closes: date_printed correct (2025-11-04),
+    valid_until misread a year short (should be 2026-11-04) -- as_of is
+    within the TRUE window but past the misread one. Without the
+    plausibility gate, Rule 5 independently reject on the same bad value
+    and win _resolve_outcome's priority race before Rule 3's needs_review
+    verdict is ever consulted. With it: NEEDS_REVIEW, not a false REJECT."""
+    extracted = _clean_nbi(date_printed=_field("2025-11-04"), valid_until=_field("2025-11-04"))
+    result = doc_validation.validate_document(
+        extracted, _quality(), _faculty_record(), as_of=date(2026, 8, 15)
+    )
+    assert result.outcome == ValidationOutcome.NEEDS_REVIEW
+    assert _by_rule(result, "validity_window").passed  # deferred, not independently failed
+    assert not _by_rule(result, "format").passed
+
+
+def test_rule5_plausible_valid_until_within_tolerance_still_enforced():
+    """valid_until 10 days off the expected one-year mark -- inside
+    config.NBI_PRINTED_VALIDITY_TOLERANCE_DAYS (14), so the plausibility
+    gate does NOT fire, and a genuinely expired document past that date
+    still correctly REJECTs."""
+    extracted = _clean_nbi(date_printed=_field("2025-01-01"), valid_until=_field("2026-01-11"))  # +10 days
+    result = doc_validation.validate_document(
+        extracted, _quality(), _faculty_record(), as_of=date(2026, 6, 1)
+    )
+    assert result.outcome == ValidationOutcome.REJECTED
+    assert not _by_rule(result, "validity_window").passed
 
 
 def test_rule6_low_composite_needs_review_even_when_quality_pass():
